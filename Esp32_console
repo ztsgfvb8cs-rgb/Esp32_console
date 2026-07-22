@@ -1,0 +1,42 @@
+#include <Arduino.h>
+
+#include "config.h"
+#include "types.h"
+
+#include "display.h"
+#include "battery.h"
+#include "keypad.h"
+#include "menu.h"
+#include "games.h"
+#include "sd_manager.h"
+#include "audio.h"
+
+void setup()
+{
+    Serial.begin(115200);
+
+    initDisplay();
+
+    initBattery();
+
+    initKeypad();
+
+    initAudio();
+
+    scanSDGames();
+
+    showSplashScreen();
+
+    delay(2000);
+
+    showMainMenu();
+}
+
+void loop()
+{
+    updateBattery();
+
+    handleMenu();
+
+    updateCurrentGame();
+}

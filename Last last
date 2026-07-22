@@ -7217,3 +7217,429 @@ int searchFiles(
 
     return count;
 }
+#ifndef INPUT_MANAGER_H
+#define INPUT_MANAGER_H
+
+#include <Arduino.h>
+
+//==========================================
+// INPUT MANAGER
+// ESP32 Game Station v11
+//==========================================
+
+// Slider Buttons
+#define PIN_BTN_UP      38
+#define PIN_BTN_DOWN    39
+#define PIN_BTN_LEFT    40
+#define PIN_BTN_RIGHT   41
+
+// Shoulder Buttons
+#define PIN_BTN_LB      7
+#define PIN_BTN_RB      21
+
+// Phone Keypad (4x4)
+const uint8_t KEYPAD_ROWS[4] = {42, 47, 48, 35};
+const uint8_t KEYPAD_COLS[4] = {36, 37, 43, 44};
+
+enum ButtonID
+{
+    BTN_NONE = 0,
+    BTN_UP,
+    BTN_DOWN,
+    BTN_LEFT,
+    BTN_RIGHT,
+    BTN_LB,
+    BTN_RB
+};
+
+class InputManager
+{
+public:
+    static void begin();
+
+    static void update();
+
+    static bool pressed(ButtonID button);
+
+    static char readKeypad();
+
+private:
+    static char scanMatrix();
+};
+
+#endif
+#include "input_manager.h"
+
+//==========================================
+// INPUT MANAGER
+// IMPLEMENTATION
+//==========================================
+
+static bool buttonState[7];
+
+static const char keypadMap[4][4] =
+{
+    {'1','2','3','A'},
+    {'4','5','6','B'},
+    {'7','8','9','C'},
+    {'*','0','#','D'}
+};
+
+void InputManager::begin()
+{
+    pinMode(PIN_BTN_UP, INPUT_PULLUP);
+    pinMode(PIN_BTN_DOWN, INPUT_PULLUP);
+    pinMode(PIN_BTN_LEFT, INPUT_PULLUP);
+    pinMode(PIN_BTN_RIGHT, INPUT_PULLUP);
+
+    pinMode(PIN_BTN_LB, INPUT_PULLUP);
+    pinMode(PIN_BTN_RB, INPUT_PULLUP);
+
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        pinMode(KEYPAD_ROWS[i], OUTPUT);
+        digitalWrite(KEYPAD_ROWS[i], HIGH);
+    }
+
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        pinMode(KEYPAD_COLS[i], INPUT_PULLUP);
+    }
+
+    for (uint8_t i = 0; i < 7; i++)
+    {
+        buttonState[i] = false;
+    }
+}
+
+void InputManager::update()
+{
+    buttonState[BTN_UP] = !digitalRead(PIN_BTN_UP);
+    buttonState[BTN_DOWN] = !digitalRead(PIN_BTN_DOWN);
+    buttonState[BTN_LEFT] = !digitalRead(PIN_BTN_LEFT);
+    buttonState[BTN_RIGHT] = !digitalRead(PIN_BTN_RIGHT);
+
+    buttonState[BTN_LB] = !digitalRead(PIN_BTN_LB);
+    buttonState[BTN_RB] = !digitalRead(PIN_BTN_RB);
+}
+
+bool InputManager::pressed(ButtonID button)
+{
+    if (button <= BTN_NONE || button > BTN_RB)
+        return false;
+
+    return buttonState[button];
+}
+
+char InputManager::readKeypad()
+{
+    return scanMatrix();
+}
+
+char InputManager::scanMatrix()
+{
+    for (uint8_t row = 0; row < 4; row++)
+    {
+        digitalWrite(KEYPAD_ROWS[row], LOW);
+
+        delayMicroseconds(5);
+
+        for (uint8_t col = 0; col < 4; col++)
+        {
+            if (digitalRead(KEYPAD_COLS[col]) == LOW)
+            {
+                digitalWrite(KEYPAD_ROWS[row], HIGH);
+                return keypadMap[row][col];
+            }
+        }
+
+        digitalWrite(KEYPAD_ROWS[row], HIGH);
+    }
+
+    return '\0';
+}
+#ifndef HAPTIC_MANAGER_H
+#define HAPTIC_MANAGER_H
+
+#include <Arduino.h>
+
+//==========================================
+// HAPTIC MANAGER
+// ESP32 Game Station v11
+//==========================================
+
+// Vibration Motor
+#define PIN_HAPTIC 5
+
+class HapticManager
+{
+public:
+
+    // Başlat
+    static void begin();
+
+    // Sürekli güncelle
+    static void update();
+
+    // Titreşim başlat
+    static void vibrate(uint16_t durationMs);
+
+    // Desenli titreşim
+    static void success();
+    static void error();
+    static void warning();
+    static void click();
+
+    // Durdur
+    static void stop();
+
+    // Durum
+    static bool isRunning();
+
+private:
+
+    static bool active;
+
+    static unsigned long startTime;
+
+    static unsigned long duration;
+};
+
+#endif
+#include "haptic_manager.h"
+
+//==========================================
+// HAPTIC MANAGER
+// IMPLEMENTATION
+//==========================================
+
+bool HapticManager::active = false;
+unsigned long HapticManager::startTime = 0;
+unsigned long HapticManager::duration = 0;
+
+void HapticManager::begin()
+{
+    pinMode(PIN_HAPTIC, OUTPUT);
+    digitalWrite(PIN_HAPTIC, LOW);
+}
+
+void HapticManager::update()
+{
+    if (active)
+    {
+        if (millis() - startTime >= duration)
+        {
+            stop();
+        }
+    }
+}
+
+void HapticManager::vibrate(uint16_t durationMs)
+{
+    duration = durationMs;
+    startTime = millis();
+    active = true;
+
+    digitalWrite(PIN_HAPTIC, HIGH);
+}
+
+void HapticManager::success()
+{
+    vibrate(120);
+}
+
+void HapticManager::error()
+{
+    vibrate(300);
+}
+
+void HapticManager::warning()
+{
+    vibrate(180);
+}
+
+void HapticManager::click()
+{
+    vibrate(40);
+}
+
+void HapticManager::stop()
+{
+    digitalWrite(PIN_HAPTIC, LOW);
+    active = false;
+}
+
+bool HapticManager::isRunning()
+{
+    return active;
+}
+#include "audio_player.h"
+
+//==========================================
+// AUDIO PLAYER
+// IMPLEMENTATION
+//==========================================
+
+Audio AudioPlayer::audio;
+
+bool AudioPlayer::playing = false;
+bool AudioPlayer::paused = false;
+
+uint8_t AudioPlayer::volume = 12;
+
+String AudioPlayer::fileName = "";
+
+bool AudioPlayer::begin()
+{
+    audio.setPinout(17, 18, 8);      // BCLK, LRC, DIN
+    audio.setVolume(volume);
+
+    playing = false;
+    paused = false;
+
+    return true;
+}
+
+void AudioPlayer::update()
+{
+    if (playing && !paused)
+    {
+        audio.loop();
+    }
+}
+
+bool AudioPlayer::play(const String& path)
+{
+    stop();
+
+    if (!SD.exists(path))
+        return false;
+
+    fileName = path;
+
+    audio.connecttoFS(SD, path.c_str());
+
+    playing = true;
+    paused = false;
+
+    return true;
+}
+
+void AudioPlayer::stop()
+{
+    audio.stopSong();
+
+    playing = false;
+    paused = false;
+
+    fileName = "";
+}
+
+void AudioPlayer::pause()
+{
+    if (!playing)
+        return;
+
+    audio.pauseResume();
+
+    paused = true;
+}
+
+void AudioPlayer::resume()
+{
+    if (!playing)
+        return;
+
+    audio.pauseResume();
+
+    paused = false;
+}
+
+bool AudioPlayer::isPlaying()
+{
+    return playing;
+}
+
+bool AudioPlayer::isPaused()
+{
+    return paused;
+}
+
+void AudioPlayer::setVolume(uint8_t newVolume)
+{
+    if (newVolume > 21)
+        newVolume = 21;
+
+    volume = newVolume;
+
+    audio.setVolume(volume);
+}
+
+uint8_t AudioPlayer::getVolume()
+{
+    return volume;
+}
+
+String AudioPlayer::currentTrack()
+{
+    return fileName;
+}
+#ifndef MUSIC_BROWSER_H
+#define MUSIC_BROWSER_H
+
+#include <Arduino.h>
+#include <FS.h>
+#include <SD.h>
+
+#include "audio_player.h"
+
+//==========================================
+// MUSIC BROWSER
+// ESP32 Game Station v11
+//==========================================
+
+#define MUSIC_FOLDER "/MUSIC"
+#define MAX_MUSIC_FILES 256
+#define MAX_MUSIC_NAME_LENGTH 64
+
+class MusicBrowser
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // SD kartı tara
+    static bool scan();
+
+    // Bilgiler
+    static uint16_t count();
+    static String fileName(uint16_t index);
+    static String filePath(uint16_t index);
+
+    // Oynatma
+    static bool play(uint16_t index);
+    static void stop();
+
+    // Gezinme
+    static bool next();
+    static bool previous();
+
+    // Seçim
+    static void setCurrent(uint16_t index);
+    static uint16_t current();
+
+private:
+
+    static String musicFiles[MAX_MUSIC_FILES];
+
+    static uint16_t musicCount;
+
+    static uint16_t currentIndex;
+
+    static bool isSupported(const String& name);
+
+    static void scanFolder(File folder);
+};
+
+#endif

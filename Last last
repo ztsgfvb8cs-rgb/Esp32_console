@@ -1,0 +1,66 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+//==================================================
+// ESP32 GAME STATION
+// CONFIGURATION
+//==================================================
+
+//---------------- Display ----------------
+#define SCREEN_WIDTH           320
+#define SCREEN_HEIGHT          240
+
+#define TARGET_FPS             30
+#define FRAME_TIME             (1000 / TARGET_FPS)
+
+//---------------- Battery ----------------
+#define BATTERY_MAX_VOLTAGE    4.20f
+#define BATTERY_MIN_VOLTAGE    3.00f
+
+#define BATTERY_DIVIDER        2.0f
+
+#define ADC_REFERENCE          3.3f
+#define ADC_RESOLUTION         4095
+
+//---------------- Time ----------------
+#define BATTERY_UPDATE_TIME    1000
+#define KEY_DEBOUNCE_TIME      150
+#define MENU_TIMEOUT           30000
+#define GAME_TIMEOUT           600000UL
+
+//---------------- SD ----------------
+#define MAX_GAME_FILES         100
+#define MAX_FILENAME_LENGTH    32
+#define MAX_PATH_LENGTH        96
+
+#define GAMES_FOLDER           "/GAMES"
+#define EMULATOR_FOLDER        "/EMULATORS"
+#define PDF_FOLDER             "/PDF"
+
+//---------------- UI ----------------
+#define MENU_ITEM_HEIGHT       28
+#define HEADER_HEIGHT          24
+#define FOOTER_HEIGHT          18
+
+//---------------- Brightness ----------------
+#define BRIGHTNESS_DEFAULT     220
+#define BRIGHTNESS_LOW         80
+#define BRIGHTNESS_HIGH        255
+
+//---------------- Audio ----------------
+#define DEFAULT_BEEP_FREQ      1000
+#define DEFAULT_BEEP_TIME      80
+
+//---------------- System ----------------
+#define EEPROM_SIZE            512
+
+//---------------- Version ----------------
+#define SYSTEM_NAME            "ESP32 Game Station"
+#define SYSTEM_VERSION         "11.0"
+
+//---------------- Math ----------------
+#ifndef PI
+#define PI 3.14159265358979323846f
+#endif
+
+#endif

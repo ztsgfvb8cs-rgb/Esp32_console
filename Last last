@@ -64,3 +64,6225 @@
 #endif
 
 #endif
+#ifndef PINS_H
+#define PINS_H
+
+//==================================================
+// ESP32 GAME STATION
+// HARDWARE PIN CONFIGURATION
+//==================================================
+
+
+//---------------- Display / TFT ----------------
+// TFT_eSPI ayarları genellikle User_Setup üzerinden yapılır.
+// Burada sadece sistemde kullanılan pinler tutulur.
+
+#define TFT_BACKLIGHT_PIN     6
+
+
+//---------------- SD Card ----------------
+
+#define SD_CS_PIN             5
+#define SD_MOSI_PIN           23
+#define SD_MISO_PIN           19
+#define SD_SCK_PIN            18
+
+
+
+//---------------- Battery ----------------
+
+#define BATTERY_ADC_PIN       4
+
+
+
+//---------------- Buzzer ----------------
+
+#define BUZZER_PIN            8
+
+
+
+//---------------- Boost Converter ----------------
+
+#define BOOST_ENABLE_PIN      15
+
+
+
+//---------------- 4x4 Keypad ----------------
+
+// Rows
+
+#define ROW_PIN_1             14
+#define ROW_PIN_2             27
+#define ROW_PIN_3             26
+#define ROW_PIN_4             25
+
+
+// Columns
+
+#define COL_PIN_1             33
+#define COL_PIN_2             32
+#define COL_PIN_3             35
+#define COL_PIN_4             34
+
+
+
+//---------------- Pin Arrays ----------------
+
+const uint8_t ROW_PINS[4] =
+{
+    ROW_PIN_1,
+    ROW_PIN_2,
+    ROW_PIN_3,
+    ROW_PIN_4
+};
+
+
+const uint8_t COL_PINS[4] =
+{
+    COL_PIN_1,
+    COL_PIN_2,
+    COL_PIN_3,
+    COL_PIN_4
+};
+
+
+
+#endif
+#ifndef SYSTEM_TYPES_H
+#define SYSTEM_TYPES_H
+
+//==================================================
+// ESP32 GAME STATION
+// SYSTEM DATA TYPES
+//==================================================
+
+
+//---------------- System States ----------------
+
+enum SystemState
+{
+    STATE_BOOT = 0,
+    STATE_MENU,
+    STATE_GAME_LIST,
+    STATE_SETTINGS,
+    STATE_ABOUT,
+    STATE_PDF_LIST,
+    STATE_PDF_READER,
+    STATE_PLAYING
+};
+
+
+//---------------- Game Types ----------------
+
+enum GameType
+{
+    GAME_NONE = 0,
+    GAME_MARIO,
+    GAME_FIFA,
+    GAME_DOOM,
+    GAME_SD_GAME
+};
+
+
+//---------------- Engine Types ----------------
+
+enum GameEngine
+{
+    ENGINE_NONE = 0,
+    ENGINE_MARIO,
+    ENGINE_FIFA,
+    ENGINE_DOOM,
+    ENGINE_EXTERNAL
+};
+
+
+//---------------- Game File ----------------
+
+struct GameFile
+{
+    char name[32];
+    char path[96];
+    GameType type;
+    bool available;
+};
+
+
+//---------------- PDF File ----------------
+
+struct PDFFile
+{
+    char name[32];
+    char path[96];
+    uint32_t pageCount;
+    bool available;
+};
+
+
+//---------------- Frame Statistics ----------------
+
+struct FrameStats
+{
+    uint32_t frameCount;
+    uint32_t lastUpdate;
+    float fps;
+};
+
+
+//---------------- Battery Data ----------------
+
+struct BatteryInfo
+{
+    float voltage;
+    uint8_t percent;
+};
+
+
+//---------------- Player Base ----------------
+
+struct Vector2D
+{
+    float x;
+    float y;
+};
+
+
+//---------------- System Settings ----------------
+
+struct SystemSettings
+{
+    uint8_t brightness;
+    uint8_t volume;
+    bool soundEnabled;
+};
+
+
+
+#endif
+#ifndef SYSTEM_GLOBALS_H
+#define SYSTEM_GLOBALS_H
+
+//==================================================
+// ESP32 GAME STATION
+// GLOBAL VARIABLES
+//==================================================
+
+#include "config.h"
+#include "pins.h"
+#include "system_types.h"
+
+
+//---------------- Display Objects ----------------
+
+#include <TFT_eSPI.h>
+
+extern TFT_eSPI tft;
+extern TFT_eSprite sprite;
+
+
+//---------------- System State ----------------
+
+extern SystemState currentState;
+
+extern GameEngine currentEngine;
+
+
+//---------------- Game Data ----------------
+
+extern GameFile gameFiles[MAX_GAME_FILES];
+
+extern uint16_t gameCount;
+
+extern uint16_t currentGameIndex;
+
+
+//---------------- PDF Data ----------------
+
+extern PDFFile pdfFiles[MAX_GAME_FILES];
+
+extern uint16_t pdfCount;
+
+extern uint16_t currentPDFIndex;
+
+
+//---------------- Battery ----------------
+
+extern BatteryInfo battery;
+
+
+//---------------- Performance ----------------
+
+extern FrameStats frameStats;
+
+
+//---------------- Settings ----------------
+
+extern SystemSettings settings;
+
+
+//---------------- Timing ----------------
+
+extern unsigned long lastFrameTime;
+
+extern unsigned long lastBatteryUpdate;
+
+extern unsigned long lastKeyTime;
+
+extern unsigned long stateChangeTime;
+
+
+
+#endif
+#ifndef HARDWARE_H
+#define HARDWARE_H
+
+//==================================================
+// ESP32 GAME STATION
+// HARDWARE CONTROL DEFINITIONS
+//==================================================
+
+#include <Arduino.h>
+
+#include "config.h"
+#include "pins.h"
+
+
+//---------------- Hardware Initialization ----------------
+
+void initHardware();
+
+void initDisplay();
+
+void initSDCard();
+
+void initKeypad();
+
+void initBattery();
+
+void initBuzzer();
+
+void initEEPROM();
+
+
+//---------------- Display Control ----------------
+
+void setBacklight(uint8_t value);
+
+
+//---------------- Battery Control ----------------
+
+float readBatteryVoltage();
+
+uint8_t calculateBatteryPercent(float voltage);
+
+void updateBattery();
+
+
+//---------------- Buzzer Control ----------------
+
+void beep(uint16_t frequency, uint16_t duration);
+
+
+//---------------- Keypad Control ----------------
+
+char readKeypad();
+
+bool keyPressed(char key);
+
+
+//---------------- Power Control ----------------
+
+void enableBoost();
+
+void disableBoost();
+
+
+
+#endif
+#include "hardware.h"
+
+#include <SPI.h>
+#include <SD.h>
+#include <EEPROM.h>
+
+
+//==================================================
+// ESP32 GAME STATION
+// HARDWARE CONTROL IMPLEMENTATION
+//==================================================
+
+
+//---------------- Initialization ----------------
+
+void initHardware()
+{
+    enableBoost();
+
+    initDisplay();
+
+    initSDCard();
+
+    initKeypad();
+
+    initBattery();
+
+    initBuzzer();
+
+    initEEPROM();
+}
+
+
+//---------------- Display ----------------
+
+void initDisplay()
+{
+    pinMode(TFT_BACKLIGHT_PIN, OUTPUT);
+
+    ledcAttachPin(TFT_BACKLIGHT_PIN, 0);
+    ledcSetup(0, 5000, 8);
+
+    ledcWrite(0, BRIGHTNESS_DEFAULT);
+
+    tft.init();
+
+    tft.setRotation(1);
+
+    tft.fillScreen(TFT_BLACK);
+
+    sprite.createSprite(
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+    );
+}
+
+
+void setBacklight(uint8_t value)
+{
+    value = constrain(value, 0, 255);
+
+    ledcWrite(0, value);
+}
+
+
+//---------------- SD Card ----------------
+
+void initSDCard()
+{
+    SPI.begin(
+        SD_SCK_PIN,
+        SD_MISO_PIN,
+        SD_MOSI_PIN,
+        SD_CS_PIN
+    );
+
+    SD.begin(SD_CS_PIN);
+}
+
+
+//---------------- Keypad ----------------
+
+void initKeypad()
+{
+    for(int i = 0; i < 4; i++)
+    {
+        pinMode(
+            ROW_PINS[i],
+            OUTPUT
+        );
+
+        digitalWrite(
+            ROW_PINS[i],
+            HIGH
+        );
+    }
+
+
+    for(int i = 0; i < 4; i++)
+    {
+        pinMode(
+            COL_PINS[i],
+            INPUT_PULLUP
+        );
+    }
+}
+
+
+char readKeypad()
+{
+    static const char keys[4][4] =
+    {
+        {'1','2','3','A'},
+        {'4','5','6','B'},
+        {'7','8','9','C'},
+        {'*','0','#','D'}
+    };
+
+
+    for(int row = 0; row < 4; row++)
+    {
+        digitalWrite(
+            ROW_PINS[row],
+            LOW
+        );
+
+
+        for(int col = 0; col < 4; col++)
+        {
+            if(digitalRead(COL_PINS[col]) == LOW)
+            {
+                delay(20);
+
+                if(digitalRead(COL_PINS[col]) == LOW)
+                {
+                    digitalWrite(
+                        ROW_PINS[row],
+                        HIGH
+                    );
+
+                    return keys[row][col];
+                }
+            }
+        }
+
+
+        digitalWrite(
+            ROW_PINS[row],
+            HIGH
+        );
+    }
+
+
+    return '\0';
+}
+
+
+bool keyPressed(char key)
+{
+    return readKeypad() == key;
+}
+
+
+
+//---------------- Battery ----------------
+
+void initBattery()
+{
+    analogReadResolution(12);
+
+    analogSetAttenuation(
+        ADC_11db
+    );
+}
+
+
+float readBatteryVoltage()
+{
+    uint32_t total = 0;
+
+
+    for(int i = 0; i < 8; i++)
+    {
+        total += analogRead(BATTERY_ADC_PIN);
+    }
+
+
+    float average =
+        total / 8.0f;
+
+
+    return
+    (average / ADC_RESOLUTION)
+    *
+    ADC_REFERENCE
+    *
+    BATTERY_DIVIDER;
+}
+
+
+
+uint8_t calculateBatteryPercent(float voltage)
+{
+    float percent =
+    ((voltage - BATTERY_MIN_VOLTAGE)
+    /
+    (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE))
+    *
+    100.0f;
+
+
+    if(percent < 0)
+        percent = 0;
+
+
+    if(percent > 100)
+        percent = 100;
+
+
+    return (uint8_t)percent;
+}
+
+
+
+void updateBattery()
+{
+    float voltage =
+        readBatteryVoltage();
+
+
+    battery.voltage =
+        voltage;
+
+
+    battery.percent =
+        calculateBatteryPercent(voltage);
+}
+
+
+
+//---------------- Buzzer ----------------
+
+void initBuzzer()
+{
+    pinMode(
+        BUZZER_PIN,
+        OUTPUT
+    );
+
+    digitalWrite(
+        BUZZER_PIN,
+        LOW
+    );
+
+
+    ledcAttachPin(
+        BUZZER_PIN,
+        1
+    );
+
+    ledcSetup(
+        1,
+        DEFAULT_BEEP_FREQ,
+        8
+    );
+}
+
+
+
+void beep(
+    uint16_t frequency,
+    uint16_t duration
+)
+{
+    ledcWriteTone(
+        1,
+        frequency
+    );
+
+    delay(duration);
+
+    ledcWriteTone(
+        1,
+        0
+    );
+}
+
+
+
+//---------------- EEPROM ----------------
+
+void initEEPROM()
+{
+    EEPROM.begin(
+        EEPROM_SIZE
+    );
+}
+
+
+
+//---------------- Boost ----------------
+
+void enableBoost()
+{
+    pinMode(
+        BOOST_ENABLE_PIN,
+        OUTPUT
+    );
+
+    digitalWrite(
+        BOOST_ENABLE_PIN,
+        HIGH
+    );
+}
+
+
+
+void disableBoost()
+{
+    digitalWrite(
+        BOOST_ENABLE_PIN,
+        LOW
+    );
+}
+#ifndef STORAGE_H
+#define STORAGE_H
+
+//==================================================
+// ESP32 GAME STATION
+// STORAGE MANAGEMENT
+//==================================================
+
+#include <Arduino.h>
+
+#include "config.h"
+#include "system_types.h"
+
+
+//---------------- SD Game Files ----------------
+
+void scanGames();
+
+void loadGameFiles();
+
+void clearGameFiles();
+
+bool isGameFile(
+    String filename
+);
+
+
+//---------------- PDF Files ----------------
+
+void scanPDFs();
+
+void loadPDFFiles();
+
+void clearPDFFiles();
+
+bool isPDFFile(
+    String filename
+);
+
+
+//---------------- File Helpers ----------------
+
+String getFileName(
+    String path
+);
+
+
+bool fileExists(
+    String path
+);
+
+
+//---------------- EEPROM Settings ----------------
+
+void loadSettings();
+
+void saveSettings();
+
+
+
+#endif
+#include "storage.h"
+
+#include <SD.h>
+#include <EEPROM.h>
+
+
+//==================================================
+// ESP32 GAME STATION
+// STORAGE MANAGEMENT IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Helpers ----------------
+
+String getFileName(String path)
+{
+    int index = path.lastIndexOf('/');
+
+    if(index >= 0)
+    {
+        return path.substring(index + 1);
+    }
+
+    return path;
+}
+
+
+
+bool fileExists(String path)
+{
+    return SD.exists(path);
+}
+
+
+
+//---------------- Game Files ----------------
+
+void clearGameFiles()
+{
+    gameCount = 0;
+
+    for(uint16_t i = 0; i < MAX_GAME_FILES; i++)
+    {
+        gameFiles[i].available = false;
+    }
+}
+
+
+
+bool isGameFile(String filename)
+{
+    filename.toLowerCase();
+
+    if(filename.endsWith(".bin"))
+        return true;
+
+    if(filename.endsWith(".nes"))
+        return true;
+
+    if(filename.endsWith(".gb"))
+        return true;
+
+    if(filename.endsWith(".gbc"))
+        return true;
+
+
+    return false;
+}
+
+
+
+void scanGames()
+{
+    clearGameFiles();
+
+
+    // Built-in Games
+
+    strcpy(
+        gameFiles[gameCount].name,
+        "MARIO"
+    );
+
+    strcpy(
+        gameFiles[gameCount].path,
+        "BUILTIN"
+    );
+
+    gameFiles[gameCount].type =
+        GAME_MARIO;
+
+    gameFiles[gameCount].available =
+        true;
+
+    gameCount++;
+
+
+
+    strcpy(
+        gameFiles[gameCount].name,
+        "FIFA"
+    );
+
+    strcpy(
+        gameFiles[gameCount].path,
+        "BUILTIN"
+    );
+
+    gameFiles[gameCount].type =
+        GAME_FIFA;
+
+    gameFiles[gameCount].available =
+        true;
+
+    gameCount++;
+
+
+
+    strcpy(
+        gameFiles[gameCount].name,
+        "DOOM"
+    );
+
+    strcpy(
+        gameFiles[gameCount].path,
+        "BUILTIN"
+    );
+
+    gameFiles[gameCount].type =
+        GAME_DOOM;
+
+    gameFiles[gameCount].available =
+        true;
+
+    gameCount++;
+
+
+
+    // SD Games
+
+    File folder =
+        SD.open(GAMES_FOLDER);
+
+
+    if(!folder)
+        return;
+
+
+    File file =
+        folder.openNextFile();
+
+
+    while(file && gameCount < MAX_GAME_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+            String name =
+                getFileName(
+                    file.name()
+                );
+
+
+            if(isGameFile(name))
+            {
+                strncpy(
+                    gameFiles[gameCount].name,
+                    name.c_str(),
+                    MAX_FILENAME_LENGTH - 1
+                );
+
+
+                strncpy(
+                    gameFiles[gameCount].path,
+                    file.name(),
+                    MAX_PATH_LENGTH - 1
+                );
+
+
+                gameFiles[gameCount].type =
+                    GAME_SD_GAME;
+
+
+                gameFiles[gameCount].available =
+                    true;
+
+
+                gameCount++;
+            }
+        }
+
+
+        file =
+            folder.openNextFile();
+    }
+
+
+    folder.close();
+}
+
+
+
+//---------------- PDF Files ----------------
+
+void clearPDFFiles()
+{
+    pdfCount = 0;
+
+
+    for(uint16_t i = 0; i < MAX_GAME_FILES; i++)
+    {
+        pdfFiles[i].available = false;
+    }
+}
+
+
+
+bool isPDFFile(String filename)
+{
+    filename.toLowerCase();
+
+    return filename.endsWith(".pdf");
+}
+
+
+
+void scanPDFs()
+{
+    clearPDFFiles();
+
+
+    File folder =
+        SD.open(PDF_FOLDER);
+
+
+    if(!folder)
+        return;
+
+
+
+    File file =
+        folder.openNextFile();
+
+
+
+    while(file && pdfCount < MAX_GAME_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+            String name =
+                getFileName(
+                    file.name()
+                );
+
+
+            if(isPDFFile(name))
+            {
+                strncpy(
+                    pdfFiles[pdfCount].name,
+                    name.c_str(),
+                    MAX_FILENAME_LENGTH - 1
+                );
+
+
+                strncpy(
+                    pdfFiles[pdfCount].path,
+                    file.name(),
+                    MAX_PATH_LENGTH - 1
+                );
+
+
+                pdfFiles[pdfCount].pageCount =
+                    0;
+
+
+                pdfFiles[pdfCount].available =
+                    true;
+
+
+                pdfCount++;
+            }
+        }
+
+
+        file =
+            folder.openNextFile();
+    }
+
+
+    folder.close();
+}
+
+
+
+//---------------- EEPROM Settings ----------------
+
+void loadSettings()
+{
+    EEPROM.get(
+        0,
+        settings
+    );
+
+
+    if(settings.brightness == 0)
+    {
+        settings.brightness =
+            BRIGHTNESS_DEFAULT;
+
+        settings.volume =
+            100;
+
+        settings.soundEnabled =
+            true;
+    }
+}
+
+
+
+void saveSettings()
+{
+    EEPROM.put(
+        0,
+        settings
+    );
+
+
+    EEPROM.commit();
+}
+#ifndef DISPLAY_H
+#define DISPLAY_H
+
+//==================================================
+// ESP32 GAME STATION
+// DISPLAY SYSTEM
+//==================================================
+
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+
+#include "config.h"
+#include "system_types.h"
+
+
+//---------------- Display Initialization ----------------
+
+void initDisplaySystem();
+
+
+//---------------- Screen Control ----------------
+
+void clearScreen();
+
+void updateScreen();
+
+
+//---------------- Main Screens ----------------
+
+void showBootScreen();
+
+void showMainMenu();
+
+void showGameList();
+
+void showSettings();
+
+void showAbout();
+
+
+//---------------- PDF Screens ----------------
+
+void showPDFList();
+
+void showPDFReader();
+
+
+//---------------- Drawing Helpers ----------------
+
+void drawHeader(
+    const char* title
+);
+
+
+void drawFooter(
+    const char* text
+);
+
+
+void drawBatteryIcon();
+
+void drawFPS();
+
+
+//---------------- Text ----------------
+
+void drawText(
+    const char* text,
+    int x,
+    int y,
+    uint16_t color,
+    uint8_t size
+);
+
+
+
+#endif
+#include "display.h"
+
+#include "system_globals.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// DISPLAY SYSTEM IMPLEMENTATION
+//==================================================
+
+
+
+void initDisplaySystem()
+{
+    tft.init();
+
+    tft.setRotation(1);
+
+    tft.fillScreen(TFT_BLACK);
+
+
+    sprite.createSprite(
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT
+    );
+}
+
+
+
+void clearScreen()
+{
+    sprite.fillSprite(
+        TFT_BLACK
+    );
+}
+
+
+
+void updateScreen()
+{
+    sprite.pushSprite(
+        0,
+        0
+    );
+}
+
+
+
+//---------------- Boot Screen ----------------
+
+
+void showBootScreen()
+{
+    clearScreen();
+
+
+    drawText(
+        SYSTEM_NAME,
+        40,
+        60,
+        TFT_CYAN,
+        2
+    );
+
+
+    drawText(
+        SYSTEM_VERSION,
+        120,
+        110,
+        TFT_GREEN,
+        2
+    );
+
+
+    updateScreen();
+}
+
+
+
+
+//---------------- Main Menu ----------------
+
+
+void showMainMenu()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "MAIN MENU"
+    );
+
+
+    drawText(
+        "1 - GAMES",
+        40,
+        60,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawText(
+        "2 - SETTINGS",
+        40,
+        95,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawText(
+        "3 - ABOUT",
+        40,
+        130,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawText(
+        "4 - PDF READER",
+        40,
+        165,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawBatteryIcon();
+
+    drawFPS();
+
+
+    updateScreen();
+}
+
+
+
+//---------------- Game List ----------------
+
+
+void showGameList()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "GAMES"
+    );
+
+
+    if(gameCount == 0)
+    {
+        drawText(
+            "NO GAME",
+            90,
+            100,
+            TFT_RED,
+            2
+        );
+
+        updateScreen();
+        return;
+    }
+
+
+
+    char buffer[40];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%d/%d",
+        currentGameIndex + 1,
+        gameCount
+    );
+
+
+    drawText(
+        buffer,
+        10,
+        40,
+        TFT_YELLOW,
+        2
+    );
+
+
+
+    drawText(
+        gameFiles[currentGameIndex].name,
+        20,
+        90,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawFooter(
+        "2/8 SELECT  6 START"
+    );
+
+
+    updateScreen();
+}
+
+
+
+
+//---------------- Settings ----------------
+
+
+void showSettings()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "SETTINGS"
+    );
+
+
+    char buffer[40];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "BRIGHT:%d",
+        settings.brightness
+    );
+
+
+    drawText(
+        buffer,
+        20,
+        70,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawText(
+        "5 HIGH",
+        20,
+        120,
+        TFT_GREEN,
+        1
+    );
+
+
+    drawText(
+        "4 LOW",
+        20,
+        145,
+        TFT_GREEN,
+        1
+    );
+
+
+    drawFooter(
+        "0 BACK"
+    );
+
+
+    updateScreen();
+}
+
+
+
+
+//---------------- About ----------------
+
+
+void showAbout()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "ABOUT"
+    );
+
+
+    drawText(
+        "ESP32 GAME STATION",
+        20,
+        70,
+        TFT_WHITE,
+        1
+    );
+
+
+    drawText(
+        "PDF + GAMES",
+        20,
+        100,
+        TFT_CYAN,
+        1
+    );
+
+
+    drawText(
+        "SYSTEM 11.0",
+        20,
+        130,
+        TFT_GREEN,
+        1
+    );
+
+
+    drawFooter(
+        "0 BACK"
+    );
+
+
+    updateScreen();
+}
+
+
+
+//---------------- PDF ----------------
+
+
+void showPDFList()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "PDF FILES"
+    );
+
+
+    if(pdfCount == 0)
+    {
+        drawText(
+            "NO PDF",
+            100,
+            100,
+            TFT_RED,
+            2
+        );
+
+        updateScreen();
+        return;
+    }
+
+
+    drawText(
+        pdfFiles[currentPDFIndex].name,
+        20,
+        90,
+        TFT_WHITE,
+        2
+    );
+
+
+    drawFooter(
+        "6 OPEN"
+    );
+
+
+    updateScreen();
+}
+
+
+
+void showPDFReader()
+{
+    clearScreen();
+
+
+    drawHeader(
+        "PDF READER"
+    );
+
+
+    drawText(
+        "PAGE VIEW",
+        80,
+        100,
+        TFT_YELLOW,
+        2
+    );
+
+
+    drawFooter(
+        "0 BACK"
+    );
+
+
+    updateScreen();
+}
+
+
+
+
+//---------------- Drawing Helpers ----------------
+
+
+void drawHeader(const char* title)
+{
+    sprite.fillRect(
+        0,
+        0,
+        SCREEN_WIDTH,
+        HEADER_HEIGHT,
+        TFT_BLUE
+    );
+
+
+    drawText(
+        title,
+        10,
+        4,
+        TFT_WHITE,
+        1
+    );
+}
+
+
+
+void drawFooter(const char* text)
+{
+    sprite.fillRect(
+        0,
+        SCREEN_HEIGHT - FOOTER_HEIGHT,
+        SCREEN_WIDTH,
+        FOOTER_HEIGHT,
+        TFT_DARKGREY
+    );
+
+
+    drawText(
+        text,
+        5,
+        SCREEN_HEIGHT - FOOTER_HEIGHT + 2,
+        TFT_WHITE,
+        1
+    );
+}
+
+
+
+void drawBatteryIcon()
+{
+    int width =
+        battery.percent * 40 / 100;
+
+
+    sprite.drawRect(
+        270,
+        5,
+        40,
+        12,
+        TFT_WHITE
+    );
+
+
+    sprite.fillRect(
+        272,
+        7,
+        width,
+        8,
+        TFT_GREEN
+    );
+}
+
+
+
+void drawFPS()
+{
+    char buffer[20];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "FPS %.0f",
+        frameStats.fps
+    );
+
+
+    drawText(
+        buffer,
+        250,
+        220,
+        TFT_WHITE,
+        1
+    );
+}
+
+
+
+void drawText(
+    const char* text,
+    int x,
+    int y,
+    uint16_t color,
+    uint8_t size
+)
+{
+    sprite.setTextColor(
+        color,
+        TFT_BLACK
+    );
+
+
+    sprite.setTextSize(
+        size
+    );
+
+
+    sprite.setCursor(
+        x,
+        y
+    );
+
+
+    sprite.print(
+        text
+    );
+}
+#ifndef INPUT_H
+#define INPUT_H
+
+//==================================================
+// ESP32 GAME STATION
+// INPUT SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+#include "config.h"
+#include "pins.h"
+
+
+//---------------- Input Initialization ----------------
+
+void initInput();
+
+
+//---------------- Keypad ----------------
+
+char getKey();
+
+bool isKeyAvailable();
+
+
+//---------------- Input Update ----------------
+
+void updateInput();
+
+
+//---------------- Last Key ----------------
+
+char getLastKey();
+
+void clearLastKey();
+
+
+
+#endif
+#include "input.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// INPUT SYSTEM IMPLEMENTATION
+//==================================================
+
+
+static char lastKey = '\0';
+
+static unsigned long lastKeyTime = 0;
+
+
+
+//---------------- Initialization ----------------
+
+void initInput()
+{
+    for(int i = 0; i < 4; i++)
+    {
+        pinMode(
+            ROW_PINS[i],
+            OUTPUT
+        );
+
+        digitalWrite(
+            ROW_PINS[i],
+            HIGH
+        );
+    }
+
+
+    for(int i = 0; i < 4; i++)
+    {
+        pinMode(
+            COL_PINS[i],
+            INPUT_PULLUP
+        );
+    }
+}
+
+
+
+//---------------- Key Reading ----------------
+
+char getKey()
+{
+    static const char keypad[4][4] =
+    {
+        {'1','2','3','A'},
+        {'4','5','6','B'},
+        {'7','8','9','C'},
+        {'*','0','#','D'}
+    };
+
+
+    for(int row = 0; row < 4; row++)
+    {
+        digitalWrite(
+            ROW_PINS[row],
+            LOW
+        );
+
+
+        for(int col = 0; col < 4; col++)
+        {
+            if(digitalRead(COL_PINS[col]) == LOW)
+            {
+                unsigned long now =
+                    millis();
+
+
+                if(now - lastKeyTime < KEY_DEBOUNCE_TIME)
+                {
+                    digitalWrite(
+                        ROW_PINS[row],
+                        HIGH
+                    );
+
+                    return '\0';
+                }
+
+
+                lastKeyTime = now;
+
+
+                delay(10);
+
+
+                if(digitalRead(COL_PINS[col]) == LOW)
+                {
+                    lastKey =
+                        keypad[row][col];
+
+
+                    digitalWrite(
+                        ROW_PINS[row],
+                        HIGH
+                    );
+
+
+                    return lastKey;
+                }
+            }
+        }
+
+
+        digitalWrite(
+            ROW_PINS[row],
+            HIGH
+        );
+    }
+
+
+    return '\0';
+}
+
+
+
+//---------------- Input Status ----------------
+
+bool isKeyAvailable()
+{
+    return lastKey != '\0';
+}
+
+
+
+void updateInput()
+{
+    char key =
+        getKey();
+
+
+    if(key != '\0')
+    {
+        lastKey = key;
+    }
+}
+
+
+
+char getLastKey()
+{
+    return lastKey;
+}
+
+
+
+void clearLastKey()
+{
+    lastKey = '\0';
+}
+#ifndef MENU_H
+#define MENU_H
+
+//==================================================
+// ESP32 GAME STATION
+// MENU SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+#include "system_types.h"
+
+
+//---------------- Menu Initialization ----------------
+
+void initMenu();
+
+
+//---------------- Menu Update ----------------
+
+void updateMenu();
+
+
+//---------------- Menu Actions ----------------
+
+void handleMainMenu();
+
+void handleGameMenu();
+
+void handleSettingsMenu();
+
+void handleAboutMenu();
+
+void handlePDFMenu();
+
+
+//---------------- Navigation ----------------
+
+void nextGame();
+
+void previousGame();
+
+void selectGame();
+
+void openPDFReader();
+
+void returnToMenu();
+
+
+
+#endif
+#include "menu.h"
+
+#include "system_globals.h"
+#include "display.h"
+#include "input.h"
+#include "hardware.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// MENU SYSTEM IMPLEMENTATION
+//==================================================
+
+
+
+void initMenu()
+{
+    currentState = STATE_MENU;
+
+    currentGameIndex = 0;
+
+    currentPDFIndex = 0;
+
+    stateChangeTime = millis();
+}
+
+
+
+//---------------- Main Update ----------------
+
+void updateMenu()
+{
+    char key =
+        getKey();
+
+
+    if(key == '\0')
+        return;
+
+
+    stateChangeTime =
+        millis();
+
+
+
+    switch(currentState)
+    {
+
+        case STATE_MENU:
+
+            handleMainMenu();
+
+            break;
+
+
+
+        case STATE_GAME_LIST:
+
+            handleGameMenu();
+
+            break;
+
+
+
+        case STATE_SETTINGS:
+
+            handleSettingsMenu();
+
+            break;
+
+
+
+        case STATE_ABOUT:
+
+            handleAboutMenu();
+
+            break;
+
+
+
+        case STATE_PDF_LIST:
+
+            handlePDFMenu();
+
+            break;
+
+
+
+        default:
+
+            break;
+    }
+}
+
+
+
+//---------------- Main Menu ----------------
+
+void handleMainMenu()
+{
+    char key =
+        getLastKey();
+
+
+    if(key == '1')
+    {
+        currentState =
+            STATE_GAME_LIST;
+
+        showGameList();
+    }
+
+
+    else if(key == '2')
+    {
+        currentState =
+            STATE_SETTINGS;
+
+        showSettings();
+    }
+
+
+    else if(key == '3')
+    {
+        currentState =
+            STATE_ABOUT;
+
+        showAbout();
+    }
+
+
+    else if(key == '4')
+    {
+        currentState =
+            STATE_PDF_LIST;
+
+        showPDFList();
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- Game Menu ----------------
+
+void handleGameMenu()
+{
+    char key =
+        getLastKey();
+
+
+    if(key == '2')
+    {
+        nextGame();
+    }
+
+
+    else if(key == '8')
+    {
+        previousGame();
+    }
+
+
+    else if(key == '6')
+    {
+        selectGame();
+    }
+
+
+    else if(key == '*')
+    {
+        returnToMenu();
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- Settings ----------------
+
+void handleSettingsMenu()
+{
+    char key =
+        getLastKey();
+
+
+
+    if(key == '5')
+    {
+        settings.brightness =
+            BRIGHTNESS_HIGH;
+
+        setBacklight(
+            settings.brightness
+        );
+    }
+
+
+
+    else if(key == '4')
+    {
+        settings.brightness =
+            BRIGHTNESS_LOW;
+
+        setBacklight(
+            settings.brightness
+        );
+    }
+
+
+
+    else if(key == '0')
+    {
+        saveSettings();
+
+        returnToMenu();
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- About ----------------
+
+void handleAboutMenu()
+{
+    if(getLastKey() == '0')
+    {
+        returnToMenu();
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- PDF Menu ----------------
+
+void handlePDFMenu()
+{
+    char key =
+        getLastKey();
+
+
+
+    if(key == '2')
+    {
+        if(currentPDFIndex < pdfCount - 1)
+            currentPDFIndex++;
+
+
+        showPDFList();
+    }
+
+
+
+    else if(key == '8')
+    {
+        if(currentPDFIndex > 0)
+            currentPDFIndex--;
+
+
+        showPDFList();
+    }
+
+
+
+    else if(key == '6')
+    {
+        openPDFReader();
+    }
+
+
+
+    else if(key == '*')
+    {
+        returnToMenu();
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- Navigation ----------------
+
+void nextGame()
+{
+    if(currentGameIndex < gameCount - 1)
+        currentGameIndex++;
+
+
+    showGameList();
+}
+
+
+
+void previousGame()
+{
+    if(currentGameIndex > 0)
+        currentGameIndex--;
+
+
+    showGameList();
+}
+
+
+
+void selectGame()
+{
+    currentState =
+        STATE_PLAYING;
+
+
+    currentEngine =
+        (GameEngine)
+        gameFiles[currentGameIndex].type;
+}
+
+
+
+void openPDFReader()
+{
+    currentState =
+        STATE_PDF_READER;
+
+
+    showPDFReader();
+}
+
+
+
+void returnToMenu()
+{
+    currentState =
+        STATE_MENU;
+
+
+    showMainMenu();
+}
+#ifndef GAME_ENGINE_H
+#define GAME_ENGINE_H
+
+//==================================================
+// ESP32 GAME STATION
+// GAME ENGINE SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+#include "system_types.h"
+
+
+//---------------- Engine Initialization ----------------
+
+void initGameEngine();
+
+
+//---------------- Engine Control ----------------
+
+void updateGameEngine();
+
+void startGame(
+    GameType type
+);
+
+
+void stopGame();
+
+
+//---------------- Game Updates ----------------
+
+void updateMario();
+
+void updateFifa();
+
+void updateDoom();
+
+void updateExternalGame();
+
+
+//---------------- Game Rendering ----------------
+
+void drawGameHUD();
+
+
+//---------------- Game Input ----------------
+
+void handleGameInput(
+    char key
+);
+
+
+
+#endif
+#include "game_engine.h"
+
+#include "system_globals.h"
+#include "display.h"
+#include "input.h"
+#include "hardware.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// GAME ENGINE IMPLEMENTATION
+//==================================================
+
+
+struct Player
+{
+    float x;
+    float y;
+    int score;
+    int health;
+};
+
+
+static Player player;
+
+
+
+void initGameEngine()
+{
+    player.x = 160;
+    player.y = 120;
+    player.score = 0;
+    player.health = 100;
+}
+
+
+
+//---------------- Engine Update ----------------
+
+
+void updateGameEngine()
+{
+    if(currentState != STATE_PLAYING)
+        return;
+
+
+    char key =
+        getLastKey();
+
+
+    handleGameInput(
+        key
+    );
+
+
+    switch(currentEngine)
+    {
+
+        case ENGINE_MARIO:
+
+            updateMario();
+
+            break;
+
+
+        case ENGINE_FIFA:
+
+            updateFifa();
+
+            break;
+
+
+        case ENGINE_DOOM:
+
+            updateDoom();
+
+            break;
+
+
+        case ENGINE_EXTERNAL:
+
+            updateExternalGame();
+
+            break;
+
+
+        default:
+
+            break;
+    }
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- Start Game ----------------
+
+
+void startGame(
+    GameType type
+)
+{
+    currentState =
+        STATE_PLAYING;
+
+
+    player.x = 160;
+    player.y = 120;
+
+    player.score = 0;
+
+    player.health = 100;
+
+
+    switch(type)
+    {
+        case GAME_MARIO:
+
+            currentEngine =
+                ENGINE_MARIO;
+
+            break;
+
+
+        case GAME_FIFA:
+
+            currentEngine =
+                ENGINE_FIFA;
+
+            break;
+
+
+        case GAME_DOOM:
+
+            currentEngine =
+                ENGINE_DOOM;
+
+            break;
+
+
+        default:
+
+            currentEngine =
+                ENGINE_EXTERNAL;
+
+            break;
+    }
+}
+
+
+
+//---------------- Stop Game ----------------
+
+
+void stopGame()
+{
+    currentEngine =
+        ENGINE_NONE;
+
+
+    currentState =
+        STATE_GAME_LIST;
+
+
+    showGameList();
+}
+
+
+
+//---------------- Game Input ----------------
+
+
+void handleGameInput(
+    char key
+)
+{
+    if(key == '*')
+    {
+        stopGame();
+
+        return;
+    }
+
+
+    if(key == '4')
+        player.x -= 5;
+
+
+    if(key == '6')
+        player.x += 5;
+
+
+    if(key == '2')
+        player.y -= 5;
+
+
+    if(key == '8')
+        player.y += 5;
+
+
+
+    player.x =
+        constrain(
+            player.x,
+            0,
+            SCREEN_WIDTH - 10
+        );
+
+
+    player.y =
+        constrain(
+            player.y,
+            0,
+            SCREEN_HEIGHT - 20
+        );
+}
+
+
+
+//---------------- Mario ----------------
+
+
+void updateMario()
+{
+    clearScreen();
+
+
+    sprite.fillRect(
+        player.x,
+        player.y,
+        16,
+        16,
+        TFT_YELLOW
+    );
+
+
+    drawGameHUD();
+
+
+    updateScreen();
+}
+
+
+
+//---------------- FIFA ----------------
+
+
+void updateFifa()
+{
+    clearScreen();
+
+
+    sprite.drawCircle(
+        SCREEN_WIDTH / 2,
+        SCREEN_HEIGHT / 2,
+        40,
+        TFT_WHITE
+    );
+
+
+    sprite.fillCircle(
+        player.x,
+        player.y,
+        8,
+        TFT_GREEN
+    );
+
+
+    drawGameHUD();
+
+
+    updateScreen();
+}
+
+
+
+//---------------- DOOM ----------------
+
+
+void updateDoom()
+{
+    clearScreen();
+
+
+    sprite.fillCircle(
+        player.x,
+        player.y,
+        8,
+        TFT_RED
+    );
+
+
+    sprite.drawLine(
+        SCREEN_WIDTH / 2,
+        SCREEN_HEIGHT / 2,
+        player.x,
+        player.y,
+        TFT_WHITE
+    );
+
+
+    drawGameHUD();
+
+
+    updateScreen();
+}
+
+
+
+//---------------- External Game ----------------
+
+
+void updateExternalGame()
+{
+    clearScreen();
+
+
+    drawText(
+        "EXTERNAL GAME",
+        60,
+        100,
+        TFT_CYAN,
+        2
+    );
+
+
+    drawGameHUD();
+
+
+    updateScreen();
+}
+
+
+
+//---------------- HUD ----------------
+
+
+void drawGameHUD()
+{
+    char buffer[32];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "SCORE:%d",
+        player.score
+    );
+
+
+    drawText(
+        buffer,
+        5,
+        5,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "HP:%d",
+        player.health
+    );
+
+
+    drawText(
+        buffer,
+        250,
+        5,
+        TFT_WHITE,
+        1
+    );
+}
+#ifndef PDF_READER_H
+#define PDF_READER_H
+
+//==================================================
+// ESP32 GAME STATION
+// PDF READER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+#include "system_types.h"
+
+
+//---------------- PDF Initialization ----------------
+
+void initPDFReader();
+
+
+//---------------- PDF Control ----------------
+
+void openPDF(
+    uint16_t index
+);
+
+
+void closePDF();
+
+
+void updatePDFReader();
+
+
+//---------------- Navigation ----------------
+
+void nextPDFPage();
+
+void previousPDFPage();
+
+
+//---------------- Rendering ----------------
+
+void renderPDFPage();
+
+
+//---------------- File Operations ----------------
+
+bool loadPDFFile(
+    const char* path
+);
+
+
+uint16_t getCurrentPage();
+
+uint16_t getTotalPages();
+
+
+
+#endif
+#ifndef PDF_READER_H
+#define PDF_READER_H
+
+//==================================================
+// ESP32 GAME STATION
+// PDF READER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+#include "system_types.h"
+
+
+//---------------- PDF Initialization ----------------
+
+void initPDFReader();
+
+
+//---------------- PDF Control ----------------
+
+void openPDF(
+    uint16_t index
+);
+
+
+void closePDF();
+
+
+void updatePDFReader();
+
+
+//---------------- Navigation ----------------
+
+void nextPDFPage();
+
+void previousPDFPage();
+
+
+//---------------- Rendering ----------------
+
+void renderPDFPage();
+
+
+//---------------- File Operations ----------------
+
+bool loadPDFFile(
+    const char* path
+);
+
+
+uint16_t getCurrentPage();
+
+uint16_t getTotalPages();
+
+
+
+#endif
+#include <Arduino.h>
+
+#include "config.h"
+#include "system_globals.h"
+#include "hardware.h"
+#include "storage.h"
+#include "display.h"
+#include "input.h"
+#include "menu.h"
+#include "game_engine.h"
+#include "pdf_reader.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// SYSTEM CORE IMPLEMENTATION
+//==================================================
+
+
+
+//---------------- Global Objects ----------------
+
+TFT_eSPI tft = TFT_eSPI();
+
+TFT_eSprite sprite =
+    TFT_eSprite(&tft);
+
+
+
+SystemState currentState =
+    STATE_BOOT;
+
+
+GameEngine currentEngine =
+    ENGINE_NONE;
+
+
+
+GameFile gameFiles[MAX_GAME_FILES];
+
+uint16_t gameCount = 0;
+
+uint16_t currentGameIndex = 0;
+
+
+
+PDFFile pdfFiles[MAX_GAME_FILES];
+
+uint16_t pdfCount = 0;
+
+uint16_t currentPDFIndex = 0;
+
+
+
+BatteryInfo battery =
+{
+    0.0f,
+    0
+};
+
+
+
+FrameStats frameStats =
+{
+    0,
+    0,
+    0.0f
+};
+
+
+
+SystemSettings settings =
+{
+    BRIGHTNESS_DEFAULT,
+    100,
+    true
+};
+
+
+
+unsigned long lastFrameTime = 0;
+
+unsigned long lastBatteryUpdate = 0;
+
+unsigned long lastKeyTime = 0;
+
+unsigned long stateChangeTime = 0;
+
+
+
+//---------------- Setup ----------------
+
+void setup()
+{
+    Serial.begin(115200);
+
+
+    delay(500);
+
+
+    Serial.println();
+
+    Serial.println(
+        SYSTEM_NAME
+    );
+
+    Serial.println(
+        SYSTEM_VERSION
+    );
+
+
+
+    initHardware();
+
+
+    loadSettings();
+
+
+    initDisplaySystem();
+
+
+    initInput();
+
+
+    initMenu();
+
+
+    initGameEngine();
+
+
+    initPDFReader();
+
+
+
+    scanGames();
+
+
+    scanPDFs();
+
+
+
+    showBootScreen();
+
+
+    delay(1500);
+
+
+
+    currentState =
+        STATE_MENU;
+
+
+    showMainMenu();
+
+
+    beep(
+        DEFAULT_BEEP_FREQ,
+        DEFAULT_BEEP_TIME
+    );
+}
+
+
+
+//---------------- Loop ----------------
+
+void loop()
+{
+
+    unsigned long now =
+        millis();
+
+
+
+    if(now - lastFrameTime >= FRAME_TIME)
+    {
+        lastFrameTime = now;
+
+
+
+        frameStats.frameCount++;
+
+
+
+        if(now - frameStats.lastUpdate >= 1000)
+        {
+            frameStats.fps =
+                frameStats.frameCount;
+
+
+            frameStats.frameCount = 0;
+
+
+            frameStats.lastUpdate = now;
+        }
+
+
+
+        if(now - lastBatteryUpdate >= BATTERY_UPDATE_TIME)
+        {
+            updateBattery();
+
+            lastBatteryUpdate = now;
+        }
+
+
+
+        updateInput();
+
+
+
+        switch(currentState)
+        {
+
+            case STATE_MENU:
+
+            case STATE_GAME_LIST:
+
+            case STATE_SETTINGS:
+
+            case STATE_ABOUT:
+
+            case STATE_PDF_LIST:
+
+                updateMenu();
+
+                break;
+
+
+
+            case STATE_PLAYING:
+
+                updateGameEngine();
+
+                break;
+
+
+
+            case STATE_PDF_READER:
+
+                updatePDFReader();
+
+                break;
+
+
+
+            default:
+
+                break;
+        }
+    }
+
+
+    delayMicroseconds(100);
+}
+//==================================================
+// ESP32 GAME STATION
+// MAIN PROGRAM FILE
+// SYSTEM VERSION 11.0
+//==================================================
+
+
+//---------------- Core ----------------
+
+#include "config.h"
+
+#include "pins.h"
+
+#include "system_types.h"
+
+#include "system_globals.h"
+
+
+
+//---------------- Modules ----------------
+
+#include "hardware.h"
+
+#include "storage.h"
+
+#include "display.h"
+
+#include "input.h"
+
+#include "menu.h"
+
+#include "game_engine.h"
+
+#include "pdf_reader.h"
+
+
+
+//==================================================
+// Arduino Entry Points
+//==================================================
+
+
+void setup()
+{
+    initHardware();
+
+
+    loadSettings();
+
+
+    initDisplaySystem();
+
+
+    initInput();
+
+
+    initMenu();
+
+
+    initGameEngine();
+
+
+    initPDFReader();
+
+
+
+    scanGames();
+
+    scanPDFs();
+
+
+
+    showBootScreen();
+
+
+    delay(1500);
+
+
+
+    currentState =
+        STATE_MENU;
+
+
+    showMainMenu();
+
+
+    beep(
+        DEFAULT_BEEP_FREQ,
+        DEFAULT_BEEP_TIME
+    );
+}
+
+
+
+void loop()
+{
+    unsigned long currentTime =
+        millis();
+
+
+
+    if(currentTime - lastFrameTime >= FRAME_TIME)
+    {
+        lastFrameTime =
+            currentTime;
+
+
+
+        frameStats.frameCount++;
+
+
+
+        if(currentTime - frameStats.lastUpdate >= 1000)
+        {
+            frameStats.fps =
+                frameStats.frameCount;
+
+
+            frameStats.frameCount = 0;
+
+
+            frameStats.lastUpdate =
+                currentTime;
+        }
+
+
+
+        if(currentTime - lastBatteryUpdate >= BATTERY_UPDATE_TIME)
+        {
+            updateBattery();
+
+
+            lastBatteryUpdate =
+                currentTime;
+        }
+
+
+
+        updateInput();
+
+
+
+        switch(currentState)
+        {
+
+            case STATE_MENU:
+
+            case STATE_GAME_LIST:
+
+            case STATE_SETTINGS:
+
+            case STATE_ABOUT:
+
+            case STATE_PDF_LIST:
+
+                updateMenu();
+
+                break;
+
+
+
+            case STATE_PLAYING:
+
+                updateGameEngine();
+
+                break;
+
+
+
+            case STATE_PDF_READER:
+
+                updatePDFReader();
+
+                break;
+
+
+
+            default:
+
+                break;
+        }
+    }
+
+
+    delayMicroseconds(100);
+}
+#ifndef PDF_ENGINE_H
+#define PDF_ENGINE_H
+
+//==================================================
+// ESP32 GAME STATION
+// PDF ENGINE CORE
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initPDFEngine();
+
+
+//---------------- File Control ----------------
+
+bool openPDFFile(
+    const char* path
+);
+
+
+void closePDFFile();
+
+
+//---------------- Page Control ----------------
+
+bool loadPDFPage(
+    uint16_t page
+);
+
+
+uint16_t getPDFPageCount();
+
+uint16_t getCurrentPDFPage();
+
+
+//---------------- Rendering ----------------
+
+void renderPDF();
+
+
+//---------------- Update ----------------
+
+void updatePDFEngine();
+
+
+
+#endif
+#include "pdf_engine.h"
+
+#include <SD.h>
+
+#include "system_globals.h"
+#include "display.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// PDF ENGINE CORE IMPLEMENTATION
+//==================================================
+
+
+static File pdfFile;
+
+static bool pdfActive = false;
+
+static uint16_t currentPage = 0;
+
+static uint16_t pageCount = 0;
+
+static String loadedFile;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initPDFEngine()
+{
+    pdfActive = false;
+
+    currentPage = 0;
+
+    pageCount = 0;
+
+    loadedFile = "";
+}
+
+
+
+//---------------- Open PDF ----------------
+
+
+bool openPDFFile(
+    const char* path
+)
+{
+    if(pdfFile)
+    {
+        pdfFile.close();
+    }
+
+
+
+    pdfFile =
+        SD.open(path);
+
+
+
+    if(!pdfFile)
+    {
+        return false;
+    }
+
+
+
+    loadedFile =
+        String(path);
+
+
+
+    pdfActive = true;
+
+
+
+    /*
+       İlk sürümde PDF analiz motoru
+       için temel yapı hazırlanıyor.
+
+       Sayfa sayısı ilerleyen modülde
+       gerçek PDF katalog taraması ile
+       hesaplanacak.
+    */
+
+
+    pageCount = 1;
+
+    currentPage = 1;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Close PDF ----------------
+
+
+void closePDFFile()
+{
+    if(pdfFile)
+    {
+        pdfFile.close();
+    }
+
+
+
+    pdfActive = false;
+
+
+    currentPage = 0;
+
+
+    pageCount = 0;
+
+
+    loadedFile = "";
+}
+
+
+
+//---------------- Page Load ----------------
+
+
+bool loadPDFPage(
+    uint16_t page
+)
+{
+    if(!pdfActive)
+        return false;
+
+
+
+    if(page == 0 || page > pageCount)
+        return false;
+
+
+
+    currentPage = page;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Information ----------------
+
+
+uint16_t getPDFPageCount()
+{
+    return pageCount;
+}
+
+
+
+uint16_t getCurrentPDFPage()
+{
+    return currentPage;
+}
+
+
+
+//---------------- Rendering ----------------
+
+
+void renderPDF()
+{
+    if(!pdfActive)
+        return;
+
+
+
+    clearScreen();
+
+
+
+    drawText(
+        "PDF VIEWER",
+        80,
+        20,
+        TFT_CYAN,
+        2
+    );
+
+
+
+    char buffer[50];
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "PAGE %d/%d",
+        currentPage,
+        pageCount
+    );
+
+
+
+    drawText(
+        buffer,
+        100,
+        70,
+        TFT_YELLOW,
+        2
+    );
+
+
+
+    drawText(
+        loadedFile.c_str(),
+        10,
+        140,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    updateScreen();
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updatePDFEngine()
+{
+    if(!pdfActive)
+        return;
+
+
+
+    renderPDF();
+}
+#ifndef FILE_MANAGER_H
+#define FILE_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// FILE MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initFileManager();
+
+
+//---------------- Scan System ----------------
+
+void scanGameDirectory();
+
+void scanPDFDirectory();
+
+void scanAllFiles();
+
+
+//---------------- Game Files ----------------
+
+uint16_t getGameFileCount();
+
+const char* getGameFileName(
+    uint16_t index
+);
+
+
+const char* getGameFilePath(
+    uint16_t index
+);
+
+
+
+//---------------- PDF Files ----------------
+
+uint16_t getPDFFileCount();
+
+
+const char* getPDFFileName(
+    uint16_t index
+);
+
+
+const char* getPDFFilePath(
+    uint16_t index
+);
+
+
+
+//---------------- File Operations ----------------
+
+bool fileExists(
+    const char* path
+);
+
+
+bool deleteFile(
+    const char* path
+);
+
+
+
+#endif
+#include "file_manager.h"
+
+#include <SD.h>
+#include <cstring>
+
+#include "config.h"
+#include "system_globals.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// FILE MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static GameFile internalGames[MAX_GAME_FILES];
+
+static PDFFile internalPDFs[MAX_GAME_FILES];
+
+
+static uint16_t internalGameCount = 0;
+
+static uint16_t internalPDFCount = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initFileManager()
+{
+    internalGameCount = 0;
+
+    internalPDFCount = 0;
+}
+
+
+
+//---------------- Game Scan ----------------
+
+
+void scanGameDirectory()
+{
+    internalGameCount = 0;
+
+
+
+    File dir =
+        SD.open(GAMES_FOLDER);
+
+
+
+    if(!dir)
+        return;
+
+
+
+    File file =
+        dir.openNextFile();
+
+
+
+    while(file && internalGameCount < MAX_GAME_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+
+            String name =
+                String(file.name());
+
+
+            if(name.endsWith(".bin") ||
+               name.endsWith(".game"))
+            {
+
+                strncpy(
+                    internalGames[internalGameCount].name,
+                    name.c_str(),
+                    MAX_FILENAME_LENGTH - 1
+                );
+
+
+                strncpy(
+                    internalGames[internalGameCount].path,
+                    file.name(),
+                    MAX_PATH_LENGTH - 1
+                );
+
+
+                internalGames[internalGameCount].type =
+                    GAME_EXTERNAL;
+
+
+                internalGameCount++;
+            }
+        }
+
+
+        file =
+            dir.openNextFile();
+    }
+
+
+
+    dir.close();
+}
+
+
+
+//---------------- PDF Scan ----------------
+
+
+void scanPDFDirectory()
+{
+    internalPDFCount = 0;
+
+
+
+    File dir =
+        SD.open(PDF_FOLDER);
+
+
+
+    if(!dir)
+        return;
+
+
+
+    File file =
+        dir.openNextFile();
+
+
+
+    while(file && internalPDFCount < MAX_GAME_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+
+            String name =
+                String(file.name());
+
+
+            if(name.endsWith(".pdf") ||
+               name.endsWith(".PDF"))
+            {
+
+                strncpy(
+                    internalPDFs[internalPDFCount].name,
+                    name.c_str(),
+                    MAX_FILENAME_LENGTH - 1
+                );
+
+
+                strncpy(
+                    internalPDFs[internalPDFCount].path,
+                    file.name(),
+                    MAX_PATH_LENGTH - 1
+                );
+
+
+                internalPDFCount++;
+            }
+        }
+
+
+        file =
+            dir.openNextFile();
+    }
+
+
+
+    dir.close();
+}
+
+
+
+//---------------- Full Scan ----------------
+
+
+void scanAllFiles()
+{
+    scanGameDirectory();
+
+    scanPDFDirectory();
+}
+
+
+
+//---------------- Game Access ----------------
+
+
+uint16_t getGameFileCount()
+{
+    return internalGameCount;
+}
+
+
+
+const char* getGameFileName(
+    uint16_t index
+)
+{
+    if(index >= internalGameCount)
+        return "";
+
+
+    return internalGames[index].name;
+}
+
+
+
+const char* getGameFilePath(
+    uint16_t index
+)
+{
+    if(index >= internalGameCount)
+        return "";
+
+
+    return internalGames[index].path;
+}
+
+
+
+//---------------- PDF Access ----------------
+
+
+uint16_t getPDFFileCount()
+{
+    return internalPDFCount;
+}
+
+
+
+const char* getPDFFileName(
+    uint16_t index
+)
+{
+    if(index >= internalPDFCount)
+        return "";
+
+
+    return internalPDFs[index].name;
+}
+
+
+
+const char* getPDFFilePath(
+    uint16_t index
+)
+{
+    if(index >= internalPDFCount)
+        return "";
+
+
+    return internalPDFs[index].path;
+}
+
+
+
+//---------------- File Operations ----------------
+
+
+bool fileExists(
+    const char* path
+)
+{
+    return SD.exists(path);
+}
+
+
+
+bool deleteFile(
+    const char* path
+)
+{
+    if(!SD.exists(path))
+        return false;
+
+
+    return SD.remove(path);
+}
+#ifndef FILE_BROWSER_H
+#define FILE_BROWSER_H
+
+//==================================================
+// ESP32 GAME STATION
+// FILE BROWSER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initFileBrowser();
+
+
+//---------------- Browser Control ----------------
+
+void openGameBrowser();
+
+void openPDFBrowser();
+
+void closeBrowser();
+
+
+//---------------- Update ----------------
+
+void updateFileBrowser();
+
+
+//---------------- Navigation ----------------
+
+void browserNext();
+
+void browserPrevious();
+
+void browserSelect();
+
+
+//---------------- Rendering ----------------
+
+void renderGameBrowser();
+
+void renderPDFBrowser();
+
+
+//---------------- State ----------------
+
+uint16_t getBrowserIndex();
+
+uint8_t getBrowserMode();
+
+
+
+#endif
+#include "file_browser.h"
+
+#include "file_manager.h"
+#include "system_globals.h"
+#include "display.h"
+#include "input.h"
+#include "game_engine.h"
+#include "pdf_reader.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// FILE BROWSER IMPLEMENTATION
+//==================================================
+
+
+#define BROWSER_GAME_MODE 0
+#define BROWSER_PDF_MODE  1
+
+
+static uint8_t browserMode = BROWSER_GAME_MODE;
+
+static uint16_t browserIndex = 0;
+
+static uint16_t browserCount = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initFileBrowser()
+{
+    browserMode = BROWSER_GAME_MODE;
+
+    browserIndex = 0;
+
+    browserCount = 0;
+}
+
+
+
+//---------------- Open ----------------
+
+
+void openGameBrowser()
+{
+    browserMode = BROWSER_GAME_MODE;
+
+    browserIndex = 0;
+
+    browserCount =
+        getGameFileCount();
+
+
+    currentState =
+        STATE_GAME_LIST;
+
+
+    renderGameBrowser();
+}
+
+
+
+void openPDFBrowser()
+{
+    browserMode = BROWSER_PDF_MODE;
+
+    browserIndex = 0;
+
+    browserCount =
+        getPDFFileCount();
+
+
+    currentState =
+        STATE_PDF_LIST;
+
+
+    renderPDFBrowser();
+}
+
+
+
+//---------------- Close ----------------
+
+
+void closeBrowser()
+{
+    currentState =
+        STATE_MENU;
+
+
+    showMainMenu();
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updateFileBrowser()
+{
+    char key =
+        getLastKey();
+
+
+
+    if(key == '2')
+    {
+        browserNext();
+    }
+
+
+
+    else if(key == '8')
+    {
+        browserPrevious();
+    }
+
+
+
+    else if(key == '6')
+    {
+        browserSelect();
+    }
+
+
+
+    else if(key == '*')
+    {
+        closeBrowser();
+    }
+
+
+
+    clearLastKey();
+}
+
+
+
+//---------------- Navigation ----------------
+
+
+void browserNext()
+{
+    if(browserCount == 0)
+        return;
+
+
+    browserIndex++;
+
+
+    if(browserIndex >= browserCount)
+        browserIndex = 0;
+
+
+
+    if(browserMode == BROWSER_GAME_MODE)
+        renderGameBrowser();
+
+    else
+        renderPDFBrowser();
+}
+
+
+
+void browserPrevious()
+{
+    if(browserCount == 0)
+        return;
+
+
+    if(browserIndex == 0)
+        browserIndex = browserCount - 1;
+
+    else
+        browserIndex--;
+
+
+
+    if(browserMode == BROWSER_GAME_MODE)
+        renderGameBrowser();
+
+    else
+        renderPDFBrowser();
+}
+
+
+
+//---------------- Select ----------------
+
+
+void browserSelect()
+{
+    if(browserMode == BROWSER_GAME_MODE)
+    {
+        startGame(
+            GAME_EXTERNAL
+        );
+    }
+    else
+    {
+        openPDF(
+            browserIndex
+        );
+    }
+}
+
+
+
+//---------------- Render Game ----------------
+
+
+void renderGameBrowser()
+{
+    clearScreen();
+
+
+
+    drawText(
+        "GAMES",
+        110,
+        15,
+        TFT_CYAN,
+        2
+    );
+
+
+
+    if(browserCount == 0)
+    {
+        drawText(
+            "NO GAME",
+            100,
+            100,
+            TFT_RED,
+            2
+        );
+
+        updateScreen();
+
+        return;
+    }
+
+
+
+    drawText(
+        getGameFileName(browserIndex),
+        20,
+        90,
+        TFT_YELLOW,
+        1
+    );
+
+
+
+    char info[40];
+
+
+    snprintf(
+        info,
+        sizeof(info),
+        "%d/%d",
+        browserIndex + 1,
+        browserCount
+    );
+
+
+    drawText(
+        info,
+        140,
+        150,
+        TFT_WHITE,
+        1
+    );
+
+
+    updateScreen();
+}
+
+
+
+//---------------- Render PDF ----------------
+
+
+void renderPDFBrowser()
+{
+    clearScreen();
+
+
+
+    drawText(
+        "PDF FILES",
+        90,
+        15,
+        TFT_GREEN,
+        2
+    );
+
+
+
+    if(browserCount == 0)
+    {
+        drawText(
+            "NO PDF",
+            100,
+            100,
+            TFT_RED,
+            2
+        );
+
+        updateScreen();
+
+        return;
+    }
+
+
+
+    drawText(
+        getPDFFileName(browserIndex),
+        10,
+        90,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    updateScreen();
+}
+
+
+
+//---------------- Getters ----------------
+
+
+uint16_t getBrowserIndex()
+{
+    return browserIndex;
+}
+
+
+
+uint8_t getBrowserMode()
+{
+    return browserMode;
+}
+#ifndef SETTINGS_H
+#define SETTINGS_H
+
+//==================================================
+// ESP32 GAME STATION
+// SETTINGS SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initSettings();
+
+
+//---------------- Load / Save ----------------
+
+void loadSettings();
+
+void saveSettings();
+
+
+//---------------- Brightness ----------------
+
+void increaseBrightness();
+
+void decreaseBrightness();
+
+void setBrightness(
+    uint8_t value
+);
+
+
+//---------------- Volume ----------------
+
+void increaseVolume();
+
+void decreaseVolume();
+
+void setVolume(
+    uint8_t value
+);
+
+
+//---------------- System Options ----------------
+
+void resetSettings();
+
+void applySettings();
+
+
+//---------------- Rendering ----------------
+
+void showSettingsScreen();
+
+void updateSettingsScreen();
+
+
+
+#endif
+#include "settings.h"
+
+#include <EEPROM.h>
+
+#include "config.h"
+#include "system_globals.h"
+#include "hardware.h"
+#include "display.h"
+#include "input.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// SETTINGS IMPLEMENTATION
+//==================================================
+
+
+
+static uint8_t brightness = BRIGHTNESS_DEFAULT;
+
+static uint8_t volume = 100;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initSettings()
+{
+    loadSettings();
+
+    applySettings();
+}
+
+
+
+//---------------- Load ----------------
+
+
+void loadSettings()
+{
+    EEPROM.get(
+        0,
+        brightness
+    );
+
+
+    EEPROM.get(
+        1,
+        volume
+    );
+
+
+
+    if(brightness == 0 ||
+       brightness > 255)
+    {
+        brightness =
+            BRIGHTNESS_DEFAULT;
+    }
+
+
+
+    if(volume > 100)
+    {
+        volume = 100;
+    }
+}
+
+
+
+//---------------- Save ----------------
+
+
+void saveSettings()
+{
+    EEPROM.put(
+        0,
+        brightness
+    );
+
+
+    EEPROM.put(
+        1,
+        volume
+    );
+
+
+    EEPROM.commit();
+}
+
+
+
+//---------------- Brightness ----------------
+
+
+void increaseBrightness()
+{
+    if(brightness < BRIGHTNESS_HIGH)
+    {
+        brightness += 10;
+    }
+
+
+    applySettings();
+}
+
+
+
+void decreaseBrightness()
+{
+    if(brightness > BRIGHTNESS_LOW)
+    {
+        brightness -= 10;
+    }
+
+
+    applySettings();
+}
+
+
+
+void setBrightness(
+    uint8_t value
+)
+{
+    brightness =
+        constrain(
+            value,
+            BRIGHTNESS_LOW,
+            BRIGHTNESS_HIGH
+        );
+
+
+    applySettings();
+}
+
+
+
+//---------------- Volume ----------------
+
+
+void increaseVolume()
+{
+    if(volume < 100)
+        volume += 5;
+}
+
+
+
+void decreaseVolume()
+{
+    if(volume > 0)
+        volume -= 5;
+}
+
+
+
+void setVolume(
+    uint8_t value
+)
+{
+    volume =
+        constrain(
+            value,
+            0,
+            100
+        );
+}
+
+
+
+//---------------- Apply ----------------
+
+
+void applySettings()
+{
+    setBacklight(
+        brightness
+    );
+}
+
+
+
+//---------------- Reset ----------------
+
+
+void resetSettings()
+{
+    brightness =
+        BRIGHTNESS_DEFAULT;
+
+
+    volume = 100;
+
+
+    saveSettings();
+
+
+    applySettings();
+}
+
+
+
+//---------------- Screen ----------------
+
+
+void showSettingsScreen()
+{
+    clearScreen();
+
+
+
+    drawText(
+        "SETTINGS",
+        90,
+        20,
+        TFT_CYAN,
+        2
+    );
+
+
+    updateSettingsScreen();
+}
+
+
+
+void updateSettingsScreen()
+{
+    char buffer[40];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "BRIGHT:%d",
+        brightness
+    );
+
+
+    drawText(
+        buffer,
+        40,
+        80,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "VOLUME:%d",
+        volume
+    );
+
+
+    drawText(
+        buffer,
+        40,
+        110,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    updateScreen();
+}
+#ifndef SYSTEM_MONITOR_H
+#define SYSTEM_MONITOR_H
+
+//==================================================
+// ESP32 GAME STATION
+// SYSTEM MONITOR
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initSystemMonitor();
+
+
+//---------------- Update ----------------
+
+void updateSystemMonitor();
+
+
+//---------------- Battery ----------------
+
+float getBatteryVoltage();
+
+uint8_t getBatteryPercent();
+
+
+//---------------- Performance ----------------
+
+float getFPS();
+
+uint32_t getFreeMemory();
+
+
+//---------------- Temperature ----------------
+
+float getCPUTemperature();
+
+
+//---------------- Display ----------------
+
+void showSystemMonitor();
+
+void updateSystemMonitorScreen();
+
+
+
+#endif
+#include "system_monitor.h"
+
+#include "system_globals.h"
+#include "display.h"
+#include "hardware.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// SYSTEM MONITOR IMPLEMENTATION
+//==================================================
+
+
+
+static float monitorVoltage = 0.0f;
+
+static uint8_t monitorBattery = 100;
+
+static float monitorFPS = 0.0f;
+
+static uint32_t monitorMemory = 0;
+
+static float monitorTemperature = 0.0f;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initSystemMonitor()
+{
+    monitorVoltage = 0.0f;
+
+    monitorBattery = 100;
+
+    monitorFPS = 0;
+
+    monitorMemory = 0;
+
+    monitorTemperature = 0;
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updateSystemMonitor()
+{
+
+    monitorVoltage =
+        battery.voltage;
+
+
+    monitorBattery =
+        battery.percent;
+
+
+
+    monitorFPS =
+        frameStats.fps;
+
+
+
+    monitorMemory =
+        ESP.getFreeHeap();
+
+
+
+    /*
+       ESP32-S3 sıcaklık sensörü
+       bazı kartlarda desteklenmez.
+       Bu yüzden güvenli varsayılan
+       değer kullanılır.
+    */
+
+    monitorTemperature =
+        0.0f;
+}
+
+
+
+//---------------- Getters ----------------
+
+
+float getBatteryVoltage()
+{
+    return monitorVoltage;
+}
+
+
+
+uint8_t getBatteryPercent()
+{
+    return monitorBattery;
+}
+
+
+
+float getFPS()
+{
+    return monitorFPS;
+}
+
+
+
+uint32_t getFreeMemory()
+{
+    return monitorMemory;
+}
+
+
+
+float getCPUTemperature()
+{
+    return monitorTemperature;
+}
+
+
+
+//---------------- Screen ----------------
+
+
+void showSystemMonitor()
+{
+    clearScreen();
+
+
+
+    drawText(
+        "SYSTEM",
+        110,
+        15,
+        TFT_CYAN,
+        2
+    );
+
+
+
+    updateSystemMonitorScreen();
+}
+
+
+
+void updateSystemMonitorScreen()
+{
+    char buffer[50];
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "BAT:%d%%",
+        monitorBattery
+    );
+
+
+    drawText(
+        buffer,
+        20,
+        70,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "VOLT:%.2fV",
+        monitorVoltage
+    );
+
+
+    drawText(
+        buffer,
+        20,
+        95,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "FPS:%.1f",
+        monitorFPS
+    );
+
+
+    drawText(
+        buffer,
+        20,
+        120,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "RAM:%lu",
+        monitorMemory
+    );
+
+
+    drawText(
+        buffer,
+        20,
+        145,
+        TFT_WHITE,
+        1
+    );
+
+
+
+    updateScreen();
+}
+#ifndef AUDIO_MANAGER_H
+#define AUDIO_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// AUDIO MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initAudio();
+
+
+//---------------- Sound Control ----------------
+
+void playTone(
+    uint16_t frequency,
+    uint16_t duration
+);
+
+
+void stopTone();
+
+
+//---------------- Effects ----------------
+
+void playMenuSound();
+
+void playSelectSound();
+
+void playErrorSound();
+
+void playGameStartSound();
+
+void playGameOverSound();
+
+
+//---------------- Volume ----------------
+
+void setAudioVolume(
+    uint8_t volume
+);
+
+
+uint8_t getAudioVolume();
+
+
+//---------------- Update ----------------
+
+void updateAudio();
+
+
+
+#endif
+#include "audio_manager.h"
+
+#include "config.h"
+#include "hardware.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// AUDIO MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static uint8_t audioVolume = 100;
+
+static bool tonePlaying = false;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initAudio()
+{
+    audioVolume = 100;
+
+    tonePlaying = false;
+
+
+    stopTone();
+}
+
+
+
+//---------------- Tone Control ----------------
+
+
+void playTone(
+    uint16_t frequency,
+    uint16_t duration
+)
+{
+    if(audioVolume == 0)
+        return;
+
+
+
+    tonePlaying = true;
+
+
+
+    beep(
+        frequency,
+        duration
+    );
+
+
+
+    tonePlaying = false;
+}
+
+
+
+void stopTone()
+{
+    noTone(
+        BUZZER_PIN
+    );
+
+
+    tonePlaying = false;
+}
+
+
+
+//---------------- Effects ----------------
+
+
+void playMenuSound()
+{
+    playTone(
+        800,
+        50
+    );
+}
+
+
+
+void playSelectSound()
+{
+    playTone(
+        1200,
+        80
+    );
+}
+
+
+
+void playErrorSound()
+{
+    playTone(
+        300,
+        200
+    );
+}
+
+
+
+void playGameStartSound()
+{
+    playTone(
+        1000,
+        100
+    );
+
+    delay(80);
+
+    playTone(
+        1500,
+        120
+    );
+}
+
+
+
+void playGameOverSound()
+{
+    playTone(
+        500,
+        200
+    );
+
+    delay(100);
+
+    playTone(
+        250,
+        300
+    );
+}
+
+
+
+//---------------- Volume ----------------
+
+
+void setAudioVolume(
+    uint8_t volume
+)
+{
+    audioVolume =
+        constrain(
+            volume,
+            0,
+            100
+        );
+}
+
+
+
+uint8_t getAudioVolume()
+{
+    return audioVolume;
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updateAudio()
+{
+    // Gelecekte müzik ve
+    // ses kuyruğu sistemi için hazır.
+}
+
+#ifndef SAVE_SYSTEM_H
+#define SAVE_SYSTEM_H
+
+//==================================================
+// ESP32 GAME STATION
+// SAVE SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initSaveSystem();
+
+
+//---------------- Save / Load ----------------
+
+bool saveGameData(
+    uint8_t gameID
+);
+
+
+bool loadGameData(
+    uint8_t gameID
+);
+
+
+void clearSaveData();
+
+
+//---------------- Player Data ----------------
+
+void setPlayerScore(
+    uint32_t score
+);
+
+
+uint32_t getPlayerScore();
+
+
+
+void setPlayerLevel(
+    uint16_t level
+);
+
+
+uint16_t getPlayerLevel();
+
+
+//---------------- Settings Backup ----------------
+
+void backupSettings();
+
+void restoreSettings();
+
+
+
+#endif
+#include "save_system.h"
+
+#include <EEPROM.h>
+
+#include "config.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// SAVE SYSTEM IMPLEMENTATION
+//==================================================
+
+
+
+#define SAVE_START_ADDRESS 64
+
+
+
+struct SaveData
+{
+    uint32_t score;
+
+    uint16_t level;
+
+    uint8_t gameID;
+
+    uint8_t checksum;
+};
+
+
+
+static SaveData saveData;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initSaveSystem()
+{
+    EEPROM.get(
+        SAVE_START_ADDRESS,
+        saveData
+    );
+
+
+
+    if(saveData.checksum !=
+       (
+        saveData.gameID ^
+        (saveData.level & 0xFF)
+       ))
+    {
+        saveData.score = 0;
+
+        saveData.level = 1;
+
+        saveData.gameID = 0;
+
+        updateChecksum();
+    }
+}
+
+
+
+//---------------- Checksum ----------------
+
+
+static void updateChecksum()
+{
+    saveData.checksum =
+        saveData.gameID ^
+        (saveData.level & 0xFF);
+}
+
+
+
+//---------------- Save ----------------
+
+
+bool saveGameData(
+    uint8_t gameID
+)
+{
+    saveData.gameID =
+        gameID;
+
+
+    updateChecksum();
+
+
+
+    EEPROM.put(
+        SAVE_START_ADDRESS,
+        saveData
+    );
+
+
+    return EEPROM.commit();
+}
+
+
+
+//---------------- Load ----------------
+
+
+bool loadGameData(
+    uint8_t gameID
+)
+{
+    EEPROM.get(
+        SAVE_START_ADDRESS,
+        saveData
+    );
+
+
+    if(saveData.gameID != gameID)
+        return false;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Clear ----------------
+
+
+void clearSaveData()
+{
+    saveData.score = 0;
+
+    saveData.level = 1;
+
+    saveData.gameID = 0;
+
+
+    updateChecksum();
+
+
+
+    EEPROM.put(
+        SAVE_START_ADDRESS,
+        saveData
+    );
+
+
+    EEPROM.commit();
+}
+
+
+
+//---------------- Score ----------------
+
+
+void setPlayerScore(
+    uint32_t score
+)
+{
+    saveData.score =
+        score;
+}
+
+
+
+uint32_t getPlayerScore()
+{
+    return saveData.score;
+}
+
+
+
+//---------------- Level ----------------
+
+
+void setPlayerLevel(
+    uint16_t level
+)
+{
+    saveData.level =
+        level;
+}
+
+
+
+uint16_t getPlayerLevel()
+{
+    return saveData.level;
+}
+
+
+
+//---------------- Settings Backup ----------------
+
+
+void backupSettings()
+{
+    EEPROM.put(
+        128,
+        saveData
+    );
+
+    EEPROM.commit();
+}
+
+
+
+void restoreSettings()
+{
+    EEPROM.get(
+        128,
+        saveData
+    );
+}
+#ifndef UPDATE_MANAGER_H
+#define UPDATE_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// UPDATE MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initUpdateManager();
+
+
+//---------------- Update Check ----------------
+
+bool checkForUpdate();
+
+
+//---------------- Firmware ----------------
+
+bool updateFirmware(
+    const char* path
+);
+
+
+//---------------- File Update ----------------
+
+bool updateGameFile(
+    const char* path
+);
+
+
+//---------------- System ----------------
+
+void showUpdateScreen();
+
+void processUpdate();
+
+
+
+#endif
+#include "update_manager.h"
+
+#include <SD.h>
+#include <Update.h>
+
+#include "config.h"
+#include "system_globals.h"
+#include "display.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// UPDATE MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static bool updateRunning = false;
+
+static uint8_t updateProgress = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initUpdateManager()
+{
+    updateRunning = false;
+
+    updateProgress = 0;
+}
+
+
+
+//---------------- Update Check ----------------
+
+
+bool checkForUpdate()
+{
+    if(SD.exists("/UPDATE/update.bin"))
+    {
+        return true;
+    }
+
+
+    return false;
+}
+
+
+
+//---------------- Firmware Update ----------------
+
+
+bool updateFirmware(
+    const char* path
+)
+{
+
+    File updateFile =
+        SD.open(path);
+
+
+
+    if(!updateFile)
+    {
+        return false;
+    }
+
+
+
+    size_t size =
+        updateFile.size();
+
+
+
+    if(size == 0)
+    {
+        updateFile.close();
+
+        return false;
+    }
+
+
+
+    if(!Update.begin(size))
+    {
+        updateFile.close();
+
+        return false;
+    }
+
+
+
+    updateRunning = true;
+
+
+
+    uint8_t buffer[512];
+
+    size_t written = 0;
+
+
+
+    while(updateFile.available())
+    {
+
+        size_t read =
+            updateFile.read(
+                buffer,
+                sizeof(buffer)
+            );
+
+
+        if(Update.write(
+            buffer,
+            read
+        ) != read)
+        {
+            Update.abort();
+
+            updateFile.close();
+
+            updateRunning = false;
+
+            return false;
+        }
+
+
+
+        written += read;
+
+
+
+        updateProgress =
+            (written * 100) / size;
+    }
+
+
+
+    bool result =
+        Update.end(true);
+
+
+
+    updateFile.close();
+
+
+
+    updateRunning = false;
+
+
+
+    return result;
+}
+
+
+
+//---------------- Game Update ----------------
+
+
+bool updateGameFile(
+    const char* path
+)
+{
+    if(!SD.exists(path))
+        return false;
+
+
+
+    /*
+       Oyun güncelleme sistemi:
+
+       Yeni sürümde:
+       - versiyon kontrolü
+       - checksum
+       - yedekleme
+
+       eklenecek.
+    */
+
+
+    return true;
+}
+
+
+
+//---------------- Screen ----------------
+
+
+void showUpdateScreen()
+{
+    clearScreen();
+
+
+    drawText(
+        "SYSTEM UPDATE",
+        60,
+        30,
+        TFT_CYAN,
+        2
+    );
+
+
+    char buffer[30];
+
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%d%%",
+        updateProgress
+    );
+
+
+    drawText(
+        buffer,
+        140,
+        100,
+        TFT_YELLOW,
+        2
+    );
+
+
+    updateScreen();
+}
+
+
+
+//---------------- Process ----------------
+
+
+void processUpdate()
+{
+    if(checkForUpdate())
+    {
+        showUpdateScreen();
+
+
+        updateFirmware(
+            "/UPDATE/update.bin"
+        );
+    }
+}
+#ifndef THEME_MANAGER_H
+#define THEME_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// THEME MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Theme Types ----------------
+
+enum ThemeType
+{
+    THEME_DEFAULT = 0,
+    THEME_DARK,
+    THEME_GREEN,
+    THEME_BLUE,
+    THEME_CUSTOM
+};
+
+
+
+//---------------- Initialization ----------------
+
+void initThemeManager();
+
+
+//---------------- Theme Control ----------------
+
+void setTheme(
+    ThemeType theme
+);
+
+
+ThemeType getCurrentTheme();
+
+
+//---------------- Colors ----------------
+
+uint16_t getBackgroundColor();
+
+uint16_t getTextColor();
+
+uint16_t getAccentColor();
+
+
+//---------------- Save / Load ----------------
+
+void saveTheme();
+
+void loadTheme();
+
+
+//---------------- Rendering ----------------
+
+void applyTheme();
+
+#endif
+#include "theme_manager.h"
+
+#include <EEPROM.h>
+
+#include "display.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// THEME MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static ThemeType currentTheme =
+    THEME_DEFAULT;
+
+
+
+static uint16_t backgroundColor =
+    TFT_BLACK;
+
+
+static uint16_t textColor =
+    TFT_WHITE;
+
+
+static uint16_t accentColor =
+    TFT_CYAN;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initThemeManager()
+{
+    loadTheme();
+
+    applyTheme();
+}
+
+
+
+//---------------- Theme Control ----------------
+
+
+void setTheme(
+    ThemeType theme
+)
+{
+    currentTheme =
+        theme;
+
+
+    applyTheme();
+
+    saveTheme();
+}
+
+
+
+ThemeType getCurrentTheme()
+{
+    return currentTheme;
+}
+
+
+
+//---------------- Colors ----------------
+
+
+uint16_t getBackgroundColor()
+{
+    return backgroundColor;
+}
+
+
+
+uint16_t getTextColor()
+{
+    return textColor;
+}
+
+
+
+uint16_t getAccentColor()
+{
+    return accentColor;
+}
+
+
+
+//---------------- Apply Theme ----------------
+
+
+void applyTheme()
+{
+
+    switch(currentTheme)
+    {
+
+        case THEME_DARK:
+
+            backgroundColor =
+                TFT_BLACK;
+
+            textColor =
+                TFT_WHITE;
+
+            accentColor =
+                TFT_BLUE;
+
+            break;
+
+
+
+        case THEME_GREEN:
+
+            backgroundColor =
+                TFT_BLACK;
+
+            textColor =
+                TFT_WHITE;
+
+            accentColor =
+                TFT_GREEN;
+
+            break;
+
+
+
+        case THEME_BLUE:
+
+            backgroundColor =
+                TFT_NAVY;
+
+            textColor =
+                TFT_WHITE;
+
+            accentColor =
+                TFT_CYAN;
+
+            break;
+
+
+
+        case THEME_CUSTOM:
+
+            backgroundColor =
+                TFT_DARKGREY;
+
+            textColor =
+                TFT_WHITE;
+
+            accentColor =
+                TFT_YELLOW;
+
+            break;
+
+
+
+        default:
+
+            backgroundColor =
+                TFT_BLACK;
+
+            textColor =
+                TFT_WHITE;
+
+            accentColor =
+                TFT_CYAN;
+
+            break;
+    }
+}
+
+
+
+//---------------- Save ----------------
+
+
+void saveTheme()
+{
+    uint8_t value =
+        (uint8_t)currentTheme;
+
+
+    EEPROM.put(
+        20,
+        value
+    );
+
+
+    EEPROM.commit();
+}
+
+
+
+//---------------- Load ----------------
+
+
+void loadTheme()
+{
+    uint8_t value;
+
+
+    EEPROM.get(
+        20,
+        value
+    );
+
+
+
+    if(value <= THEME_CUSTOM)
+    {
+        currentTheme =
+            (ThemeType)value;
+    }
+    else
+    {
+        currentTheme =
+            THEME_DEFAULT;
+    }
+}
+#ifndef GRAPHICS_MANAGER_H
+#define GRAPHICS_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// GRAPHICS MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initGraphicsManager();
+
+
+//---------------- Sprite System ----------------
+
+bool loadSprite(
+    const char* path
+);
+
+
+void drawSprite(
+    int x,
+    int y
+);
+
+
+void clearSprites();
+
+
+//---------------- Image System ----------------
+
+bool loadImage(
+    const char* path
+);
+
+
+void drawImage(
+    int x,
+    int y
+);
+
+
+//---------------- Animation ----------------
+
+void updateAnimations();
+
+void resetAnimations();
+
+
+//---------------- Frame System ----------------
+
+void beginFrame();
+
+void endFrame();
+
+
+
+#endif
+#include "graphics_manager.h"
+
+#include <SD.h>
+
+#include "config.h"
+#include "display.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// GRAPHICS MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static bool spriteLoaded = false;
+
+static bool imageLoaded = false;
+
+
+
+static int spriteWidth = 0;
+
+static int spriteHeight = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initGraphicsManager()
+{
+    spriteLoaded = false;
+
+    imageLoaded = false;
+
+    spriteWidth = 0;
+
+    spriteHeight = 0;
+}
+
+
+
+//---------------- Sprite System ----------------
+
+
+bool loadSprite(
+    const char* path
+)
+{
+
+    if(!SD.exists(path))
+    {
+        return false;
+    }
+
+
+    /*
+        Sprite sistemi:
+
+        - SD üzerinden grafik okuma
+        - PSRAM kullanımı
+        - animasyon desteği
+
+        sonraki grafik bölümünde
+        genişletilecek.
+    */
+
+
+    spriteLoaded = true;
+
+
+    return true;
+}
+
+
+
+void drawSprite(
+    int x,
+    int y
+)
+{
+    if(!spriteLoaded)
+        return;
+
+
+
+    /*
+       Gerçek sprite çizimi
+       bitmap motoru ile
+       eklenecek.
+    */
+
+
+    drawRectangle(
+        x,
+        y,
+        16,
+        16,
+        TFT_YELLOW
+    );
+}
+
+
+
+void clearSprites()
+{
+    spriteLoaded = false;
+
+    spriteWidth = 0;
+
+    spriteHeight = 0;
+}
+
+
+
+//---------------- Image System ----------------
+
+
+bool loadImage(
+    const char* path
+)
+{
+
+    if(!SD.exists(path))
+    {
+        return false;
+    }
+
+
+    imageLoaded = true;
+
+
+    return true;
+}
+
+
+
+void drawImage(
+    int x,
+    int y
+)
+{
+
+    if(!imageLoaded)
+        return;
+
+
+
+    /*
+       BMP/JPG/PNG desteği
+       görüntü motoru bölümünde
+       eklenecek.
+    */
+
+
+    drawRectangle(
+        x,
+        y,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        TFT_BLACK
+    );
+}
+
+
+
+//---------------- Animation ----------------
+
+
+void updateAnimations()
+{
+
+}
+
+
+
+void resetAnimations()
+{
+
+}
+
+
+
+//---------------- Frame System ----------------
+
+
+void beginFrame()
+{
+    clearScreen();
+}
+
+
+
+void endFrame()
+{
+    updateScreen();
+}

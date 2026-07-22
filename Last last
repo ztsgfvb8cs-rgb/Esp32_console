@@ -6286,3 +6286,934 @@ void endFrame()
 {
     updateScreen();
 }
+#ifndef SEARCH_MANAGER_H
+#define SEARCH_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// SEARCH MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Search Types ----------------
+
+enum SearchType
+{
+    SEARCH_GAMES = 0,
+    SEARCH_PDF,
+    SEARCH_FILES
+};
+
+
+//---------------- Initialization ----------------
+
+void initSearchManager();
+
+
+//---------------- Search ----------------
+
+void startSearch(
+    SearchType type
+);
+
+
+void updateSearch();
+
+
+//---------------- Input ----------------
+
+void addSearchCharacter(
+    char key
+);
+
+
+void removeSearchCharacter();
+
+void clearSearch();
+
+
+//---------------- Results ----------------
+
+int getSearchResultCount();
+
+
+const char* getSearchResult(
+    int index
+);
+
+
+void selectSearchResult(
+    int index
+);
+
+
+//---------------- Get Current ----------------
+
+const char* getSearchText();
+
+
+SearchType getSearchType();
+
+
+
+#endif
+#include "search_manager.h"
+
+#include <SD.h>
+#include <string.h>
+
+#include "config.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// SEARCH MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+#define MAX_SEARCH_LENGTH 32
+#define MAX_RESULTS 50
+
+
+
+static char searchText[MAX_SEARCH_LENGTH];
+
+static const char* results[MAX_RESULTS];
+
+
+static int resultCount = 0;
+
+static SearchType currentType =
+    SEARCH_GAMES;
+
+
+static int selectedResult = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initSearchManager()
+{
+    clearSearch();
+
+    resultCount = 0;
+
+    selectedResult = 0;
+}
+
+
+
+//---------------- Start Search ----------------
+
+
+void startSearch(
+    SearchType type
+)
+{
+    currentType = type;
+
+    clearSearch();
+
+    resultCount = 0;
+}
+
+
+
+//---------------- Text Control ----------------
+
+
+void addSearchCharacter(
+    char key
+)
+{
+
+    int len =
+        strlen(searchText);
+
+
+
+    if(len >= MAX_SEARCH_LENGTH - 1)
+        return;
+
+
+
+    searchText[len] = key;
+
+    searchText[len + 1] = '\0';
+
+
+
+    updateSearch();
+}
+
+
+
+void removeSearchCharacter()
+{
+    int len =
+        strlen(searchText);
+
+
+
+    if(len > 0)
+    {
+        searchText[len - 1] = '\0';
+    }
+
+
+    updateSearch();
+}
+
+
+
+void clearSearch()
+{
+    memset(
+        searchText,
+        0,
+        sizeof(searchText)
+    );
+}
+
+
+
+//---------------- Search Engine ----------------
+
+
+void updateSearch()
+{
+    resultCount = 0;
+
+
+    /*
+       Arama motoru temel sürümü.
+
+       Sonraki geliştirmede:
+
+       - oyun index sistemi
+       - Türkçe karakter desteği
+       - otomatik tamamlama
+       - SD tarama hızlandırma
+
+       eklenecek.
+    */
+
+
+    if(strlen(searchText) == 0)
+        return;
+
+
+
+    if(currentType == SEARCH_GAMES)
+    {
+
+        if(strstr(
+            "MARIO",
+            searchText
+        ))
+        {
+            results[resultCount++] =
+                "MARIO PLATFORM";
+        }
+
+
+
+        if(strstr(
+            "DOOM",
+            searchText
+        ))
+        {
+            results[resultCount++] =
+                "DOOM MINI";
+        }
+
+
+
+        if(strstr(
+            "FIFA",
+            searchText
+        ))
+        {
+            results[resultCount++] =
+                "FIFA SOCCER";
+        }
+
+    }
+
+
+
+    else if(currentType == SEARCH_PDF)
+    {
+
+        if(SD.exists("/PDF"))
+        {
+            results[resultCount++] =
+                "PDF DOSYALARI";
+        }
+
+    }
+}
+
+
+
+//---------------- Results ----------------
+
+
+int getSearchResultCount()
+{
+    return resultCount;
+}
+
+
+
+const char* getSearchResult(
+    int index
+)
+{
+    if(index < 0 ||
+       index >= resultCount)
+    {
+        return "";
+    }
+
+
+    return results[index];
+}
+
+
+
+void selectSearchResult(
+    int index
+)
+{
+    if(index >= 0 &&
+       index < resultCount)
+    {
+        selectedResult = index;
+    }
+}
+
+
+
+//---------------- Get Current ----------------
+
+
+const char* getSearchText()
+{
+    return searchText;
+}
+
+
+
+SearchType getSearchType()
+{
+    return currentType;
+}
+#ifndef DIAL_KEYBOARD_H
+#define DIAL_KEYBOARD_H
+
+//==================================================
+// ESP32 GAME STATION
+// DIAL KEYBOARD SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Initialization ----------------
+
+void initDialKeyboard();
+
+
+//---------------- Scan ----------------
+
+char scanDialKey();
+
+
+//---------------- Character Input ----------------
+
+char convertKeyToCharacter(
+    char key,
+    uint8_t pressCount
+);
+
+
+//---------------- Text Mode ----------------
+
+void startTextInput();
+
+void stopTextInput();
+
+
+const char* getInputText();
+
+void clearInputText();
+
+
+//---------------- Update ----------------
+
+void updateDialKeyboard();
+
+
+
+#endif
+#include "dial_keyboard.h"
+
+#include <string.h>
+
+
+//==================================================
+// ESP32 GAME STATION
+// DIAL KEYBOARD IMPLEMENTATION
+//==================================================
+
+
+#define INPUT_LENGTH 32
+
+
+static char inputText[INPUT_LENGTH];
+
+
+static bool textMode = false;
+
+
+
+// Telefon klavyesi harf eşlemesi
+
+const char keyMap[10][5] =
+{
+    {'0',' ',' ',' ',' '},
+
+    {'1','.','-','_',' '},
+
+    {'2','A','B','C',' '},
+
+    {'3','D','E','F',' '},
+
+    {'4','G','H','I',' '},
+
+    {'5','J','K','L',' '},
+
+    {'6','M','N','O',' '},
+
+    {'7','P','Q','R','S'},
+
+    {'8','T','U','V',' '},
+
+    {'9','W','X','Y','Z'}
+};
+
+
+
+static uint8_t pressCounter = 0;
+
+static char lastKey = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initDialKeyboard()
+{
+    clearInputText();
+
+    textMode = false;
+
+    pressCounter = 0;
+
+    lastKey = 0;
+}
+
+
+
+//---------------- Scan ----------------
+
+
+char scanDialKey()
+{
+    /*
+       Telefon klavyesi tarama sistemi
+       
+       Mevcut keypad sürücüsüne
+       bağlanacak.
+    */
+
+
+    return '\0';
+}
+
+
+
+//---------------- Character Convert ----------------
+
+
+char convertKeyToCharacter(
+    char key,
+    uint8_t pressCount
+)
+{
+
+    if(key < '0' ||
+       key > '9')
+        return '\0';
+
+
+
+    uint8_t index =
+        key - '0';
+
+
+
+    if(pressCount > 3)
+        pressCount = 0;
+
+
+
+    char c =
+        keyMap[index][pressCount];
+
+
+
+    return c;
+}
+
+
+
+//---------------- Text Mode ----------------
+
+
+void startTextInput()
+{
+    textMode = true;
+
+    clearInputText();
+}
+
+
+
+void stopTextInput()
+{
+    textMode = false;
+}
+
+
+
+const char* getInputText()
+{
+    return inputText;
+}
+
+
+
+void clearInputText()
+{
+    memset(
+        inputText,
+        0,
+        sizeof(inputText)
+    );
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updateDialKeyboard()
+{
+    if(!textMode)
+        return;
+
+
+
+    /*
+       Çoklu basış mantığı:
+
+       2 -> A
+       22 -> B
+       222 -> C
+
+       arama lobisi için kullanılacak.
+    */
+}
+#ifndef FILE_INDEX_H
+#define FILE_INDEX_H
+
+//==================================================
+// ESP32 GAME STATION
+// FILE INDEX SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- File Types ----------------
+
+enum FileType
+{
+    FILE_GAME = 0,
+    FILE_PDF,
+    FILE_IMAGE,
+    FILE_AUDIO,
+    FILE_UNKNOWN
+};
+
+
+
+//---------------- File Data ----------------
+
+struct FileEntry
+{
+    char name[32];
+
+    char path[96];
+
+    FileType type;
+
+    uint32_t size;
+};
+
+
+
+//---------------- Initialization ----------------
+
+void initFileIndex();
+
+
+//---------------- Scan ----------------
+
+void scanAllFiles();
+
+void scanGames();
+
+void scanPDFs();
+
+void scanMedia();
+
+
+//---------------- Access ----------------
+
+int getFileCount();
+
+
+FileEntry* getFile(
+    int index
+);
+
+
+//---------------- Search ----------------
+
+int searchFiles(
+    const char* text
+);
+
+
+//---------------- Management ----------------
+
+void clearFileIndex();
+
+
+
+#endif
+#include "file_index.h"
+
+#include <SD.h>
+#include <string.h>
+
+#include "config.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// FILE INDEX IMPLEMENTATION
+//==================================================
+
+
+
+#define MAX_INDEX_FILES 100
+
+
+
+static FileEntry fileList[MAX_INDEX_FILES];
+
+
+static int fileCount = 0;
+
+
+
+//---------------- Initialization ----------------
+
+
+void initFileIndex()
+{
+    clearFileIndex();
+}
+
+
+
+//---------------- Clear ----------------
+
+
+void clearFileIndex()
+{
+    fileCount = 0;
+
+
+    memset(
+        fileList,
+        0,
+        sizeof(fileList)
+    );
+}
+
+
+
+//---------------- Add File ----------------
+
+
+static void addFile(
+    const char* name,
+    const char* path,
+    FileType type,
+    uint32_t size
+)
+{
+
+    if(fileCount >= MAX_INDEX_FILES)
+        return;
+
+
+
+    strncpy(
+        fileList[fileCount].name,
+        name,
+        sizeof(fileList[fileCount].name)-1
+    );
+
+
+    strncpy(
+        fileList[fileCount].path,
+        path,
+        sizeof(fileList[fileCount].path)-1
+    );
+
+
+    fileList[fileCount].type =
+        type;
+
+
+    fileList[fileCount].size =
+        size;
+
+
+
+    fileCount++;
+}
+
+
+
+//---------------- Scan System ----------------
+
+
+void scanAllFiles()
+{
+    clearFileIndex();
+
+
+    scanGames();
+
+    scanPDFs();
+
+    scanMedia();
+}
+
+
+
+//---------------- Games ----------------
+
+
+void scanGames()
+{
+
+    File dir =
+        SD.open(
+            GAMES_FOLDER
+        );
+
+
+    if(!dir)
+        return;
+
+
+
+    File file =
+        dir.openNextFile();
+
+
+
+    while(file &&
+          fileCount < MAX_INDEX_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+
+            addFile(
+                file.name(),
+                file.name(),
+                FILE_GAME,
+                file.size()
+            );
+
+        }
+
+
+        file =
+            dir.openNextFile();
+    }
+
+
+    dir.close();
+}
+
+
+
+//---------------- PDF ----------------
+
+
+void scanPDFs()
+{
+
+    File dir =
+        SD.open(
+            PDF_FOLDER
+        );
+
+
+    if(!dir)
+        return;
+
+
+
+    File file =
+        dir.openNextFile();
+
+
+
+    while(file &&
+          fileCount < MAX_INDEX_FILES)
+    {
+
+        if(!file.isDirectory())
+        {
+
+            String name =
+                file.name();
+
+
+
+            if(name.endsWith(".pdf") ||
+               name.endsWith(".PDF"))
+            {
+
+                addFile(
+                    file.name(),
+                    file.name(),
+                    FILE_PDF,
+                    file.size()
+                );
+            }
+        }
+
+
+
+        file =
+            dir.openNextFile();
+    }
+
+
+    dir.close();
+}
+
+
+
+//---------------- Media ----------------
+
+
+void scanMedia()
+{
+
+    /*
+       Ses ve görüntü dosyaları
+       sonraki medya bölümünde
+       genişletilecek.
+    */
+
+}
+
+
+
+//---------------- Access ----------------
+
+
+int getFileCount()
+{
+    return fileCount;
+}
+
+
+
+FileEntry* getFile(
+    int index
+)
+{
+
+    if(index < 0 ||
+       index >= fileCount)
+    {
+        return nullptr;
+    }
+
+
+    return &fileList[index];
+}
+
+
+
+//---------------- Search ----------------
+
+
+int searchFiles(
+    const char* text
+)
+{
+
+    int count = 0;
+
+
+
+    for(int i = 0;
+        i < fileCount;
+        i++)
+    {
+
+        if(strstr(
+            fileList[i].name,
+            text
+        ))
+        {
+            count++;
+        }
+
+    }
+
+
+
+    return count;
+}

@@ -7643,3 +7643,3187 @@ private:
 };
 
 #endif
+#ifndef STORAGE_MANAGER_H
+#define STORAGE_MANAGER_H
+
+#include <Arduino.h>
+#include <FS.h>
+#include <SD.h>
+#include <SPI.h>
+
+//====================================================
+// ESP32 GAME STATION
+// STORAGE MANAGER
+// 53_storage_manager.h
+//====================================================
+
+class StorageManager
+{
+public:
+
+    // Initialize SD system
+    static bool begin();
+
+    // Check status
+    static bool ready();
+
+    // Card information
+    static uint64_t totalSpace();
+    static uint64_t usedSpace();
+    static uint64_t freeSpace();
+
+    // File checks
+    static bool exists(const String& path);
+    static bool isFile(const String& path);
+    static bool isDirectory(const String& path);
+
+    // Directory operations
+    static bool createDirectory(const String& path);
+
+    // File operations
+    static File openFile(const String& path, const char* mode = FILE_READ);
+    static void closeFile(File& file);
+
+    static bool deleteFile(const String& path);
+    static bool deleteDirectory(const String& path);
+
+    static bool renameFile(const String& oldPath,
+                           const String& newPath);
+
+    // File information
+    static uint32_t fileSize(const String& path);
+
+    static String getFileName(const String& path);
+    static String getExtension(const String& path);
+    static String getParentPath(const String& path);
+
+    // Path utilities
+    static String joinPath(const String& first,
+                           const String& second);
+
+    static String normalizePath(const String& path);
+
+    // Default folders
+    static const char* gamesPath();
+    static const char* musicPath();
+    static const char* pdfPath();
+    static const char* savePath();
+    static const char* configPath();
+    static const char* themePath();
+
+private:
+
+    static bool initialized;
+
+    static const char* PATH_GAMES;
+    static const char* PATH_MUSIC;
+    static const char* PATH_PDF;
+    static const char* PATH_SAVE;
+    static const char* PATH_CONFIG;
+    static const char* PATH_THEME;
+
+    static bool createDefaultFolders();
+
+    static String removeExtraSlash(const String& path);
+
+    static String removeStartSlash(const String& path);
+
+    static String removeEndSlash(const String& path);
+    static bool hasValidPath(const String& path);
+
+    static bool hasExtension(const String& name);
+
+    static String lowerCaseExtension(const String& name);
+
+    static String getLastPart(const String& path);
+
+    static uint32_t calculateUsedSpace(File directory);
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// STORAGE MANAGER
+// 54_storage_manager.cpp
+//====================================================
+
+#include "storage_manager.h"
+
+bool StorageManager::initialized = false;
+
+
+// Default folders
+
+const char* StorageManager::PATH_GAMES  = "/GAMES";
+const char* StorageManager::PATH_MUSIC  = "/MUSIC";
+const char* StorageManager::PATH_PDF    = "/PDF";
+const char* StorageManager::PATH_SAVE   = "/SAVE";
+const char* StorageManager::PATH_CONFIG = "/CONFIG";
+const char* StorageManager::PATH_THEME  = "/THEMES";
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool StorageManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    if (!SD.begin())
+        return false;
+
+
+    if (!createDefaultFolders())
+        return false;
+
+
+    initialized = true;
+
+    return true;
+}
+
+
+//====================================================
+// STATUS
+//====================================================
+
+bool StorageManager::ready()
+{
+    return initialized;
+}
+
+
+//====================================================
+// SPACE INFORMATION
+//====================================================
+
+uint64_t StorageManager::totalSpace()
+{
+    if (!initialized)
+        return 0;
+
+    uint64_t cardSize = SD.cardSize();
+
+    return cardSize;
+}
+
+
+uint64_t StorageManager::usedSpace()
+{
+    if (!initialized)
+        return 0;
+
+    uint64_t total = SD.totalBytes();
+    uint64_t free  = SD.usedBytes();
+
+    if (total < free)
+        return 0;
+
+    return free;
+}
+
+
+uint64_t StorageManager::freeSpace()
+{
+    if (!initialized)
+        return 0;
+
+    uint64_t total = SD.totalBytes();
+    uint64_t used  = SD.usedBytes();
+
+    if (total < used)
+        return 0;
+
+    return total - used;
+}
+//====================================================
+// FILE CHECKS
+//====================================================
+
+bool StorageManager::exists(const String& path)
+{
+    if (!initialized)
+        return false;
+
+    String fixed = normalizePath(path);
+
+    return SD.exists(fixed);
+}
+
+
+bool StorageManager::isFile(const String& path)
+{
+    if (!initialized)
+        return false;
+
+    String fixed = normalizePath(path);
+
+    File file = SD.open(fixed);
+
+    if (!file)
+        return false;
+
+
+    bool result = !file.isDirectory();
+
+    file.close();
+
+    return result;
+}
+
+
+bool StorageManager::isDirectory(const String& path)
+{
+    if (!initialized)
+        return false;
+
+    String fixed = normalizePath(path);
+
+    File file = SD.open(fixed);
+
+    if (!file)
+        return false;
+
+
+    bool result = file.isDirectory();
+
+    file.close();
+
+    return result;
+}
+
+
+//====================================================
+// DIRECTORY OPERATIONS
+//====================================================
+
+bool StorageManager::createDirectory(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    String fixed = normalizePath(path);
+
+
+    if (SD.exists(fixed))
+        return true;
+
+
+    return SD.mkdir(fixed);
+}
+
+
+//====================================================
+// FILE OPEN / CLOSE
+//====================================================
+
+File StorageManager::openFile(const String& path,
+                              const char* mode)
+{
+    if (!initialized)
+        return File();
+
+
+    String fixed = normalizePath(path);
+
+
+    return SD.open(fixed, mode);
+}
+
+
+void StorageManager::closeFile(File& file)
+{
+    if (file)
+    {
+        file.close();
+    }
+}
+
+
+//====================================================
+// DELETE OPERATIONS
+//====================================================
+
+bool StorageManager::deleteFile(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    String fixed = normalizePath(path);
+
+
+    if (!SD.exists(fixed))
+        return false;
+
+
+    return SD.remove(fixed);
+}
+
+
+bool StorageManager::deleteDirectory(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    String fixed = normalizePath(path);
+
+
+    return SD.rmdir(fixed);
+}
+//====================================================
+// RENAME
+//====================================================
+
+bool StorageManager::renameFile(const String& oldPath,
+                                const String& newPath)
+{
+    if (!initialized)
+        return false;
+
+
+    String oldFixed = normalizePath(oldPath);
+    String newFixed = normalizePath(newPath);
+
+
+    if (!SD.exists(oldFixed))
+        return false;
+
+
+    return SD.rename(oldFixed, newFixed);
+}
+
+
+//====================================================
+// FILE INFORMATION
+//====================================================
+
+uint32_t StorageManager::fileSize(const String& path)
+{
+    if (!initialized)
+        return 0;
+
+
+    String fixed = normalizePath(path);
+
+
+    File file = SD.open(fixed);
+
+
+    if (!file)
+        return 0;
+
+
+    uint32_t size = file.size();
+
+
+    file.close();
+
+
+    return size;
+}
+
+
+String StorageManager::getFileName(const String& path)
+{
+    String fixed = normalizePath(path);
+
+    int index = fixed.lastIndexOf('/');
+
+
+    if (index < 0)
+        return fixed;
+
+
+    return fixed.substring(index + 1);
+}
+
+
+String StorageManager::getExtension(const String& path)
+{
+    String name = getFileName(path);
+
+
+    int index = name.lastIndexOf('.');
+
+
+    if (index < 0)
+        return "";
+
+
+    String ext = name.substring(index + 1);
+
+
+    ext.toLowerCase();
+
+
+    return ext;
+}
+
+
+String StorageManager::getParentPath(const String& path)
+{
+    String fixed = normalizePath(path);
+
+
+    int index = fixed.lastIndexOf('/');
+
+
+    if (index <= 0)
+        return "/";
+
+
+    return fixed.substring(0, index);
+}
+
+
+//====================================================
+// PATH FUNCTIONS
+//====================================================
+
+String StorageManager::joinPath(const String& first,
+                                const String& second)
+{
+    String result = first;
+
+
+    if (!result.endsWith("/"))
+        result += "/";
+
+
+    if (second.startsWith("/"))
+        result += second.substring(1);
+    else
+        result += second;
+
+
+    return normalizePath(result);
+}
+String StorageManager::normalizePath(const String& path)
+{
+    String result = path;
+
+
+    if (result.length() == 0)
+        return "/";
+
+
+    result.replace("\\", "/");
+
+
+    result = removeExtraSlash(result);
+
+
+    if (!result.startsWith("/"))
+        result = "/" + result;
+
+
+    if (result.length() > 1 && result.endsWith("/"))
+        result.remove(result.length() - 1);
+
+
+    return result;
+}
+
+
+//====================================================
+// DEFAULT FOLDERS
+//====================================================
+
+const char* StorageManager::gamesPath()
+{
+    return PATH_GAMES;
+}
+
+
+const char* StorageManager::musicPath()
+{
+    return PATH_MUSIC;
+}
+
+
+const char* StorageManager::pdfPath()
+{
+    return PATH_PDF;
+}
+
+
+const char* StorageManager::savePath()
+{
+    return PATH_SAVE;
+}
+
+
+const char* StorageManager::configPath()
+{
+    return PATH_CONFIG;
+}
+
+
+const char* StorageManager::themePath()
+{
+    return PATH_THEME;
+}
+
+
+//====================================================
+// PRIVATE FUNCTIONS
+//====================================================
+
+bool StorageManager::createDefaultFolders()
+{
+    if (!createDirectory(PATH_GAMES))
+        return false;
+
+
+    if (!createDirectory(PATH_MUSIC))
+        return false;
+
+
+    if (!createDirectory(PATH_PDF))
+        return false;
+
+
+    if (!createDirectory(PATH_SAVE))
+        return false;
+
+
+    if (!createDirectory(PATH_CONFIG))
+        return false;
+
+
+    if (!createDirectory(PATH_THEME))
+        return false;
+
+
+    return true;
+}
+
+
+String StorageManager::removeExtraSlash(const String& path)
+{
+    String result = path;
+
+
+    while (result.indexOf("//") >= 0)
+    {
+        result.replace("//", "/");
+    }
+
+
+    return result;
+}
+
+
+String StorageManager::removeStartSlash(const String& path)
+{
+    String result = path;
+
+
+    while (result.startsWith("/"))
+    {
+        result.remove(0, 1);
+    }
+
+
+    return result;
+}
+String StorageManager::removeEndSlash(const String& path)
+{
+    String result = path;
+
+
+    while (result.length() > 1 && result.endsWith("/"))
+    {
+        result.remove(result.length() - 1);
+    }
+
+
+    return result;
+}
+
+
+//====================================================
+// PATH VALIDATION
+//====================================================
+
+bool StorageManager::hasValidPath(const String& path)
+{
+    if (path.length() == 0)
+        return false;
+
+
+    if (path.length() > 256)
+        return false;
+
+
+    return true;
+}
+
+
+//====================================================
+// EXTENSION HELPERS
+//====================================================
+
+bool StorageManager::hasExtension(const String& name)
+{
+    int dot = name.lastIndexOf('.');
+
+
+    if (dot < 0)
+        return false;
+
+
+    if (dot == name.length() - 1)
+        return false;
+
+
+    return true;
+}
+
+
+String StorageManager::lowerCaseExtension(const String& name)
+{
+    int dot = name.lastIndexOf('.');
+
+
+    if (dot < 0)
+        return "";
+
+
+    String ext = name.substring(dot + 1);
+
+
+    ext.toLowerCase();
+
+
+    return ext;
+}
+
+
+//====================================================
+// PATH PARTS
+//====================================================
+
+String StorageManager::getLastPart(const String& path)
+{
+    String fixed = normalizePath(path);
+
+
+    int slash = fixed.lastIndexOf('/');
+
+
+    if (slash < 0)
+        return fixed;
+
+
+    return fixed.substring(slash + 1);
+}
+
+
+//====================================================
+// END
+//====================================================
+#ifndef FILE_INDEX_H
+#define FILE_INDEX_H
+
+#include <Arduino.h>
+#include <FS.h>
+#include <SD.h>
+
+#include "storage_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// FILE INDEX
+// 55_file_index.h
+//====================================================
+
+enum IndexType
+{
+    INDEX_ALL = 0,
+    INDEX_GAME,
+    INDEX_MUSIC,
+    INDEX_PDF,
+    INDEX_SAVE
+};
+
+
+struct IndexedFile
+{
+    String path;
+    String name;
+    String extension;
+
+    uint32_t size;
+
+    IndexType type;
+};
+
+
+class FileIndex
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Tarama
+    static bool scan(const String& folder,
+                     IndexType type = INDEX_ALL);
+
+
+    // Dosya sayısı
+    static uint32_t count();
+
+
+    // Dosya bilgisi
+    static IndexedFile get(uint32_t index);
+
+
+    // Temizleme
+    static void clear();
+
+
+    // Arama için
+    static int findByName(const String& name);
+
+
+    // Filtreleme
+    static uint32_t countType(IndexType type);
+
+
+private:
+
+    static const uint32_t MAX_INDEX_FILES = 2048;
+
+
+    static IndexedFile files[MAX_INDEX_FILES];
+
+
+    static uint32_t fileCount;
+
+
+    static bool initialized;
+
+
+    static void scanFolder(File folder,
+                           IndexType type);
+
+
+    static IndexType detectType(const String& path);
+
+
+    static bool accepted(const String& path,
+                         IndexType type);
+    static String getNameOnly(const String& path);
+
+
+    static String getExtensionOnly(const String& path);
+
+
+    static bool isSupportedFile(const String& extension);
+
+
+    static IndexType extensionToType(const String& extension);
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// FILE INDEX
+// 56_file_index.cpp
+//====================================================
+
+#include "file_index.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+IndexedFile FileIndex::files[MAX_INDEX_FILES];
+
+uint32_t FileIndex::fileCount = 0;
+
+bool FileIndex::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool FileIndex::begin()
+{
+    if (initialized)
+        return true;
+
+
+    fileCount = 0;
+
+    initialized = true;
+
+    return true;
+}
+
+
+//====================================================
+// CLEAR
+//====================================================
+
+void FileIndex::clear()
+{
+    fileCount = 0;
+}
+
+
+//====================================================
+// COUNT
+//====================================================
+
+uint32_t FileIndex::count()
+{
+    return fileCount;
+}
+
+
+//====================================================
+// GET FILE
+//====================================================
+
+IndexedFile FileIndex::get(uint32_t index)
+{
+    IndexedFile empty;
+
+
+    empty.path = "";
+    empty.name = "";
+    empty.extension = "";
+    empty.size = 0;
+    empty.type = INDEX_ALL;
+
+
+    if (index >= fileCount)
+        return empty;
+
+
+    return files[index];
+}
+//====================================================
+// SCAN
+//====================================================
+
+bool FileIndex::scan(const String& folder,
+                     IndexType type)
+{
+    if (!initialized)
+        return false;
+
+
+    File root = SD.open(folder);
+
+
+    if (!root)
+        return false;
+
+
+    if (!root.isDirectory())
+    {
+        root.close();
+        return false;
+    }
+
+
+    scanFolder(root, type);
+
+
+    root.close();
+
+
+    return true;
+}
+
+
+//====================================================
+// FOLDER SCAN
+//====================================================
+
+void FileIndex::scanFolder(File folder,
+                           IndexType type)
+{
+    while (true)
+    {
+        File entry = folder.openNextFile();
+
+
+        if (!entry)
+            break;
+
+
+
+        if (entry.isDirectory())
+        {
+            scanFolder(entry, type);
+        }
+        else
+        {
+            String path = entry.path();
+
+
+            if (accepted(path, type))
+            {
+                if (fileCount < MAX_INDEX_FILES)
+                {
+                    files[fileCount].path = path;
+
+                    files[fileCount].name =
+                        getNameOnly(path);
+
+                    files[fileCount].extension =
+                        getExtensionOnly(path);
+
+                    files[fileCount].size =
+                        entry.size();
+
+                    files[fileCount].type =
+                        detectType(path);
+
+
+                    fileCount++;
+                }
+            }
+        }
+
+
+        entry.close();
+    }
+}
+//====================================================
+// TYPE DETECTION
+//====================================================
+
+IndexType FileIndex::detectType(const String& path)
+{
+    String ext = getExtensionOnly(path);
+
+
+    return extensionToType(ext);
+}
+
+
+//====================================================
+// ACCEPT FILE
+//====================================================
+
+bool FileIndex::accepted(const String& path,
+                         IndexType type)
+{
+    String ext = getExtensionOnly(path);
+
+
+    if (!isSupportedFile(ext))
+        return false;
+
+
+    if (type == INDEX_ALL)
+        return true;
+
+
+    return detectType(path) == type;
+}
+
+
+//====================================================
+// NAME SEARCH
+//====================================================
+
+int FileIndex::findByName(const String& name)
+{
+    String search = name;
+
+    search.toLowerCase();
+
+
+    for (uint32_t i = 0; i < fileCount; i++)
+    {
+        String current = files[i].name;
+
+        current.toLowerCase();
+
+
+        if (current.indexOf(search) >= 0)
+        {
+            return i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+//====================================================
+// TYPE COUNT
+//====================================================
+
+uint32_t FileIndex::countType(IndexType type)
+{
+    uint32_t result = 0;
+
+
+    for (uint32_t i = 0; i < fileCount; i++)
+    {
+        if (type == INDEX_ALL ||
+            files[i].type == type)
+        {
+            result++;
+        }
+    }
+
+
+    return result;
+}
+//====================================================
+// NAME / EXTENSION HELPERS
+//====================================================
+
+String FileIndex::getNameOnly(const String& path)
+{
+    int slash = path.lastIndexOf('/');
+
+
+    if (slash < 0)
+        return path;
+
+
+    return path.substring(slash + 1);
+}
+
+
+String FileIndex::getExtensionOnly(const String& path)
+{
+    String name = getNameOnly(path);
+
+
+    int dot = name.lastIndexOf('.');
+
+
+    if (dot < 0)
+        return "";
+
+
+    String ext = name.substring(dot + 1);
+
+
+    ext.toLowerCase();
+
+
+    return ext;
+}
+
+
+//====================================================
+// SUPPORTED FILES
+//====================================================
+
+bool FileIndex::isSupportedFile(const String& extension)
+{
+    if (extension == "mp3")
+        return true;
+
+    if (extension == "wav")
+        return true;
+
+    if (extension == "pdf")
+        return true;
+
+    if (extension == "bin")
+        return true;
+
+    if (extension == "rom")
+        return true;
+
+    if (extension == "sav")
+        return true;
+
+
+    return false;
+}
+
+
+//====================================================
+// EXTENSION TO TYPE
+//====================================================
+
+IndexType FileIndex::extensionToType(const String& extension)
+{
+    if (extension == "mp3" ||
+        extension == "wav")
+    {
+        return INDEX_MUSIC;
+    }
+
+
+    if (extension == "pdf")
+    {
+        return INDEX_PDF;
+    }
+
+
+    if (extension == "sav")
+    {
+        return INDEX_SAVE;
+    }
+
+
+    if (extension == "bin" ||
+        extension == "rom")
+    {
+        return INDEX_GAME;
+    }
+
+
+    return INDEX_ALL;
+}
+#ifndef SEARCH_ENGINE_H
+#define SEARCH_ENGINE_H
+
+#include <Arduino.h>
+
+#include "file_index.h"
+
+//====================================================
+// ESP32 GAME STATION
+// SEARCH ENGINE
+// 57_search_engine.h
+//====================================================
+
+class SearchEngine
+{
+public:
+
+    // Başlat
+    static void begin();
+
+
+    // Arama metni
+    static void clear();
+
+
+    static void addCharacter(char c);
+
+
+    static void removeCharacter();
+
+
+    static String query();
+
+
+
+    // Arama işlemi
+    static int search();
+
+
+    static int searchNext();
+
+
+
+    // Sonuç kontrolü
+    static bool hasResult();
+
+
+    static uint32_t resultCount();
+
+
+    static IndexedFile result(uint32_t index);
+
+
+
+private:
+
+    static String searchText;
+
+
+    static int lastResult;
+
+
+    static uint32_t resultAmount;
+
+
+    static uint32_t resultIndexes[128];
+
+
+
+    static bool compareText(const String& source,
+                            const String& target);
+
+
+
+    static void updateResults();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// SEARCH ENGINE
+// 58_search_engine.cpp
+//====================================================
+
+#include "search_engine.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+String SearchEngine::searchText = "";
+
+int SearchEngine::lastResult = -1;
+
+uint32_t SearchEngine::resultAmount = 0;
+
+
+uint32_t SearchEngine::resultIndexes[128];
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+void SearchEngine::begin()
+{
+    clear();
+}
+
+
+//====================================================
+// CLEAR
+//====================================================
+
+void SearchEngine::clear()
+{
+    searchText = "";
+
+    lastResult = -1;
+
+    resultAmount = 0;
+}
+
+
+//====================================================
+// ADD CHARACTER
+//====================================================
+
+void SearchEngine::addCharacter(char c)
+{
+    if (searchText.length() >= 32)
+        return;
+
+
+    searchText += c;
+
+
+    updateResults();
+}
+
+
+//====================================================
+// REMOVE CHARACTER
+//====================================================
+
+void SearchEngine::removeCharacter()
+{
+    if (searchText.length() == 0)
+        return;
+
+
+    searchText.remove(searchText.length() - 1);
+
+
+    updateResults();
+}
+//====================================================
+// QUERY
+//====================================================
+
+String SearchEngine::query()
+{
+    return searchText;
+}
+
+
+//====================================================
+// SEARCH
+//====================================================
+
+int SearchEngine::search()
+{
+    if (resultAmount == 0)
+        return -1;
+
+
+    lastResult = 0;
+
+
+    return resultIndexes[lastResult];
+}
+
+
+//====================================================
+// SEARCH NEXT
+//====================================================
+
+int SearchEngine::searchNext()
+{
+    if (resultAmount == 0)
+        return -1;
+
+
+    lastResult++;
+
+
+    if (lastResult >= resultAmount)
+        lastResult = 0;
+
+
+    return resultIndexes[lastResult];
+}
+
+
+//====================================================
+// RESULT CHECK
+//====================================================
+
+bool SearchEngine::hasResult()
+{
+    return resultAmount > 0;
+}
+
+
+//====================================================
+// RESULT COUNT
+//====================================================
+
+uint32_t SearchEngine::resultCount()
+{
+    return resultAmount;
+}
+
+
+//====================================================
+// RESULT GET
+//====================================================
+
+IndexedFile SearchEngine::result(uint32_t index)
+{
+    if (index >= resultAmount)
+    {
+        return FileIndex::get(999999);
+    }
+
+
+    return FileIndex::get(resultIndexes[index]);
+}
+//====================================================
+// UPDATE RESULTS
+//====================================================
+
+void SearchEngine::updateResults()
+{
+    resultAmount = 0;
+
+    lastResult = -1;
+
+
+    String text = searchText;
+
+    text.toLowerCase();
+
+
+    if (text.length() == 0)
+        return;
+
+
+
+    uint32_t total = FileIndex::count();
+
+
+    for (uint32_t i = 0; i < total; i++)
+    {
+        IndexedFile file = FileIndex::get(i);
+
+
+        if (compareText(file.name, text))
+        {
+            if (resultAmount < 128)
+            {
+                resultIndexes[resultAmount] = i;
+
+                resultAmount++;
+            }
+        }
+    }
+}
+
+
+//====================================================
+// TEXT COMPARE
+//====================================================
+
+bool SearchEngine::compareText(const String& source,
+                               const String& target)
+{
+    String value = source;
+
+
+    value.toLowerCase();
+
+
+    return value.indexOf(target) >= 0;
+}
+#ifndef GAME_MANAGER_H
+#define GAME_MANAGER_H
+
+#include <Arduino.h>
+
+#include "file_index.h"
+#include "storage_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// GAME MANAGER
+// 59_game_manager.h
+//====================================================
+
+
+enum GameType
+{
+    GAME_UNKNOWN = 0,
+    GAME_ROM,
+    GAME_BIN
+};
+
+
+struct GameInfo
+{
+    String name;
+
+    String path;
+
+    GameType type;
+
+    uint32_t size;
+};
+
+
+
+class GameManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+
+    // Tarama
+    static bool scanGames();
+
+
+    // Oyun sayısı
+    static uint32_t count();
+
+
+    // Oyun bilgisi
+    static GameInfo get(uint32_t index);
+
+
+    // Seçim
+    static void select(uint32_t index);
+
+
+    static uint32_t selected();
+
+
+    // Çalıştırılacak dosya
+    static String selectedPath();
+
+
+
+private:
+
+    static uint32_t selectedGame;
+
+
+    static GameType detectGameType(const String& extension);
+
+
+    static GameInfo createInfo(const IndexedFile& file);
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// GAME MANAGER
+// 60_game_manager.cpp
+//====================================================
+
+#include "game_manager.h"
+
+
+//====================================================
+// STATIC DATA
+//====================================================
+
+uint32_t GameManager::selectedGame = 0;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool GameManager::begin()
+{
+    selectedGame = 0;
+
+    return scanGames();
+}
+
+
+//====================================================
+// SCAN GAMES
+//====================================================
+
+bool GameManager::scanGames()
+{
+    FileIndex::clear();
+
+
+    bool result = FileIndex::scan(
+        StorageManager::gamesPath(),
+        INDEX_GAME
+    );
+
+
+    return result;
+}
+
+
+//====================================================
+// COUNT
+//====================================================
+
+uint32_t GameManager::count()
+{
+    return FileIndex::countType(INDEX_GAME);
+}
+
+
+//====================================================
+// GET GAME
+//====================================================
+
+GameInfo GameManager::get(uint32_t index)
+{
+    GameInfo info;
+
+
+    info.name = "";
+    info.path = "";
+    info.type = GAME_UNKNOWN;
+    info.size = 0;
+
+
+    uint32_t current = 0;
+
+
+    uint32_t total = FileIndex::count();
+
+
+
+    for (uint32_t i = 0; i < total; i++)
+    {
+        IndexedFile file = FileIndex::get(i);
+
+
+        if (file.type == INDEX_GAME)
+        {
+            if (current == index)
+            {
+                return createInfo(file);
+            }
+
+
+            current++;
+        }
+    }
+
+
+    return info;
+}
+//====================================================
+// SELECT GAME
+//====================================================
+
+void GameManager::select(uint32_t index)
+{
+    if (index < count())
+    {
+        selectedGame = index;
+    }
+}
+
+
+//====================================================
+// SELECTED INDEX
+//====================================================
+
+uint32_t GameManager::selected()
+{
+    return selectedGame;
+}
+
+
+//====================================================
+// SELECTED PATH
+//====================================================
+
+String GameManager::selectedPath()
+{
+    GameInfo info = get(selectedGame);
+
+
+    return info.path;
+}
+
+
+//====================================================
+// GAME TYPE DETECTION
+//====================================================
+
+GameType GameManager::detectGameType(const String& extension)
+{
+    String ext = extension;
+
+    ext.toLowerCase();
+
+
+    if (ext == "rom")
+        return GAME_ROM;
+
+
+    if (ext == "bin")
+        return GAME_BIN;
+
+
+    return GAME_UNKNOWN;
+}
+
+
+//====================================================
+// CREATE GAME INFO
+//====================================================
+
+GameInfo GameManager::createInfo(const IndexedFile& file)
+{
+    GameInfo info;
+
+
+    info.name = file.name;
+
+    info.path = file.path;
+
+    info.size = file.size;
+
+
+    info.type = detectGameType(file.extension);
+
+
+    return info;
+}
+#ifndef SAVE_MANAGER_H
+#define SAVE_MANAGER_H
+
+#include <Arduino.h>
+#include <FS.h>
+
+#include "storage_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// SAVE MANAGER
+// 61_save_manager.h
+//====================================================
+
+
+struct SaveData
+{
+    String gameName;
+
+    String savePath;
+
+    uint32_t slot;
+
+    uint32_t timestamp;
+
+    bool valid;
+};
+
+
+
+class SaveManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+
+    // Save oluştur
+    static bool createSave(const String& game,
+                           uint32_t slot);
+
+
+    // Save yükleme
+    static bool loadSave(const String& game,
+                         uint32_t slot);
+
+
+
+    // Save silme
+    static bool deleteSave(const String& game,
+                           uint32_t slot);
+
+
+
+    // Kontrol
+    static bool exists(const String& game,
+                       uint32_t slot);
+
+
+
+    // Listeleme
+    static uint32_t count(const String& game);
+
+
+    static SaveData get(const String& game,
+                        uint32_t slot);
+
+
+
+private:
+
+    static const uint32_t MAX_SAVE_SLOTS = 10;
+
+
+    static String buildPath(const String& game,
+                            uint32_t slot);
+
+
+    static String buildFolder(const String& game);
+
+
+
+    static bool createFolder(const String& game);
+
+
+    static uint32_t getTime();
+
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// SAVE MANAGER
+// 62_save_manager.cpp
+//====================================================
+
+#include "save_manager.h"
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool SaveManager::begin()
+{
+    return true;
+}
+
+
+//====================================================
+// CREATE SAVE
+//====================================================
+
+bool SaveManager::createSave(const String& game,
+                             uint32_t slot)
+{
+    if (!createFolder(game))
+        return false;
+
+
+    String path = buildPath(game, slot);
+
+
+    File file = StorageManager::openFile(
+        path,
+        FILE_WRITE
+    );
+
+
+    if (!file)
+        return false;
+
+
+    file.println("ESP32_GAME_SAVE");
+
+    file.println(game);
+
+    file.println(slot);
+
+    file.println(getTime());
+
+
+    file.close();
+
+
+    return true;
+}
+
+
+//====================================================
+// LOAD SAVE
+//====================================================
+
+bool SaveManager::loadSave(const String& game,
+                           uint32_t slot)
+{
+    String path = buildPath(game, slot);
+
+
+    if (!StorageManager::exists(path))
+        return false;
+
+
+    File file = StorageManager::openFile(path);
+
+
+    if (!file)
+        return false;
+
+
+    file.close();
+
+
+    return true;
+}
+//====================================================
+// DELETE SAVE
+//====================================================
+
+bool SaveManager::deleteSave(const String& game,
+                             uint32_t slot)
+{
+    String path = buildPath(game, slot);
+
+
+    if (!StorageManager::exists(path))
+        return false;
+
+
+    return StorageManager::deleteFile(path);
+}
+
+
+//====================================================
+// SAVE EXISTS
+//====================================================
+
+bool SaveManager::exists(const String& game,
+                         uint32_t slot)
+{
+    String path = buildPath(game, slot);
+
+
+    return StorageManager::exists(path);
+}
+
+
+//====================================================
+// SAVE COUNT
+//====================================================
+
+uint32_t SaveManager::count(const String& game)
+{
+    uint32_t amount = 0;
+
+
+    String folder = buildFolder(game);
+
+
+    File directory = StorageManager::openFile(folder);
+
+
+    if (!directory)
+        return 0;
+
+
+    while (true)
+    {
+        File entry = directory.openNextFile();
+
+
+        if (!entry)
+            break;
+
+
+        if (!entry.isDirectory())
+        {
+            amount++;
+        }
+
+
+        entry.close();
+    }
+
+
+    directory.close();
+
+
+    return amount;
+}
+
+
+//====================================================
+// GET SAVE DATA
+//====================================================
+
+SaveData SaveManager::get(const String& game,
+                          uint32_t slot)
+{
+    SaveData data;
+
+
+    data.gameName = game;
+
+    data.savePath = buildPath(game, slot);
+
+    data.slot = slot;
+
+    data.timestamp = getTime();
+
+    data.valid = exists(game, slot);
+
+
+    return data;
+}
+
+//====================================================
+// PATH BUILDING
+//====================================================
+
+String SaveManager::buildFolder(const String& game)
+{
+    String folder = StorageManager::savePath();
+
+    folder += "/";
+
+    folder += game;
+
+
+    return folder;
+}
+
+
+String SaveManager::buildPath(const String& game,
+                              uint32_t slot)
+{
+    String path = buildFolder(game);
+
+
+    path += "/slot_";
+
+    path += String(slot);
+
+    path += ".sav";
+
+
+    return path;
+}
+
+
+//====================================================
+// FOLDER CREATION
+//====================================================
+
+bool SaveManager::createFolder(const String& game)
+{
+    String folder = buildFolder(game);
+
+
+    return StorageManager::createDirectory(folder);
+}
+
+
+//====================================================
+// TIME PLACEHOLDER
+//====================================================
+
+uint32_t SaveManager::getTime()
+{
+    return millis();
+}
+#ifndef RTC_MANAGER_H
+#define RTC_MANAGER_H
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+//====================================================
+// ESP32 GAME STATION
+// RTC MANAGER
+// 63_rtc_manager.h
+//====================================================
+
+
+class RTCManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+
+    // Saat ayarla
+    static void setTime(uint8_t hour,
+                        uint8_t minute,
+                        uint8_t second,
+                        uint8_t day,
+                        uint8_t month,
+                        uint16_t year);
+
+
+
+    // Saat bilgileri
+
+    static uint8_t hour();
+
+    static uint8_t minute();
+
+    static uint8_t second();
+
+
+
+    static uint8_t day();
+
+    static uint8_t month();
+
+    static uint16_t year();
+
+
+
+    // Yazı formatı
+
+    static String getTimeString();
+
+    static String getDateString();
+
+
+
+    // Durum
+
+    static bool available();
+
+
+
+private:
+
+    static RTC_DS1307 rtc;
+
+
+    static bool initialized;
+
+
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// RTC MANAGER
+// 64_rtc_manager.cpp
+//====================================================
+
+#include "rtc_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+RTC_DS1307 RTCManager::rtc;
+
+bool RTCManager::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool RTCManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    Wire.begin();
+
+
+    if (!rtc.begin())
+        return false;
+
+
+    if (!rtc.isrunning())
+    {
+        rtc.adjust(
+            DateTime(
+                F(__DATE__),
+                F(__TIME__)
+            )
+        );
+    }
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// SET TIME
+//====================================================
+
+void RTCManager::setTime(uint8_t hour,
+                         uint8_t minute,
+                         uint8_t second,
+                         uint8_t day,
+                         uint8_t month,
+                         uint16_t year)
+{
+    if (!initialized)
+        return;
+
+
+    rtc.adjust(
+        DateTime(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second
+        )
+    );
+}
+//====================================================
+// TIME GETTERS
+//====================================================
+
+uint8_t RTCManager::hour()
+{
+    return rtc.now().hour();
+}
+
+
+uint8_t RTCManager::minute()
+{
+    return rtc.now().minute();
+}
+
+
+uint8_t RTCManager::second()
+{
+    return rtc.now().second();
+}
+
+
+//====================================================
+// DATE GETTERS
+//====================================================
+
+uint8_t RTCManager::day()
+{
+    return rtc.now().day();
+}
+
+
+uint8_t RTCManager::month()
+{
+    return rtc.now().month();
+}
+
+
+uint16_t RTCManager::year()
+{
+    return rtc.now().year();
+}
+
+
+//====================================================
+// STRING FORMAT
+//====================================================
+
+String RTCManager::getTimeString()
+{
+    DateTime now = rtc.now();
+
+
+    char buffer[12];
+
+
+    sprintf(
+        buffer,
+        "%02d:%02d:%02d",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+
+
+    return String(buffer);
+}
+
+
+String RTCManager::getDateString()
+{
+    DateTime now = rtc.now();
+
+
+    char buffer[12];
+
+
+    sprintf(
+        buffer,
+        "%02d/%02d/%04d",
+        now.day(),
+        now.month(),
+        now.year()
+    );
+
+
+    return String(buffer);
+}
+
+
+//====================================================
+// STATUS
+//====================================================
+
+bool RTCManager::available()
+{
+    return initialized;
+}
+#ifndef AUDIO_MANAGER_H
+#define AUDIO_MANAGER_H
+
+#include <Arduino.h>
+#include <FS.h>
+
+#include "storage_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// AUDIO MANAGER
+// 65_audio_manager.h
+//====================================================
+
+
+// Ses modu
+
+enum AudioMode
+{
+    AUDIO_STOP = 0,
+    AUDIO_PLAY,
+    AUDIO_PAUSE
+};
+
+
+
+class AudioManager
+{
+public:
+
+
+    // Başlat
+
+    static bool begin();
+
+
+
+    // MP3 aç
+
+    static bool play(const String& path);
+
+
+
+    // Durdur
+
+    static void stop();
+
+
+
+    // Devam et
+
+    static void pause();
+
+
+
+    static void resume();
+
+
+
+    // Ses
+
+    static void setVolume(uint8_t volume);
+
+
+    static uint8_t volume();
+
+
+
+    // Durum
+
+    static bool playing();
+
+
+    static AudioMode mode();
+
+
+
+    // Dosya
+
+    static String currentFile();
+
+
+
+private:
+
+
+    static AudioMode currentMode;
+
+
+    static uint8_t currentVolume;
+
+
+    static String currentPath;
+
+
+    static bool initialized;
+
+
+
+    static bool openFile(const String& path);
+
+
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// AUDIO MANAGER
+// 66_audio_manager.cpp
+//====================================================
+
+#include "audio_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+AudioMode AudioManager::currentMode = AUDIO_STOP;
+
+uint8_t AudioManager::currentVolume = 80;
+
+String AudioManager::currentPath = "";
+
+bool AudioManager::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool AudioManager::begin()
+{
+    currentMode = AUDIO_STOP;
+
+    currentVolume = 80;
+
+    currentPath = "";
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// PLAY
+//====================================================
+
+bool AudioManager::play(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    if (!openFile(path))
+        return false;
+
+
+    currentPath = path;
+
+    currentMode = AUDIO_PLAY;
+
+
+    return true;
+}
+
+
+//====================================================
+// OPEN FILE
+//====================================================
+
+bool AudioManager::openFile(const String& path)
+{
+    if (!StorageManager::exists(path))
+        return false;
+
+
+    return true;
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void AudioManager::stop()
+{
+    currentMode = AUDIO_STOP;
+
+    currentPath = "";
+}
+//====================================================
+// PAUSE
+//====================================================
+
+void AudioManager::pause()
+{
+    if (currentMode == AUDIO_PLAY)
+    {
+        currentMode = AUDIO_PAUSE;
+    }
+}
+
+
+//====================================================
+// RESUME
+//====================================================
+
+void AudioManager::resume()
+{
+    if (currentMode == AUDIO_PAUSE)
+    {
+        currentMode = AUDIO_PLAY;
+    }
+}
+
+
+//====================================================
+// VOLUME
+//====================================================
+
+void AudioManager::setVolume(uint8_t volume)
+{
+    if (volume > 100)
+        volume = 100;
+
+
+    currentVolume = volume;
+}
+
+
+uint8_t AudioManager::volume()
+{
+    return currentVolume;
+}
+
+
+//====================================================
+// STATUS
+//====================================================
+
+bool AudioManager::playing()
+{
+    return currentMode == AUDIO_PLAY;
+}
+
+
+AudioMode AudioManager::mode()
+{
+    return currentMode;
+}
+
+
+//====================================================
+// CURRENT FILE
+//====================================================
+
+String AudioManager::currentFile()
+{
+    return currentPath;
+}
+#ifndef INPUT_MANAGER_H
+#define INPUT_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// INPUT MANAGER
+// 67_input_manager.h
+//====================================================
+
+
+enum ButtonState
+{
+    BUTTON_RELEASED = 0,
+    BUTTON_PRESSED
+};
+
+
+
+class InputManager
+{
+public:
+
+
+    // Başlat
+
+    static void begin();
+
+
+
+    // Güncelleme
+
+    static void update();
+
+
+
+    // Hareket
+
+    static bool up();
+
+    static bool down();
+
+    static bool left();
+
+    static bool right();
+
+
+
+    // Oyun tuşları
+
+    static bool rb();
+
+    static bool lb();
+
+
+
+    // Menü
+
+    static bool confirm();
+
+    static bool back();
+
+
+
+    // Güç
+
+    static bool power();
+
+
+
+private:
+
+
+    static bool readButton(uint8_t pin);
+
+
+
+    static uint8_t PIN_UP;
+
+    static uint8_t PIN_DOWN;
+
+    static uint8_t PIN_LEFT;
+
+    static uint8_t PIN_RIGHT;
+
+    static uint8_t PIN_RB;
+
+    static uint8_t PIN_LB;
+
+    static uint8_t PIN_CONFIRM;
+
+    static uint8_t PIN_BACK;
+
+    static uint8_t PIN_POWER;
+
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// INPUT MANAGER
+// 68_input_manager.cpp
+//====================================================
+
+#include "input_manager.h"
+
+
+//====================================================
+// PIN DEFINITIONS
+//====================================================
+
+// Geçici pin tablosu.
+// Kesin pin yerleşimi donanım montaj aşamasında
+// tek merkezden değiştirilecek.
+
+uint8_t InputManager::PIN_UP = 1;
+
+uint8_t InputManager::PIN_DOWN = 2;
+
+uint8_t InputManager::PIN_LEFT = 3;
+
+uint8_t InputManager::PIN_RIGHT = 4;
+
+
+uint8_t InputManager::PIN_RB = 5;
+
+uint8_t InputManager::PIN_LB = 6;
+
+
+uint8_t InputManager::PIN_CONFIRM = 7;
+
+uint8_t InputManager::PIN_BACK = 8;
+
+
+uint8_t InputManager::PIN_POWER = 9;
+
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+void InputManager::begin()
+{
+
+    pinMode(PIN_UP, INPUT_PULLUP);
+
+    pinMode(PIN_DOWN, INPUT_PULLUP);
+
+    pinMode(PIN_LEFT, INPUT_PULLUP);
+
+    pinMode(PIN_RIGHT, INPUT_PULLUP);
+
+
+
+    pinMode(PIN_RB, INPUT_PULLUP);
+
+    pinMode(PIN_LB, INPUT_PULLUP);
+
+
+
+    pinMode(PIN_CONFIRM, INPUT_PULLUP);
+
+    pinMode(PIN_BACK, INPUT_PULLUP);
+
+
+
+    pinMode(PIN_POWER, INPUT_PULLUP);
+
+}
+
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void InputManager::update()
+{
+
+}
+//====================================================
+// BUTTON READ
+//====================================================
+
+bool InputManager::readButton(uint8_t pin)
+{
+    return digitalRead(pin) == LOW;
+}
+
+
+//====================================================
+// MOVEMENT
+//====================================================
+
+bool InputManager::up()
+{
+    return readButton(PIN_UP);
+}
+
+
+bool InputManager::down()
+{
+    return readButton(PIN_DOWN);
+}
+
+
+bool InputManager::left()
+{
+    return readButton(PIN_LEFT);
+}
+
+
+bool InputManager::right()
+{
+    return readButton(PIN_RIGHT);
+}
+
+
+//====================================================
+// GAME BUTTONS
+//====================================================
+
+bool InputManager::rb()
+{
+    return readButton(PIN_RB);
+}
+
+
+bool InputManager::lb()
+{
+    return readButton(PIN_LB);
+}
+
+
+//====================================================
+// MENU BUTTONS
+//====================================================
+
+bool InputManager::confirm()
+{
+    return readButton(PIN_CONFIRM);
+}
+
+
+bool InputManager::back()
+{
+    return readButton(PIN_BACK);
+}
+
+
+//====================================================
+// POWER
+//====================================================
+
+bool InputManager::power()
+{
+    return readButton(PIN_POWER);
+}
+#ifndef DISPLAY_MANAGER_H
+#define DISPLAY_MANAGER_H
+
+#include <Arduino.h>
+#include <SPI.h>
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+//====================================================
+// ESP32 GAME STATION
+// DISPLAY MANAGER
+// 69_display_manager.h
+//====================================================
+
+
+enum ScreenMode
+{
+    SCREEN_HOME = 0,
+    SCREEN_GAME,
+    SCREEN_MUSIC,
+    SCREEN_PDF,
+    SCREEN_SETTINGS
+};
+
+
+
+class DisplayManager
+{
+public:
+
+
+    // Başlat
+
+    static bool begin();
+
+
+
+    // Ekran temizleme
+
+    static void clear();
+
+
+
+    // Yazı
+
+    static void printText(String text,
+                          int x,
+                          int y,
+                          uint16_t color,
+                          uint8_t size);
+
+
+
+    // Menü ekranı
+
+    static void showScreen(ScreenMode mode);
+
+
+
+    // Güncel ekran
+
+    static ScreenMode currentScreen();
+
+
+
+    // Parlaklık
+
+    static void setBrightness(uint8_t value);
+
+
+
+private:
+
+
+    static Adafruit_ILI9341 display;
+
+
+    static ScreenMode activeScreen;
+
+
+    static uint8_t brightness;
+
+
+    static bool initialized;
+
+
+
+    static void drawHome();
+
+
+    static void drawGame();
+
+
+    static void drawMusic();
+
+
+    static void drawPDF();
+
+
+    static void drawSettings();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// DISPLAY MANAGER
+// 70_display_manager.cpp
+//====================================================
+
+#include "display_manager.h"
+
+
+//====================================================
+// PINLER
+//====================================================
+
+// Geçici SPI pinleri.
+// Kesin pin tablosu montaj aşamasında
+// tek dosyadan değiştirilecek.
+
+#define TFT_CS   10
+#define TFT_DC   11
+#define TFT_RST  12
+
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+Adafruit_ILI9341 DisplayManager::display(
+    TFT_CS,
+    TFT_DC,
+    TFT_RST
+);
+
+
+ScreenMode DisplayManager::activeScreen =
+    SCREEN_HOME;
+
+
+uint8_t DisplayManager::brightness = 100;
+
+
+bool DisplayManager::initialized = false;
+
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool DisplayManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    SPI.begin();
+
+
+    display.begin();
+
+
+    display.setRotation(1);
+
+
+    display.fillScreen(ILI9341_BLACK);
+
+
+    initialized = true;
+
+
+    drawHome();
+
+
+    return true;
+}
+//====================================================
+// CLEAR
+//====================================================
+
+void DisplayManager::clear()
+{
+    if (!initialized)
+        return;
+
+
+    display.fillScreen(ILI9341_BLACK);
+}
+
+
+
+//====================================================
+// PRINT TEXT
+//====================================================
+
+void DisplayManager::printText(String text,
+                               int x,
+                               int y,
+                               uint16_t color,
+                               uint8_t size)
+{
+    if (!initialized)
+        return;
+
+
+    display.setTextColor(color);
+
+    display.setTextSize(size);
+
+    display.setCursor(x, y);
+
+
+    display.print(text);
+}
+
+
+
+//====================================================
+// SCREEN SELECT
+//====================================================
+
+void DisplayManager::showScreen(ScreenMode mode)
+{
+    if (!initialized)
+        return;
+
+
+    activeScreen = mode;
+
+
+    clear();
+
+
+    switch(mode)
+    {
+        case SCREEN_HOME:
+            drawHome();
+            break;
+
+
+        case SCREEN_GAME:
+            drawGame();
+            break;
+
+
+        case SCREEN_MUSIC:
+            drawMusic();
+            break;
+
+
+        case SCREEN_PDF:
+            drawPDF();
+            break;
+
+
+        case SCREEN_SETTINGS:
+            drawSettings();
+            break;
+    }
+}
+
+
+
+//====================================================
+// CURRENT SCREEN
+//====================================================
+
+ScreenMode DisplayManager::currentScreen()
+{
+    return activeScreen;
+}
+//====================================================
+// BRIGHTNESS
+//====================================================
+
+void DisplayManager::setBrightness(uint8_t value)
+{
+    if (value > 100)
+        value = 100;
+
+
+    brightness = value;
+}
+
+
+
+//====================================================
+// SCREEN DRAW FUNCTIONS
+//====================================================
+
+void DisplayManager::drawHome()
+{
+    printText(
+        "ESP32 GAME STATION",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+
+
+    printText(
+        "HOME",
+        20,
+        60,
+        ILI9341_GREEN,
+        2
+    );
+}
+
+
+
+void DisplayManager::drawGame()
+{
+    printText(
+        "GAMES",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+
+
+
+void DisplayManager::drawMusic()
+{
+    printText(
+        "MUSIC",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+
+
+
+void DisplayManager::drawPDF()
+{
+    printText(
+        "PDF",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+
+
+
+void DisplayManager::drawSettings()
+{
+    printText(
+        "SETTINGS",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+

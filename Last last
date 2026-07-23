@@ -10826,4 +10826,2980 @@ void DisplayManager::drawSettings()
         2
     );
 }
+#ifndef TOUCH_MANAGER_H
+#define TOUCH_MANAGER_H
+
+#include <Arduino.h>
+#include <SPI.h>
+#include <XPT2046_Touchscreen.h>
+
+//====================================================
+// ESP32 GAME STATION
+// TOUCH MANAGER
+// 71_touch_manager.h
+//====================================================
+
+struct TouchPoint
+{
+    int16_t x;
+    int16_t y;
+    bool pressed;
+};
+
+
+class TouchManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Güncelle
+    static void update();
+
+    // Durum
+    static bool touched();
+
+    // Koordinatlar
+    static int16_t x();
+
+    static int16_t y();
+
+    static TouchPoint point();
+
+    // Kalibrasyon
+    static void setCalibration(int16_t minX,
+                               int16_t maxX,
+                               int16_t minY,
+                               int16_t maxY);
+
+private:
+
+    static XPT2046_Touchscreen touch;
+
+    static TouchPoint currentPoint;
+
+    static bool initialized;
+
+    static int16_t calMinX;
+    static int16_t calMaxX;
+    static int16_t calMinY;
+    static int16_t calMaxY;
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// TOUCH MANAGER
+// 72_touch_manager.cpp
+//====================================================
+
+#include "touch_manager.h"
+
+
+//====================================================
+// TOUCH PINS
+//====================================================
+
+// Geçici pinler.
+// Kesin pinler donanım şemasına göre daha sonra
+// tek bir pin tanım dosyasına taşınacaktır.
+
+#define TOUCH_CS   13
+#define TOUCH_IRQ  14
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+XPT2046_Touchscreen TouchManager::touch(
+    TOUCH_CS,
+    TOUCH_IRQ
+);
+
+
+TouchPoint TouchManager::currentPoint =
+{
+    0,
+    0,
+    false
+};
+
+
+bool TouchManager::initialized = false;
+
+
+int16_t TouchManager::calMinX = 200;
+int16_t TouchManager::calMaxX = 3900;
+
+int16_t TouchManager::calMinY = 200;
+int16_t TouchManager::calMaxY = 3900;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool TouchManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    touch.begin();
+
+    touch.setRotation(1);
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void TouchManager::update()
+{
+    currentPoint.pressed = false;
+
+
+    if (!initialized)
+        return;
+
+
+    if (!touch.touched())
+        return;
+
+
+    TS_Point point = touch.getPoint();
+
+
+    currentPoint.x = map(
+        point.x,
+        calMinX,
+        calMaxX,
+        0,
+        320
+    );
+
+
+    currentPoint.y = map(
+        point.y,
+        calMinY,
+        calMaxY,
+        0,
+        240
+    );
+
+
+    currentPoint.pressed = true;
+}
+//====================================================
+// TOUCH STATUS
+//====================================================
+
+bool TouchManager::touched()
+{
+    return currentPoint.pressed;
+}
+
+
+//====================================================
+// TOUCH POSITION
+//====================================================
+
+int16_t TouchManager::x()
+{
+    return currentPoint.x;
+}
+
+
+int16_t TouchManager::y()
+{
+    return currentPoint.y;
+}
+
+
+TouchPoint TouchManager::point()
+{
+    return currentPoint;
+}
+
+
+//====================================================
+// CALIBRATION
+//====================================================
+
+void TouchManager::setCalibration(int16_t minX,
+                                  int16_t maxX,
+                                  int16_t minY,
+                                  int16_t maxY)
+{
+    calMinX = minX;
+    calMaxX = maxX;
+
+    calMinY = minY;
+    calMaxY = maxY;
+}#ifndef GAME_ENGINE_H
+#define GAME_ENGINE_H
+
+#include <Arduino.h>
+
+#include "game_manager.h"
+#include "display_manager.h"
+#include "input_manager.h"
+#include "audio_manager.h"
+#include "save_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// GAME ENGINE
+// 73_game_engine.h
+//====================================================
+
+
+enum EngineState
+{
+    ENGINE_IDLE = 0,
+    ENGINE_RUNNING,
+    ENGINE_PAUSED,
+    ENGINE_STOPPED
+};
+
+
+enum EngineType
+{
+    ENGINE_NONE = 0,
+    ENGINE_GB,
+    ENGINE_NES,
+    ENGINE_BUILTIN
+};
+
+
+class GameEngine
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Güncelle
+    static void update();
+
+    // Oyun çalıştır
+    static bool launch(uint32_t gameIndex);
+
+    // Durdur
+    static void stop();
+
+    // Duraklat
+    static void pause();
+
+    // Devam et
+    static void resume();
+
+    // Durum
+    static EngineState state();
+
+    static EngineType type();
+
+    static bool running();
+
+    // Çalışan oyun
+    static GameInfo currentGame();
+
+
+private:
+
+    static EngineState currentState;
+
+    static EngineType currentType;
+
+    static GameInfo activeGame;
+
+    static bool initialized;
+
+    static EngineType detectEngine(const GameInfo& game);
+
+    static bool launchGB(const GameInfo& game);
+
+    static bool launchNES(const GameInfo& game);
+
+    static bool launchBuiltin(const GameInfo& game);
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// GAME ENGINE
+// 74_game_engine.cpp
+//====================================================
+
+#include "game_engine.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+EngineState GameEngine::currentState =
+    ENGINE_IDLE;
+
+
+EngineType GameEngine::currentType =
+    ENGINE_NONE;
+
+
+GameInfo GameEngine::activeGame =
+{
+    "",
+    "",
+    GAME_UNKNOWN,
+    0
+};
+
+
+bool GameEngine::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool GameEngine::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentState = ENGINE_IDLE;
+
+    currentType = ENGINE_NONE;
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void GameEngine::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != ENGINE_RUNNING)
+        return;
+
+
+    // Burada ileride:
+    // - GB Emulator
+    // - NES Emulator
+    // - Doom
+    // - Dahili oyunlar
+    // kendi update() fonksiyonlarını çağıracak.
+}
+//====================================================
+// LAUNCH GAME
+//====================================================
+
+bool GameEngine::launch(uint32_t gameIndex)
+{
+    if (!initialized)
+        return false;
+
+
+    stop();
+
+
+    activeGame = GameManager::get(gameIndex);
+
+
+    if (activeGame.path.length() == 0)
+        return false;
+
+
+    currentType = detectEngine(activeGame);
+
+
+    bool result = false;
+
+
+    switch (currentType)
+    {
+        case ENGINE_GB:
+            result = launchGB(activeGame);
+            break;
+
+
+        case ENGINE_NES:
+            result = launchNES(activeGame);
+            break;
+
+
+        case ENGINE_BUILTIN:
+            result = launchBuiltin(activeGame);
+            break;
+
+
+        default:
+            result = false;
+            break;
+    }
+
+
+    if (result)
+    {
+        currentState = ENGINE_RUNNING;
+    }
+    else
+    {
+        currentState = ENGINE_IDLE;
+
+        currentType = ENGINE_NONE;
+
+        activeGame.name = "";
+        activeGame.path = "";
+        activeGame.type = GAME_UNKNOWN;
+        activeGame.size = 0;
+    }
+
+
+    return result;
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void GameEngine::stop()
+{
+    currentState = ENGINE_STOPPED;
+
+    currentType = ENGINE_NONE;
+
+
+    activeGame.name = "";
+
+    activeGame.path = "";
+
+    activeGame.type = GAME_UNKNOWN;
+
+    activeGame.size = 0;
+}
+
+//====================================================
+// PAUSE
+//====================================================
+
+void GameEngine::pause()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != ENGINE_RUNNING)
+        return;
+
+
+    currentState = ENGINE_PAUSED;
+}
+
+
+//====================================================
+// RESUME
+//====================================================
+
+void GameEngine::resume()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != ENGINE_PAUSED)
+        return;
+
+
+    currentState = ENGINE_RUNNING;
+}
+
+
+//====================================================
+// STATE
+//====================================================
+
+EngineState GameEngine::state()
+{
+    return currentState;
+}
+
+
+//====================================================
+// TYPE
+//====================================================
+
+EngineType GameEngine::type()
+{
+    return currentType;
+}
+
+
+//====================================================
+// RUNNING
+//====================================================
+
+bool GameEngine::running()
+{
+    return currentState == ENGINE_RUNNING;
+}
+
+
+//====================================================
+// CURRENT GAME
+//====================================================
+
+GameInfo GameEngine::currentGame()
+{
+    return activeGame;
+}
+//====================================================
+// ENGINE DETECTION
+//====================================================
+
+EngineType GameEngine::detectEngine(const GameInfo& game)
+{
+    String path = game.path;
+
+    path.toLowerCase();
+
+
+    if (path.endsWith(".gb") ||
+        path.endsWith(".gbc"))
+    {
+        return ENGINE_GB;
+    }
+
+
+    if (path.endsWith(".nes"))
+    {
+        return ENGINE_NES;
+    }
+
+
+    return ENGINE_BUILTIN;
+}
+
+
+//====================================================
+// GAME BOY
+//====================================================
+
+bool GameEngine::launchGB(const GameInfo& game)
+{
+    (void)game;
+
+    // TODO:
+    // GB emulator burada başlatılacak.
+
+    return true;
+}
+
+
+//====================================================
+// NES
+//====================================================
+
+bool GameEngine::launchNES(const GameInfo& game)
+{
+    (void)game;
+
+    // TODO:
+    // NES emulator burada başlatılacak.
+
+    return true;
+}
+
+
+//====================================================
+// BUILT-IN GAMES
+//====================================================
+
+bool GameEngine::launchBuiltin(const GameInfo& game)
+{
+    (void)game;
+
+    // TODO:
+    // Pong
+    // Golf
+    // Snake
+    // Mario tarzı platform oyunu
+    // Futbol Arcade
+
+    return true;
+}
+#ifndef BUILTIN_GAMES_H
+#define BUILTIN_GAMES_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// BUILT-IN GAMES
+// 75_builtin_games.h
+//====================================================
+
+
+enum BuiltinGame
+{
+    BUILTIN_NONE = 0,
+
+    BUILTIN_PONG,
+
+    BUILTIN_GOLF,
+
+    BUILTIN_SNAKE,
+
+    BUILTIN_PLATFORM,
+
+    BUILTIN_FOOTBALL
+};
+
+
+
+class BuiltinGames
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+
+    // Çalıştır
+    static bool launch(BuiltinGame game);
+
+
+    // Güncelle
+    static void update();
+
+
+    // Çiz
+    static void render();
+
+
+    // Çık
+    static void stop();
+
+
+    // Durum
+    static bool running();
+
+
+    static BuiltinGame current();
+
+
+
+private:
+
+    static BuiltinGame currentGame;
+
+
+    static bool gameRunning;
+
+
+    static bool initialized;
+
+
+
+    static void updatePong();
+
+    static void updateGolf();
+
+    static void updateSnake();
+
+    static void updatePlatform();
+
+    static void updateFootball();
+
+
+
+    static void renderPong();
+
+    static void renderGolf();
+
+    static void renderSnake();
+
+    static void renderPlatform();
+
+    static void renderFootball();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// BUILT-IN GAMES
+// 76_builtin_games.cpp
+//====================================================
+
+#include "builtin_games.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+BuiltinGame BuiltinGames::currentGame =
+    BUILTIN_NONE;
+
+
+bool BuiltinGames::gameRunning = false;
+
+
+bool BuiltinGames::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool BuiltinGames::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentGame = BUILTIN_NONE;
+
+    gameRunning = false;
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// LAUNCH
+//====================================================
+
+bool BuiltinGames::launch(BuiltinGame game)
+{
+    if (!initialized)
+        return false;
+
+
+    stop();
+
+
+    currentGame = game;
+
+    gameRunning = true;
+
+
+    return true;
+}
+//====================================================
+// UPDATE
+//====================================================
+
+void BuiltinGames::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (!gameRunning)
+        return;
+
+
+    switch (currentGame)
+    {
+        case BUILTIN_PONG:
+            updatePong();
+            break;
+
+
+        case BUILTIN_GOLF:
+            updateGolf();
+            break;
+
+
+        case BUILTIN_SNAKE:
+            updateSnake();
+            break;
+
+
+        case BUILTIN_PLATFORM:
+            updatePlatform();
+            break;
+
+
+        case BUILTIN_FOOTBALL:
+            updateFootball();
+            break;
+
+
+        default:
+            break;
+    }
+}
+
+
+//====================================================
+// RENDER
+//====================================================
+
+void BuiltinGames::render()
+{
+    if (!initialized)
+        return;
+
+
+    if (!gameRunning)
+        return;
+
+
+    switch (currentGame)
+    {
+        case BUILTIN_PONG:
+            renderPong();
+            break;
+
+
+        case BUILTIN_GOLF:
+            renderGolf();
+            break;
+
+
+        case BUILTIN_SNAKE:
+            renderSnake();
+            break;
+
+
+        case BUILTIN_PLATFORM:
+            renderPlatform();
+            break;
+
+
+        case BUILTIN_FOOTBALL:
+            renderFootball();
+            break;
+
+
+        default:
+            break;
+    }
+}
+//====================================================
+// STOP
+//====================================================
+
+void BuiltinGames::stop()
+{
+    if (!initialized)
+        return;
+
+
+    gameRunning = false;
+
+    currentGame = BUILTIN_NONE;
+}
+
+
+//====================================================
+// RUNNING
+//====================================================
+
+bool BuiltinGames::running()
+{
+    return gameRunning;
+}
+
+
+//====================================================
+// CURRENT GAME
+//====================================================
+
+BuiltinGame BuiltinGames::current()
+{
+    return currentGame;
+}
+//====================================================
+// UPDATE FUNCTIONS
+//====================================================
+
+void BuiltinGames::updatePong()
+{
+
+}
+
+
+void BuiltinGames::updateGolf()
+{
+
+}
+
+
+void BuiltinGames::updateSnake()
+{
+
+}
+
+
+void BuiltinGames::updatePlatform()
+{
+
+}
+
+
+void BuiltinGames::updateFootball()
+{
+
+}
+
+
+//====================================================
+// RENDER FUNCTIONS
+//====================================================
+
+void BuiltinGames::renderPong()
+{
+
+}
+
+
+void BuiltinGames::renderGolf()
+{
+
+}
+
+
+void BuiltinGames::renderSnake()
+{
+
+}
+
+
+void BuiltinGames::renderPlatform()
+{
+
+}
+
+
+void BuiltinGames::renderFootball()
+{
+
+}
+#ifndef MENU_MANAGER_H
+#define MENU_MANAGER_H
+
+#include <Arduino.h>
+
+#include "display_manager.h"
+#include "input_manager.h"
+#include "touch_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// MENU MANAGER
+// 77_menu_manager.h
+//====================================================
+
+
+enum MenuScreen
+{
+    MENU_HOME = 0,
+
+    MENU_GAMES,
+
+    MENU_BUILTIN_GAMES,
+
+    MENU_MUSIC,
+
+    MENU_PDF,
+
+    MENU_SETTINGS,
+
+    MENU_WIFI,
+
+    MENU_FILE_MANAGER,
+
+    MENU_POWER
+};
+
+
+class MenuManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Güncelle
+    static void update();
+
+    // Çiz
+    static void render();
+
+    // Menü değiştir
+    static void open(MenuScreen screen);
+
+    // Geri
+    static void back();
+
+    // Bilgiler
+    static MenuScreen current();
+
+    static uint8_t selectedItem();
+
+private:
+
+    static MenuScreen currentScreen;
+
+    static uint8_t currentSelection;
+
+    static bool initialized;
+
+    static void updateInput();
+
+    static void renderHome();
+
+    static void renderGames();
+
+    static void renderBuiltinGames();
+
+    static void renderMusic();
+
+    static void renderPDF();
+
+    static void renderSettings();
+
+    static void renderWiFi();
+
+    static void renderFileManager();
+
+    static void renderPower();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// MENU MANAGER
+// 78_menu_manager.cpp
+//====================================================
+
+#include "menu_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+MenuScreen MenuManager::currentScreen =
+    MENU_HOME;
+
+
+uint8_t MenuManager::currentSelection = 0;
+
+
+bool MenuManager::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool MenuManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentScreen = MENU_HOME;
+
+    currentSelection = 0;
+
+
+    DisplayManager::showScreen(
+        SCREEN_HOME
+    );
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void MenuManager::update()
+{
+    if (!initialized)
+        return;
+
+
+    updateInput();
+}
+//====================================================
+// RENDER
+//====================================================
+
+void MenuManager::render()
+{
+    if (!initialized)
+        return;
+
+
+    switch (currentScreen)
+    {
+        case MENU_HOME:
+            renderHome();
+            break;
+
+
+        case MENU_GAMES:
+            renderGames();
+            break;
+
+
+        case MENU_BUILTIN_GAMES:
+            renderBuiltinGames();
+            break;
+
+
+        case MENU_MUSIC:
+            renderMusic();
+            break;
+
+
+        case MENU_PDF:
+            renderPDF();
+            break;
+
+
+        case MENU_SETTINGS:
+            renderSettings();
+            break;
+
+
+        case MENU_WIFI:
+            renderWiFi();
+            break;
+
+
+        case MENU_FILE_MANAGER:
+            renderFileManager();
+            break;
+
+
+        case MENU_POWER:
+            renderPower();
+            break;
+    }
+}
+
+
+//====================================================
+// OPEN MENU
+//====================================================
+
+void MenuManager::open(MenuScreen screen)
+{
+    currentScreen = screen;
+
+    currentSelection = 0;
+}
+
+
+//====================================================
+// BACK
+//====================================================
+
+void MenuManager::back()
+{
+    if (currentScreen != MENU_HOME)
+    {
+        open(MENU_HOME);
+    }
+}
+
+
+//====================================================
+// GETTERS
+//====================================================
+
+MenuScreen MenuManager::current()
+{
+    return currentScreen;
+}
+
+
+uint8_t MenuManager::selectedItem()
+{
+    return currentSelection;
+}
+//====================================================
+// INPUT UPDATE
+//====================================================
+
+void MenuManager::updateInput()
+{
+    InputManager::update();
+
+    TouchManager::update();
+
+
+    if (InputManager::up())
+    {
+        if (currentSelection > 0)
+        {
+            currentSelection--;
+        }
+    }
+
+
+    if (InputManager::down())
+    {
+        currentSelection++;
+    }
+
+
+    if (InputManager::confirm())
+    {
+        switch (currentScreen)
+        {
+            case MENU_HOME:
+                break;
+
+            case MENU_GAMES:
+                break;
+
+            case MENU_BUILTIN_GAMES:
+                break;
+
+            case MENU_MUSIC:
+                break;
+
+            case MENU_PDF:
+                break;
+
+            case MENU_SETTINGS:
+                break;
+
+            case MENU_WIFI:
+                break;
+
+            case MENU_FILE_MANAGER:
+                break;
+
+            case MENU_POWER:
+                break;
+        }
+    }
+
+
+    if (InputManager::back())
+    {
+        back();
+    }
+
+
+    if (TouchManager::touched())
+    {
+        TouchPoint point = TouchManager::point();
+
+        (void)point;
+
+        // Dokunmatik menü seçimi
+        // ileride burada işlenecek.
+    }
+}
+//====================================================
+// RENDER FUNCTIONS
+//====================================================
+
+void MenuManager::renderHome()
+{
+    DisplayManager::showScreen(SCREEN_HOME);
+}
+
+
+void MenuManager::renderGames()
+{
+    DisplayManager::showScreen(SCREEN_GAME);
+}
+
+
+void MenuManager::renderBuiltinGames()
+{
+    DisplayManager::showScreen(SCREEN_GAME);
+}
+
+
+void MenuManager::renderMusic()
+{
+    DisplayManager::showScreen(SCREEN_MUSIC);
+}
+
+
+void MenuManager::renderPDF()
+{
+    DisplayManager::showScreen(SCREEN_PDF);
+}
+
+
+void MenuManager::renderSettings()
+{
+    DisplayManager::showScreen(SCREEN_SETTINGS);
+}
+
+
+void MenuManager::renderWiFi()
+{
+    DisplayManager::clear();
+
+    DisplayManager::printText(
+        "Wi-Fi",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+
+
+void MenuManager::renderFileManager()
+{
+    DisplayManager::clear();
+
+    DisplayManager::printText(
+        "File Manager",
+        20,
+        20,
+        ILI9341_WHITE,
+        2
+    );
+}
+
+
+void MenuManager::renderPower()
+{
+    DisplayManager::clear();
+
+    DisplayManager::printText(
+        "Power",
+        20,
+        20,
+        ILI9341_RED,
+        2
+    );
+}
+#ifndef THEME_MANAGER_H
+#define THEME_MANAGER_H
+
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+//====================================================
+// ESP32 GAME STATION
+// THEME MANAGER
+// 79_theme_manager.h
+//====================================================
+
+
+enum ThemeType
+{
+    THEME_CLASSIC = 0,
+
+    THEME_DARK,
+
+    THEME_LIGHT,
+
+    THEME_BLUE,
+
+    THEME_GREEN,
+
+    THEME_RETRO
+};
+
+
+struct ThemeColors
+{
+    uint16_t background;
+
+    uint16_t foreground;
+
+    uint16_t primary;
+
+    uint16_t secondary;
+
+    uint16_t highlight;
+
+    uint16_t warning;
+};
+
+
+
+class ThemeManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Tema
+    static void setTheme(ThemeType theme);
+
+    static ThemeType currentTheme();
+
+    // Renkler
+    static ThemeColors colors();
+
+    static uint16_t background();
+
+    static uint16_t foreground();
+
+    static uint16_t primary();
+
+    static uint16_t secondary();
+
+    static uint16_t highlight();
+
+    static uint16_t warning();
+
+private:
+
+    static ThemeType activeTheme;
+
+    static ThemeColors activeColors;
+
+    static bool initialized;
+
+    static void loadClassic();
+
+    static void loadDark();
+
+    static void loadLight();
+
+    static void loadBlue();
+
+    static void loadGreen();
+
+    static void loadRetro();
+};
+
+#endif
+#ifndef THEME_MANAGER_H
+#define THEME_MANAGER_H
+
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+//====================================================
+// ESP32 GAME STATION
+// THEME MANAGER
+// 79_theme_manager.h
+//====================================================
+
+
+enum ThemeType
+{
+    THEME_CLASSIC = 0,
+
+    THEME_DARK,
+
+    THEME_LIGHT,
+
+    THEME_BLUE,
+
+    THEME_GREEN,
+
+    THEME_RETRO
+};
+
+
+struct ThemeColors
+{
+    uint16_t background;
+
+    uint16_t foreground;
+
+    uint16_t primary;
+
+    uint16_t secondary;
+
+    uint16_t highlight;
+
+    uint16_t warning;
+};
+
+
+
+class ThemeManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Tema
+    static void setTheme(ThemeType theme);
+
+    static ThemeType currentTheme();
+
+    // Renkler
+    static ThemeColors colors();
+
+    static uint16_t background();
+
+    static uint16_t foreground();
+
+    static uint16_t primary();
+
+    static uint16_t secondary();
+
+    static uint16_t highlight();
+
+    static uint16_t warning();
+
+private:
+
+    static ThemeType activeTheme;
+
+    static ThemeColors activeColors;
+
+    static bool initialized;
+
+    static void loadClassic();
+
+    static void loadDark();
+
+    static void loadLight();
+
+    static void loadBlue();
+
+    static void loadGreen();
+
+    static void loadRetro();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// THEME MANAGER
+// 80_theme_manager.cpp
+//====================================================
+
+#include "theme_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+ThemeType ThemeManager::activeTheme =
+    THEME_CLASSIC;
+
+
+ThemeColors ThemeManager::activeColors =
+{
+    ILI9341_BLACK,
+    ILI9341_WHITE,
+    ILI9341_CYAN,
+    ILI9341_DARKCYAN,
+    ILI9341_YELLOW,
+    ILI9341_RED
+};
+
+
+bool ThemeManager::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool ThemeManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    loadClassic();
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// SET THEME
+//====================================================
+
+void ThemeManager::setTheme(ThemeType theme)
+{
+    activeTheme = theme;
+
+
+    switch (theme)
+    {
+        case THEME_CLASSIC:
+            loadClassic();
+            break;
+
+        case THEME_DARK:
+            loadDark();
+            break;
+
+        case THEME_LIGHT:
+            loadLight();
+            break;
+
+        case THEME_BLUE:
+            loadBlue();
+            break;
+
+        case THEME_GREEN:
+            loadGreen();
+            break;
+
+        case THEME_RETRO:
+            loadRetro();
+            break;
+    }
+}
+//====================================================
+// CURRENT THEME
+//====================================================
+
+ThemeType ThemeManager::currentTheme()
+{
+    return activeTheme;
+}
+
+
+//====================================================
+// COLORS
+//====================================================
+
+ThemeColors ThemeManager::colors()
+{
+    return activeColors;
+}
+
+
+uint16_t ThemeManager::background()
+{
+    return activeColors.background;
+}
+
+
+uint16_t ThemeManager::foreground()
+{
+    return activeColors.foreground;
+}
+
+
+uint16_t ThemeManager::primary()
+{
+    return activeColors.primary;
+}
+
+
+uint16_t ThemeManager::secondary()
+{
+    return activeColors.secondary;
+}
+
+
+uint16_t ThemeManager::highlight()
+{
+    return activeColors.highlight;
+}
+
+
+uint16_t ThemeManager::warning()
+{
+    return activeColors.warning;
+}
+//====================================================
+// THEME LOADERS
+//====================================================
+
+void ThemeManager::loadClassic()
+{
+    activeColors.background = ILI9341_BLACK;
+    activeColors.foreground = ILI9341_WHITE;
+    activeColors.primary    = ILI9341_CYAN;
+    activeColors.secondary  = ILI9341_DARKCYAN;
+    activeColors.highlight  = ILI9341_YELLOW;
+    activeColors.warning    = ILI9341_RED;
+}
+
+
+void ThemeManager::loadDark()
+{
+    activeColors.background = ILI9341_BLACK;
+    activeColors.foreground = ILI9341_LIGHTGREY;
+    activeColors.primary    = ILI9341_BLUE;
+    activeColors.secondary  = ILI9341_NAVY;
+    activeColors.highlight  = ILI9341_CYAN;
+    activeColors.warning    = ILI9341_RED;
+}
+
+
+void ThemeManager::loadLight()
+{
+    activeColors.background = ILI9341_WHITE;
+    activeColors.foreground = ILI9341_BLACK;
+    activeColors.primary    = ILI9341_BLUE;
+    activeColors.secondary  = ILI9341_CYAN;
+    activeColors.highlight  = ILI9341_ORANGE;
+    activeColors.warning    = ILI9341_RED;
+}
+
+
+void ThemeManager::loadBlue()
+{
+    activeColors.background = ILI9341_NAVY;
+    activeColors.foreground = ILI9341_WHITE;
+    activeColors.primary    = ILI9341_CYAN;
+    activeColors.secondary  = ILI9341_BLUE;
+    activeColors.highlight  = ILI9341_YELLOW;
+    activeColors.warning    = ILI9341_RED;
+}
+
+
+void ThemeManager::loadGreen()
+{
+    activeColors.background = ILI9341_BLACK;
+    activeColors.foreground = ILI9341_GREEN;
+    activeColors.primary    = ILI9341_DARKGREEN;
+    activeColors.secondary  = ILI9341_CYAN;
+    activeColors.highlight  = ILI9341_YELLOW;
+    activeColors.warning    = ILI9341_RED;
+}
+
+
+void ThemeManager::loadRetro()
+{
+    activeColors.background = ILI9341_BLACK;
+    activeColors.foreground = ILI9341_GREEN;
+    activeColors.primary    = ILI9341_GREEN;
+    activeColors.secondary  = ILI9341_DARKGREEN;
+    activeColors.highlight  = ILI9341_WHITE;
+    activeColors.warning    = ILI9341_RED;
+}
+#ifndef SETTINGS_MANAGER_H
+#define SETTINGS_MANAGER_H
+
+#include <Arduino.h>
+
+#include "theme_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// SETTINGS MANAGER
+// 81_settings_manager.h
+//====================================================
+
+
+//----------------------------------------------------
+// LANGUAGE
+//----------------------------------------------------
+
+enum SystemLanguage
+{
+    LANG_TURKISH = 0,
+
+    LANG_ENGLISH
+};
+
+
+//----------------------------------------------------
+// SETTINGS
+//----------------------------------------------------
+
+struct SystemSettings
+{
+    ThemeType theme;
+
+    uint8_t brightness;
+
+    uint8_t volume;
+
+    bool wifiEnabled;
+
+    bool bluetoothEnabled;
+
+    bool speakerEnabled;
+
+    bool headphoneAutoSwitch;
+
+    bool vibrationEnabled;
+
+    bool autoSleep;
+
+    uint16_t autoSleepTime;
+
+    SystemLanguage language;
+};
+
+
+//----------------------------------------------------
+// SETTINGS MANAGER
+//----------------------------------------------------
+
+class SettingsManager
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // Kaydet / Yükle
+    static bool load();
+
+    static bool save();
+
+    static bool restoreDefaults();
+
+    // Ayarlar
+    static SystemSettings get();
+
+    static void set(const SystemSettings& settings);
+
+    // Tema
+    static ThemeType theme();
+
+    static void setTheme(ThemeType theme);
+
+    // Ses
+    static uint8_t volume();
+
+    static void setVolume(uint8_t volume);
+
+    // Parlaklık
+    static uint8_t brightness();
+
+    static void setBrightness(uint8_t brightness);
+
+    // Wi-Fi
+    static bool wifiEnabled();
+
+    static void enableWiFi(bool enable);
+
+    // Bluetooth
+    static bool bluetoothEnabled();
+
+    static void enableBluetooth(bool enable);
+
+    // Hoparlör
+    static bool speakerEnabled();
+
+    static void enableSpeaker(bool enable);
+
+    // Kulaklık
+    static bool headphoneAutoSwitch();
+
+    static void enableHeadphoneAutoSwitch(bool enable);
+
+    // Titreşim
+    static bool vibrationEnabled();
+
+    static void enableVibration(bool enable);
+
+    // Uyku
+    static bool autoSleep();
+
+    static void enableAutoSleep(bool enable);
+
+    static uint16_t autoSleepMinutes();
+
+    static void setAutoSleepMinutes(uint16_t minutes);
+
+    // Dil
+    static SystemLanguage language();
+
+    static void setLanguage(SystemLanguage language);
+
+private:
+
+    static SystemSettings currentSettings;
+
+    static bool initialized;
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// SETTINGS MANAGER
+// 82_settings_manager.cpp
+//====================================================
+
+#include "settings_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+SystemSettings SettingsManager::currentSettings =
+{
+    THEME_CLASSIC,   // Theme
+
+    100,             // Brightness
+
+    80,              // Volume
+
+    false,           // Wi-Fi
+
+    false,           // Bluetooth
+
+    true,            // Speaker
+
+    true,            // Headphone Auto Switch
+
+    true,            // Vibration
+
+    true,            // Auto Sleep
+
+    10,              // Auto Sleep Time (min)
+
+    LANG_TURKISH     // Language
+};
+
+
+bool SettingsManager::initialized = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool SettingsManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    load();
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// LOAD
+//====================================================
+
+bool SettingsManager::load()
+{
+    // İleride SD kart veya Flash üzerinden
+    // ayarlar burada okunacak.
+
+    ThemeManager::setTheme(
+        currentSettings.theme
+    );
+
+    return true;
+}
+//====================================================
+// SAVE
+//====================================================
+
+bool SettingsManager::save()
+{
+    // İleride:
+    // - LittleFS
+    // - NVS
+    // - SD Kart
+    // seçeneklerinden biri kullanılarak
+    // ayarlar kalıcı olarak kaydedilecek.
+
+    return true;
+}
+
+
+//====================================================
+// RESTORE DEFAULTS
+//====================================================
+
+bool SettingsManager::restoreDefaults()
+{
+    currentSettings.theme                 = THEME_CLASSIC;
+
+    currentSettings.brightness            = 100;
+
+    currentSettings.volume                = 80;
+
+    currentSettings.wifiEnabled           = false;
+
+    currentSettings.bluetoothEnabled      = false;
+
+    currentSettings.speakerEnabled        = true;
+
+    currentSettings.headphoneAutoSwitch   = true;
+
+    currentSettings.vibrationEnabled      = true;
+
+    currentSettings.autoSleep             = true;
+
+    currentSettings.autoSleepTime         = 10;
+
+    currentSettings.language              = LANG_TURKISH;
+
+
+    ThemeManager::setTheme(
+        currentSettings.theme
+    );
+
+
+    return save();
+}
+
+
+//====================================================
+// GET
+//====================================================
+
+SystemSettings SettingsManager::get()
+{
+    return currentSettings;
+}
+
+
+//====================================================
+// SET
+//====================================================
+
+void SettingsManager::set(
+    const SystemSettings& settings)
+{
+    currentSettings = settings;
+
+
+    ThemeManager::setTheme(
+        currentSettings.theme
+    );
+}
+//====================================================
+// THEME
+//====================================================
+
+ThemeType SettingsManager::theme()
+{
+    return currentSettings.theme;
+}
+
+
+void SettingsManager::setTheme(ThemeType theme)
+{
+    currentSettings.theme = theme;
+
+    ThemeManager::setTheme(theme);
+}
+
+
+//====================================================
+// VOLUME
+//====================================================
+
+uint8_t SettingsManager::volume()
+{
+    return currentSettings.volume;
+}
+
+
+void SettingsManager::setVolume(uint8_t volume)
+{
+    if (volume > 100)
+        volume = 100;
+
+    currentSettings.volume = volume;
+}
+
+
+//====================================================
+// BRIGHTNESS
+//====================================================
+
+uint8_t SettingsManager::brightness()
+{
+    return currentSettings.brightness;
+}
+
+
+void SettingsManager::setBrightness(uint8_t brightness)
+{
+    if (brightness > 100)
+        brightness = 100;
+
+    currentSettings.brightness = brightness;
+}
+
+
+//====================================================
+// WIFI
+//====================================================
+
+bool SettingsManager::wifiEnabled()
+{
+    return currentSettings.wifiEnabled;
+}
+
+
+void SettingsManager::enableWiFi(bool enable)
+{
+    currentSettings.wifiEnabled = enable;
+}
+
+
+//====================================================
+// BLUETOOTH
+//====================================================
+
+bool SettingsManager::bluetoothEnabled()
+{
+    return currentSettings.bluetoothEnabled;
+}
+
+
+void SettingsManager::enableBluetooth(bool enable)
+{
+    currentSettings.bluetoothEnabled = enable;
+}
+
+
+//====================================================
+// SPEAKER
+//====================================================
+
+bool SettingsManager::speakerEnabled()
+{
+    return currentSettings.speakerEnabled;
+}
+
+
+void SettingsManager::enableSpeaker(bool enable)
+{
+    currentSettings.speakerEnabled = enable;
+}
+
+
+//====================================================
+// HEADPHONE AUTO SWITCH
+//====================================================
+
+bool SettingsManager::headphoneAutoSwitch()
+{
+    return currentSettings.headphoneAutoSwitch;
+}
+
+
+void SettingsManager::enableHeadphoneAutoSwitch(bool enable)
+{
+    currentSettings.headphoneAutoSwitch = enable;
+}
+//====================================================
+// VIBRATION
+//====================================================
+
+bool SettingsManager::vibrationEnabled()
+{
+    return currentSettings.vibrationEnabled;
+}
+
+
+void SettingsManager::enableVibration(bool enable)
+{
+    currentSettings.vibrationEnabled = enable;
+}
+
+
+//====================================================
+// AUTO SLEEP
+//====================================================
+
+bool SettingsManager::autoSleep()
+{
+    return currentSettings.autoSleep;
+}
+
+
+void SettingsManager::enableAutoSleep(bool enable)
+{
+    currentSettings.autoSleep = enable;
+}
+
+
+uint16_t SettingsManager::autoSleepMinutes()
+{
+    return currentSettings.autoSleepTime;
+}
+
+
+void SettingsManager::setAutoSleepMinutes(uint16_t minutes)
+{
+    currentSettings.autoSleepTime = minutes;
+}
+
+
+//====================================================
+// LANGUAGE
+//====================================================
+
+SystemLanguage SettingsManager::language()
+{
+    return currentSettings.language;
+}
+
+
+void SettingsManager::setLanguage(SystemLanguage language)
+{
+    currentSettings.language = language;
+}
+#ifndef GB_EMULATOR_H
+#define GB_EMULATOR_H
+
+#include <Arduino.h>
+
+#include "display_manager.h"
+#include "input_manager.h"
+#include "audio_manager.h"
+#include "save_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// GAME BOY EMULATOR
+// 83_gb_emulator.h
+//====================================================
+
+enum GBState
+{
+    GB_STOPPED = 0,
+
+    GB_RUNNING,
+
+    GB_PAUSED
+};
+
+
+class GBEmulator
+{
+public:
+
+    // Başlat
+    static bool begin();
+
+    // ROM
+    static bool loadROM(const String& path);
+
+    static void unloadROM();
+
+    // Çalıştır
+    static bool start();
+
+    static void update();
+
+    static void render();
+
+    // Durum
+    static void pause();
+
+    static void resume();
+
+    static void stop();
+
+    static GBState state();
+
+    static bool running();
+
+    // Bilgiler
+    static String currentROM();
+
+    // Save
+    static bool saveGame();
+
+    static bool loadSave();
+
+private:
+
+    static bool initialized;
+
+    static GBState currentState;
+
+    static String romPath;
+
+    static bool romLoaded;
+
+    static bool initializeCore();
+
+    static void shutdownCore();
+
+    static void updateVideo();
+
+    static void updateAudio();
+
+    static void updateInput();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// GAME BOY EMULATOR
+// 84_gb_emulator.cpp
+//====================================================
+
+#include "gb_emulator.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool GBEmulator::initialized = false;
+
+
+GBState GBEmulator::currentState =
+    GB_STOPPED;
+
+
+String GBEmulator::romPath = "";
+
+
+bool GBEmulator::romLoaded = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool GBEmulator::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentState = GB_STOPPED;
+
+    romLoaded = false;
+
+    romPath = "";
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// LOAD ROM
+//====================================================
+
+bool GBEmulator::loadROM(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    unloadROM();
+
+
+    romPath = path;
+
+    romLoaded = true;
+
+
+    return initializeCore();
+}
+
+
+//====================================================
+// UNLOAD ROM
+//====================================================
+
+void GBEmulator::unloadROM()
+{
+    if (!romLoaded)
+        return;
+
+
+    shutdownCore();
+
+    currentState = GB_STOPPED;
+
+    romLoaded = false;
+
+    romPath = "";
+}
+
+//====================================================
+// START
+//====================================================
+
+bool GBEmulator::start()
+{
+    if (!initialized)
+        return false;
+
+
+    if (!romLoaded)
+        return false;
+
+
+    currentState = GB_RUNNING;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void GBEmulator::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != GB_RUNNING)
+        return;
+
+
+    updateInput();
+
+    //================================================
+    // GAME BOY CORE
+    //================================================
+    // İleride burada gerçek emülatör çekirdeğinin
+    // bir frame çalıştırma fonksiyonu çağrılacak.
+    //
+    // Örneğin:
+    // gb_run_frame();
+    //================================================
+
+    updateVideo();
+
+    updateAudio();
+}
+
+
+//====================================================
+// RENDER
+//====================================================
+
+void GBEmulator::render()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != GB_RUNNING)
+        return;
+
+
+    //================================================
+    // FRAMEBUFFER
+    //================================================
+    // Emülatörden gelen görüntü burada
+    // DisplayManager'a aktarılacak.
+    //================================================
+}
+
+//====================================================
+// PAUSE
+//====================================================
+
+void GBEmulator::pause()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != GB_RUNNING)
+        return;
+
+
+    currentState = GB_PAUSED;
+}
+
+
+//====================================================
+// RESUME
+//====================================================
+
+void GBEmulator::resume()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != GB_PAUSED)
+        return;
+
+
+    currentState = GB_RUNNING;
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void GBEmulator::stop()
+{
+    if (!initialized)
+        return;
+
+
+    shutdownCore();
+
+    currentState = GB_STOPPED;
+
+    romLoaded = false;
+
+    romPath = "";
+}
+
+
+//====================================================
+// STATE
+//====================================================
+
+GBState GBEmulator::state()
+{
+    return currentState;
+}
+
+
+//====================================================
+// RUNNING
+//====================================================
+
+bool GBEmulator::running()
+{
+    return currentState == GB_RUNNING;
+}
+
+
+//====================================================
+// CURRENT ROM
+//====================================================
+
+String GBEmulator::currentROM()
+{
+    return romPath;
+}
+//====================================================
+// SAVE GAME
+//====================================================
+
+bool GBEmulator::saveGame()
+{
+    if (!romLoaded)
+        return false;
+
+    // TODO:
+    // SRAM / Save State kaydı
+
+    return true;
+}
+
+
+//====================================================
+// LOAD SAVE
+//====================================================
+
+bool GBEmulator::loadSave()
+{
+    if (!romLoaded)
+        return false;
+
+    // TODO:
+    // SRAM / Save State yükleme
+
+    return true;
+}
+
+
+//====================================================
+// INITIALIZE CORE
+//====================================================
+
+bool GBEmulator::initializeCore()
+{
+    //================================================
+    // Gerçek Game Boy emülatör çekirdeği
+    // burada başlatılacak.
+    //================================================
+
+    return true;
+}
+
+
+//====================================================
+// SHUTDOWN CORE
+//====================================================
+
+void GBEmulator::shutdownCore()
+{
+    //================================================
+    // Emülatör çekirdeği burada kapatılacak.
+    //================================================
+}
+
+
+//====================================================
+// VIDEO
+//====================================================
+
+void GBEmulator::updateVideo()
+{
+    //================================================
+    // Frame Buffer
+    // ↓
+    // DisplayManager
+    //================================================
+}
+
+
+//====================================================
+// AUDIO
+//====================================================
+
+void GBEmulator::updateAudio()
+{
+    //================================================
+    // PCM
+    // ↓
+    // AudioManager
+    //================================================
+}
+
+
+//====================================================
+// INPUT
+//====================================================
+
+void GBEmulator::updateInput()
+{
+    //================================================
+    // InputManager
+    // ↓
+    // Game Boy Tuşları
+    //
+    // ↑ ↓ ← →
+    // A
+    // B
+    // START
+    // SELECT
+    //================================================
+}
+#ifndef NES_EMULATOR_H
+#define NES_EMULATOR_H
+
+#include <Arduino.h>
+
+#include "display_manager.h"
+#include "audio_manager.h"
+#include "input_manager.h"
+#include "save_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// NES EMULATOR
+// 85_nes_emulator.h
+//====================================================
+
+enum NESState
+{
+    NES_STOPPED = 0,
+
+    NES_RUNNING,
+
+    NES_PAUSED
+};
+
+
+class NESEmulator
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static void render();
+
+
+    //================================================
+    // ROM
+    //================================================
+
+    static bool loadROM(const String& path);
+
+    static void unloadROM();
+
+    static String currentROM();
+
+
+    //================================================
+    // CONTROL
+    //================================================
+
+    static bool start();
+
+    static void stop();
+
+    static void pause();
+
+    static void resume();
+
+
+    //================================================
+    // SAVE
+    //================================================
+
+    static bool saveGame();
+
+    static bool loadSave();
+
+
+    //================================================
+    // STATUS
+    //================================================
+
+    static bool running();
+
+    static NESState state();
+
+
+private:
+
+    static bool initialized;
+
+    static bool romLoaded;
+
+    static String romPath;
+
+    static NESState currentState;
+
+
+    // Emulator Core
+
+    static bool initializeCore();
+
+    static void shutdownCore();
+
+
+    // Internal Updates
+
+    static void updateVideo();
+
+    static void updateAudio();
+
+    static void updateInput();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// NES EMULATOR
+// 86_nes_emulator.cpp
+//====================================================
+
+#include "nes_emulator.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool NESEmulator::initialized = false;
+
+
+bool NESEmulator::romLoaded = false;
+
+
+String NESEmulator::romPath = "";
+
+
+NESState NESEmulator::currentState =
+    NES_STOPPED;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool NESEmulator::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentState = NES_STOPPED;
+
+    romLoaded = false;
+
+    romPath = "";
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// LOAD ROM
+//====================================================
+
+bool NESEmulator::loadROM(const String& path)
+{
+    if (!initialized)
+        return false;
+
+
+    unloadROM();
+
+
+    romPath = path;
+
+    romLoaded = true;
+
+
+    return initializeCore();
+}
+
+
+//====================================================
+// UNLOAD ROM
+//====================================================
+
+void NESEmulator::unloadROM()
+{
+    if (!romLoaded)
+        return;
+
+
+    shutdownCore();
+
+    currentState = NES_STOPPED;
+
+    romLoaded = false;
+
+    romPath = "";
+}
+//====================================================
+// START
+//====================================================
+
+bool NESEmulator::start()
+{
+    if (!initialized)
+        return false;
+
+
+    if (!romLoaded)
+        return false;
+
+
+    currentState = NES_RUNNING;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void NESEmulator::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != NES_RUNNING)
+        return;
+
+
+    updateInput();
+
+    //================================================
+    // NES CORE
+    //================================================
+    // İleride burada gerçek NES emülatör
+    // çekirdeği bir frame çalıştıracak.
+    //
+    // Örneğin:
+    // nes_run_frame();
+    //================================================
+
+    updateVideo();
+
+    updateAudio();
+}
+
+
+//====================================================
+// RENDER
+//====================================================
+
+void NESEmulator::render()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != NES_RUNNING)
+        return;
+
+
+    //================================================
+    // NES Frame Buffer
+    // ↓
+    // DisplayManager
+    //================================================
+}
 

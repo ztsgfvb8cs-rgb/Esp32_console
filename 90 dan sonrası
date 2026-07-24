@@ -1,1 +1,1364 @@
+//====================================================
+// ESP32 GAME STATION
+// PHYSICS MANAGER
+// 91_physics_manager.h
+//====================================================
 
+#ifndef PHYSICS_MANAGER_H
+#define PHYSICS_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// PHYSICS MODES
+//====================================================
+
+enum PhysicsMode
+{
+    PHYSICS_NORMAL = 0,
+    PHYSICS_BHOP,
+    PHYSICS_SURF,
+    PHYSICS_PARKOUR
+};
+
+//====================================================
+// VECTOR2
+//====================================================
+
+struct PhysicsVector2
+{
+    float x;
+    float y;
+};
+
+//====================================================
+// PLAYER BODY
+//====================================================
+
+struct PhysicsBody
+{
+    PhysicsVector2 position;
+    PhysicsVector2 velocity;
+    PhysicsVector2 acceleration;
+
+    bool grounded;
+    bool jumping;
+
+    float gravity;
+    float friction;
+    float airControl;
+    float maxSpeed;
+    float jumpForce;
+};
+
+//====================================================
+// PHYSICS MANAGER
+//====================================================
+
+class PhysicsManager
+{
+
+public:
+
+    static bool begin();
+
+    static void update(float deltaTime);
+
+    static void reset();
+
+    static void setMode(PhysicsMode mode);
+
+    static PhysicsMode mode();
+
+    static void setGravity(float gravity);
+
+    static void setFriction(float friction);
+
+    static void setAirControl(float control);
+
+    static void setMaxSpeed(float speed);
+
+    static void setJumpForce(float force);
+
+    static void moveLeft();
+
+    static void moveRight();
+
+    static void stop();
+
+    static void jump();
+
+    static void land();
+
+    static void applyForce(float x,float y);
+
+    static float speed();
+
+    static PhysicsVector2 position();
+
+    static PhysicsVector2 velocity();
+
+    static PhysicsBody& player();
+
+private:
+
+    static void applyGravity(float dt);
+
+    static void applyFriction(float dt);
+
+    static void integrate(float dt);
+
+    static void clampSpeed();
+
+private:
+
+    static bool initialized;
+
+    static PhysicsMode currentMode;
+
+    static PhysicsBody body;
+
+};
+
+#endif
+//====================================================
+// LAND
+//====================================================
+
+void PhysicsManager::land()
+{
+    body.grounded = true;
+
+    body.jumping = false;
+
+    body.velocity.y = 0.0f;
+}
+
+//====================================================
+// APPLY FORCE
+//====================================================
+
+void PhysicsManager::applyForce(
+    float x,
+    float y
+)
+{
+    body.velocity.x += x;
+    body.velocity.y += y;
+}
+
+//====================================================
+// APPLY GRAVITY
+//====================================================
+
+void PhysicsManager::applyGravity(float dt)
+{
+    if(body.grounded)
+        return;
+
+    body.velocity.y += body.gravity * dt;
+}
+
+//====================================================
+// APPLY FRICTION
+//====================================================
+
+void PhysicsManager::applyFriction(float dt)
+{
+    if(!body.grounded)
+        return;
+
+    float amount = body.friction * dt;
+
+    if(body.velocity.x > 0.0f)
+    {
+        body.velocity.x -= amount;
+
+        if(body.velocity.x < 0.0f)
+            body.velocity.x = 0.0f;
+    }
+    else if(body.velocity.x < 0.0f)
+    {
+        body.velocity.x += amount;
+
+        if(body.velocity.x > 0.0f)
+            body.velocity.x = 0.0f;
+    }
+}
+
+//====================================================
+// INTEGRATE
+//====================================================
+
+void PhysicsManager::integrate(float dt)
+{
+    body.position.x += body.velocity.x * dt;
+
+    body.position.y += body.velocity.y * dt;
+
+    body.velocity.x += body.acceleration.x * dt;
+
+    body.velocity.y += body.acceleration.y * dt;
+}
+
+//====================================================
+// CLAMP SPEED
+//====================================================
+
+void PhysicsManager::clampSpeed()
+{
+    if(body.velocity.x > body.maxSpeed)
+        body.velocity.x = body.maxSpeed;
+
+    if(body.velocity.x < -body.maxSpeed)
+        body.velocity.x = -body.maxSpeed;
+}
+
+//====================================================
+// SETTERS
+//====================================================
+
+void PhysicsManager::setGravity(float gravity)
+{
+    body.gravity = gravity;
+}
+
+void PhysicsManager::setFriction(float friction)
+{
+    body.friction = friction;
+}
+
+void PhysicsManager::setAirControl(float control)
+{
+    body.airControl = control;
+}
+
+void PhysicsManager::setMaxSpeed(float speed)
+{
+    body.maxSpeed = speed;
+}
+
+void PhysicsManager::setJumpForce(float force)
+{
+    body.jumpForce = force;
+}
+
+//====================================================
+// GETTERS
+//====================================================
+
+float PhysicsManager::speed()
+{
+    return sqrt(
+        body.velocity.x * body.velocity.x +
+        body.velocity.y * body.velocity.y
+    );
+}
+
+PhysicsVector2 PhysicsManager::position()
+{
+    return body.position;
+}
+
+PhysicsVector2 PhysicsManager::velocity()
+{
+    return body.velocity;
+}
+
+PhysicsBody& PhysicsManager::player()
+{
+    return body;
+}
+//====================================================
+//====================================================
+// ESP32 GAME STATION
+// PHYSICS MANAGER
+// 91_physics_manager_notes.h
+//====================================================
+//====================================================
+
+#ifndef PHYSICS_MANAGER_NOTES_H
+#define PHYSICS_MANAGER_NOTES_H
+
+//====================================================
+// PHYSICS INFORMATION
+//====================================================
+//
+// Bu dosya PhysicsManager için ortak fizik
+// sabitlerini içerir.
+//
+// Bhop Engine bu değerleri kullanacaktır.
+//
+//====================================================
+
+
+//====================================================
+// DEFAULT FPS
+//====================================================
+
+#define PHYSICS_DEFAULT_FPS          30
+
+//====================================================
+// MAX FPS
+//====================================================
+
+#define PHYSICS_MAX_FPS              45
+
+//====================================================
+// DELTA TIME
+//====================================================
+
+#define PHYSICS_TARGET_DT \
+(1.0f / PHYSICS_MAX_FPS)
+
+
+//====================================================
+// NORMAL SPEED
+//====================================================
+
+#define PLAYER_WALK_SPEED            260.0f
+
+//====================================================
+// BHOP SPEED
+//====================================================
+
+#define PLAYER_BHOP_SPEED            600.0f
+
+//====================================================
+// SURF SPEED
+//====================================================
+
+#define PLAYER_SURF_SPEED            720.0f
+
+//====================================================
+// PARKOUR SPEED
+//====================================================
+
+#define PLAYER_PARKOUR_SPEED         500.0f
+
+
+//====================================================
+// ACCELERATION
+//====================================================
+
+#define PLAYER_ACCELERATION          520.0f
+
+//====================================================
+// AIR ACCELERATION
+//====================================================
+
+#define PLAYER_AIR_ACCELERATION      480.0f
+
+//====================================================
+// FRICTION
+//====================================================
+
+#define PLAYER_FRICTION              7.5f
+
+//====================================================
+// SURF FRICTION
+//====================================================
+
+#define PLAYER_SURF_FRICTION         0.6f
+
+//====================================================
+// BHOP FRICTION
+//====================================================
+
+#define PLAYER_BHOP_FRICTION         2.0f
+
+//====================================================
+// JUMP
+//====================================================
+
+#define PLAYER_JUMP_FORCE            470.0f
+
+//====================================================
+// GRAVITY
+//====================================================
+
+#define PLAYER_GRAVITY               900.0f
+
+//====================================================
+// AIR CONTROL
+//====================================================
+
+#define PLAYER_AIR_CONTROL           0.92f
+
+
+//====================================================
+// MAP
+//====================================================
+
+#define MAP_PLATFORM_WIDTH           32
+
+#define MAP_PLATFORM_HEIGHT          8
+
+#define MAP_MAX_HEIGHT               220
+
+#define MAP_MIN_HEIGHT               20
+
+
+//====================================================
+// RANDOM SEED
+//====================================================
+
+#define MAP_DEFAULT_SEED             2026
+
+
+#endif
+
+//====================================================
+// ESP32 GAME STATION
+// PROCEDURAL MAP GENERATOR
+// 92_procedural_map_generator.h
+//====================================================
+
+#ifndef PROCEDURAL_MAP_GENERATOR_H
+#define PROCEDURAL_MAP_GENERATOR_H
+
+#include <Arduino.h>
+
+//====================================================
+// MAP MODE
+//====================================================
+
+enum MapMode
+{
+    MAP_MODE_SURF = 0,
+    MAP_MODE_PARKOUR
+};
+
+//====================================================
+// PLATFORM
+//====================================================
+
+struct MapPlatform
+{
+    int16_t x;
+
+    int16_t y;
+
+    uint16_t width;
+
+    uint16_t height;
+
+    bool checkpoint;
+
+    bool moving;
+
+    bool breakable;
+
+    uint8_t type;
+};
+
+//====================================================
+// LIMITS
+//====================================================
+
+#define MAP_MAX_PLATFORMS     128
+
+//====================================================
+// CLASS
+//====================================================
+
+class ProceduralMapGenerator
+{
+
+public:
+
+    static bool begin();
+
+    static void generate(
+        uint32_t seed,
+        MapMode mode
+    );
+
+    static void clear();
+
+    static void update();
+
+    static void reset();
+
+    static uint16_t platformCount();
+
+    static const MapPlatform&
+    platform(uint16_t index);
+
+    static uint32_t seed();
+
+    static MapMode mode();
+
+private:
+
+    static void generateSurf();
+
+    static void generateParkour();
+
+    static void generateCheckpoint(
+        uint16_t index
+    );
+
+    static int16_t randomHeight(
+        int16_t previous
+    );
+
+private:
+
+    static bool initialized;
+
+    static uint32_t currentSeed;
+
+    static MapMode currentMode;
+
+    static uint16_t totalPlatforms;
+
+    static MapPlatform platforms[
+        MAP_MAX_PLATFORMS
+    ];
+
+};
+
+#endif
+//====================================================
+// SURF GENERATION
+//====================================================
+
+void ProceduralMapGenerator::generateSurf()
+{
+    int16_t currentX = 0;
+
+    int16_t currentY = 120;
+
+    for(uint16_t i=0;
+        i<MAP_MAX_PLATFORMS;
+        i++)
+    {
+        MapPlatform &p = platforms[i];
+
+        p.x = currentX;
+
+        p.y = currentY;
+
+        p.width =
+        random(48,96);
+
+        p.height =
+        random(8,16);
+
+        p.type = 0;
+
+        p.breakable = false;
+
+        p.moving = false;
+
+        p.checkpoint = false;
+
+        if(i>0 && i%20==0)
+            generateCheckpoint(i);
+
+        currentX +=
+        random(40,72);
+
+        currentY =
+        randomHeight(currentY);
+    }
+
+    totalPlatforms =
+    MAP_MAX_PLATFORMS;
+}
+
+//====================================================
+// PARKOUR GENERATION
+//====================================================
+
+void ProceduralMapGenerator::generateParkour()
+{
+    int16_t currentX = 0;
+
+    int16_t currentY = 140;
+
+    for(uint16_t i=0;
+        i<MAP_MAX_PLATFORMS;
+        i++)
+    {
+        MapPlatform &p =
+        platforms[i];
+
+        p.x = currentX;
+
+        p.y = currentY;
+
+        p.width =
+        random(24,56);
+
+        p.height = 8;
+
+        p.type = 1;
+
+        p.breakable =
+        random(0,100)<12;
+
+        p.moving =
+        random(0,100)<18;
+
+        p.checkpoint =
+        false;
+
+        if(i>0 && i%15==0)
+            generateCheckpoint(i);
+
+        currentX +=
+        random(36,88);
+
+        currentY =
+        randomHeight(currentY);
+    }
+
+    totalPlatforms =
+    MAP_MAX_PLATFORMS;
+}
+
+//====================================================
+// CHECKPOINT
+//====================================================
+
+void ProceduralMapGenerator::
+generateCheckpoint(
+    uint16_t index
+)
+{
+    if(index>=MAP_MAX_PLATFORMS)
+        return;
+
+    platforms[index]
+    .checkpoint = true;
+}
+
+//====================================================
+// RANDOM HEIGHT
+//====================================================
+
+int16_t
+ProceduralMapGenerator::
+randomHeight(
+    int16_t previous
+)
+{
+    int16_t value =
+    previous +
+    random(-35,36);
+
+    if(value<24)
+        value=24;
+
+    if(value>210)
+        value=210;
+
+    return value;
+}
+//====================================================
+// UPDATE
+//====================================================
+
+void ProceduralMapGenerator::update()
+{
+    if(!initialized)
+        return;
+
+    for(uint16_t i=0;
+        i<totalPlatforms;
+        i++)
+    {
+        if(!platforms[i].moving)
+            continue;
+
+        //------------------------------------------------
+        // Hareketli platformlar
+        //------------------------------------------------
+
+        float wave =
+        sin(
+            millis() * 0.002f +
+            (float)i
+        );
+
+        platforms[i].y +=
+        (int16_t)(wave * 0.8f);
+    }
+}
+
+//====================================================
+// RESET
+//====================================================
+
+void ProceduralMapGenerator::reset()
+{
+    clear();
+
+    currentSeed = 0;
+
+    currentMode = MAP_MODE_SURF;
+}
+
+//====================================================
+// PLATFORM COUNT
+//====================================================
+
+uint16_t
+ProceduralMapGenerator::platformCount()
+{
+    return totalPlatforms;
+}
+
+//====================================================
+// PLATFORM
+//====================================================
+
+const MapPlatform&
+ProceduralMapGenerator::platform(
+    uint16_t index
+)
+{
+    return platforms[index];
+}
+
+//====================================================
+// SEED
+//====================================================
+
+uint32_t
+ProceduralMapGenerator::seed()
+{
+    return currentSeed;
+}
+
+//====================================================
+// MODE
+//====================================================
+
+MapMode
+ProceduralMapGenerator::mode()
+{
+    return currentMode;
+}
+//====================================================
+// ESP32 GAME STATION
+// ANIMATION MANAGER
+// 93_animation_manager.h
+//====================================================
+
+#ifndef ANIMATION_MANAGER_H
+#define ANIMATION_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ANIMATION TYPES
+//====================================================
+
+enum AnimationType
+{
+    ANIMATION_NONE = 0,
+
+    ANIMATION_IDLE,
+
+    ANIMATION_DRAW,
+
+    ANIMATION_INSPECT,
+
+    ANIMATION_SLASH_1,
+
+    ANIMATION_SLASH_2,
+
+    ANIMATION_STAB
+};
+
+//====================================================
+// KNIFE TYPES
+//====================================================
+
+enum KnifeType
+{
+    KNIFE_CLASSIC = 0,
+
+    KNIFE_KARAMBIT,
+
+    KNIFE_BUTTERFLY,
+
+    KNIFE_KATANA,
+
+    KNIFE_SHADOW_DAGGERS
+};
+
+//====================================================
+// FRAME
+//====================================================
+
+struct AnimationFrame
+{
+    int16_t x;
+
+    int16_t y;
+
+    int16_t rotation;
+
+    uint16_t duration;
+};
+
+//====================================================
+// STATE
+//====================================================
+
+struct AnimationState
+{
+    AnimationType type;
+
+    uint8_t frame;
+
+    uint8_t totalFrames;
+
+    bool playing;
+
+    bool loop;
+
+    uint32_t timer;
+};
+
+//====================================================
+// MANAGER
+//====================================================
+
+class AnimationManager
+{
+
+public:
+
+    static bool begin();
+
+    static void update();
+
+    static void play(AnimationType type);
+
+    static void stop();
+
+    static void reset();
+
+    static bool playing();
+
+    static AnimationType current();
+
+    static void setKnife(KnifeType knife);
+
+    static KnifeType knife();
+
+    static const AnimationFrame&
+    frame();
+
+private:
+
+    static void updateFrame();
+
+    static void loadAnimation(
+        AnimationType type
+    );
+
+private:
+
+    static bool initialized;
+
+    static KnifeType currentKnife;
+
+    static AnimationState state;
+
+    static AnimationFrame frames[32];
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// ANIMATION MANAGER
+// 93_animation_manager.cpp
+//====================================================
+
+#include "animation_manager.h"
+
+//====================================================
+//
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool AnimationManager::initialized = false;
+
+KnifeType AnimationManager::currentKnife =
+KNIFE_CLASSIC;
+
+AnimationState AnimationManager::state;
+
+AnimationFrame
+AnimationManager::frames[32];
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool AnimationManager::begin()
+{
+    if(initialized)
+        return true;
+
+    reset();
+
+    initialized = true;
+
+    return true;
+}
+
+//====================================================
+// RESET
+//====================================================
+
+void AnimationManager::reset()
+{
+    state.type = ANIMATION_IDLE;
+
+    state.frame = 0;
+
+    state.totalFrames = 0;
+
+    state.playing = false;
+
+    state.loop = true;
+
+    state.timer = millis();
+
+    currentKnife = KNIFE_CLASSIC;
+}
+
+//====================================================
+// UPDATE
+//====================================================
+
+void AnimationManager::update()
+{
+    if(!initialized)
+        return;
+
+    if(!state.playing)
+        return;
+
+    updateFrame();
+}
+
+//====================================================
+// PLAY
+//====================================================
+
+void AnimationManager::play(
+    AnimationType type
+)
+{
+    loadAnimation(type);
+
+    state.type = type;
+
+    state.frame = 0;
+
+    state.playing = true;
+
+    state.timer = millis();
+}
+
+//====================================================
+// STOP
+//====================================================
+
+void AnimationManager::stop()
+{
+    state.playing = false;
+
+    state.frame = 0;
+}
+
+//====================================================
+// PLAYING
+//====================================================
+
+bool AnimationManager::playing()
+{
+    return state.playing;
+}
+
+//====================================================
+// CURRENT
+//====================================================
+
+AnimationType
+AnimationManager::current()
+{
+    return state.type;
+}
+
+//====================================================
+// SET KNIFE
+//====================================================
+
+void AnimationManager::setKnife(
+    KnifeType knife
+)
+{
+    currentKnife = knife;
+}
+
+//====================================================
+// GET KNIFE
+//====================================================
+
+KnifeType
+AnimationManager::knife()
+{
+    return currentKnife;
+}
+//====================================================
+// UPDATE FRAME
+//====================================================
+
+void AnimationManager::updateFrame()
+{
+    if(state.totalFrames == 0)
+        return;
+
+    uint32_t now = millis();
+
+    if(now - state.timer <
+       frames[state.frame].duration)
+    {
+        return;
+    }
+
+    state.timer = now;
+
+    state.frame++;
+
+    if(state.frame >= state.totalFrames)
+    {
+        if(state.loop)
+        {
+            state.frame = 0;
+        }
+        else
+        {
+            state.frame = state.totalFrames - 1;
+
+            state.playing = false;
+        }
+    }
+}
+
+//====================================================
+// LOAD ANIMATION
+//====================================================
+
+void AnimationManager::loadAnimation(
+    AnimationType type
+)
+{
+    memset(
+        frames,
+        0,
+        sizeof(frames)
+    );
+
+    state.loop = false;
+
+    switch(type)
+    {
+
+        //------------------------------------------------
+        // IDLE
+        //------------------------------------------------
+
+        case ANIMATION_IDLE:
+
+            state.totalFrames = 1;
+
+            state.loop = true;
+
+            frames[0] =
+            {
+                0,
+                0,
+                0,
+                100
+            };
+
+            break;
+
+        //------------------------------------------------
+        // DRAW
+        //------------------------------------------------
+
+        case ANIMATION_DRAW:
+
+            state.totalFrames = 6;
+
+            frames[0]={40,20,-70,35};
+            frames[1]={28,16,-55,35};
+            frames[2]={18,12,-35,35};
+            frames[3]={10, 8,-18,35};
+            frames[4]={ 4, 4, -8,35};
+            frames[5]={ 0, 0,  0,35};
+
+            break;
+
+        //------------------------------------------------
+        // INSPECT
+        //------------------------------------------------
+
+        case ANIMATION_INSPECT:
+
+            state.totalFrames = 10;
+
+            frames[0]={0,0,0,70};
+            frames[1]={4,-3,12,70};
+            frames[2]={8,-6,24,70};
+            frames[3]={10,-8,36,70};
+            frames[4]={8,-6,24,70};
+            frames[5]={4,-3,12,70};
+            frames[6]={0,0,0,70};
+            frames[7]={-4,2,-10,70};
+            frames[8]={0,0,0,70};
+            frames[9]={0,0,0,70};
+
+            break;
+
+        //------------------------------------------------
+        // SLASH 1
+        //------------------------------------------------
+
+        case ANIMATION_SLASH_1:
+
+            state.totalFrames = 7;
+
+            frames[0]={20,12,-35,20};
+            frames[1]={10, 8,-20,20};
+            frames[2]={ 0, 4,  0,20};
+            frames[3]={-8, 0, 28,20};
+            frames[4]={-2, 2, 14,20};
+            frames[5]={ 0, 0,  0,20};
+            frames[6]={ 0, 0,  0,40};
+
+            break;
+        //------------------------------------------------
+        // SLASH 2
+        //------------------------------------------------
+
+        case ANIMATION_SLASH_2:
+
+            state.totalFrames = 7;
+
+            frames[0]={-12,10, 28,20};
+            frames[1]={ -6, 6, 14,20};
+            frames[2]={  2, 2,  0,20};
+            frames[3]={ 12,-2,-24,20};
+            frames[4]={  6, 0,-10,20};
+            frames[5]={  0, 0,  0,20};
+            frames[6]={  0, 0,  0,40};
+
+            break;
+
+        //------------------------------------------------
+        // STAB
+        //------------------------------------------------
+
+        case ANIMATION_STAB:
+
+            state.totalFrames = 8;
+
+            frames[0]={ 12,10,-15,18};
+            frames[1]={ 18, 8,-10,18};
+            frames[2]={ 28, 6, -5,18};
+            frames[3]={ 42, 4,  0,18};
+            frames[4]={ 26, 5, -3,18};
+            frames[5]={ 14, 7, -8,18};
+            frames[6]={  4, 2, -2,18};
+            frames[7]={  0, 0,  0,35};
+
+            break;
+
+        //------------------------------------------------
+        // DEFAULT
+        //------------------------------------------------
+
+        default:
+
+            state.totalFrames = 1;
+
+            state.loop = true;
+
+            frames[0] =
+            {
+                0,
+                0,
+                0,
+                100
+            };
+
+            break;
+    }
+}
+
+//====================================================
+// CURRENT FRAME
+//====================================================
+
+const AnimationFrame&
+AnimationManager::frame()
+{
+    return frames[state.frame];
+}
+//====================================================
+//====================================================
+// ESP32 GAME STATION
+// ANIMATION MANAGER
+// 93_animation_profiles.h
+//====================================================
+//====================================================
+
+#ifndef ANIMATION_PROFILES_H
+#define ANIMATION_PROFILES_H
+
+#include "animation_manager.h"
+
+//====================================================
+// ANIMATION PROFILE
+//====================================================
+
+struct AnimationProfile
+{
+    uint16_t drawSpeed;
+
+    uint16_t inspectSpeed;
+
+    uint16_t slashSpeed;
+
+    uint16_t stabSpeed;
+
+    int16_t idleRotation;
+
+    int16_t attackRotation;
+};
+
+//====================================================
+// CLASS
+//====================================================
+
+class AnimationProfiles
+{
+
+public:
+
+    static const AnimationProfile&
+    profile(KnifeType knife);
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// ANIMATION MANAGER
+// 93_animation_profiles.cpp
+//====================================================
+
+#include "animation_profiles.h"
+
+//====================================================
+// PROFILES
+//====================================================
+
+static const AnimationProfile
+knifeProfiles[] =
+{
+
+//====================================================
+// CLASSIC
+//====================================================
+
+{
+    35,
+    70,
+    20,
+    18,
+    0,
+    28
+},
+
+//====================================================
+// KARAMBIT
+//====================================================
+
+{
+    26,
+    55,
+    15,
+    16,
+    -18,
+    52
+},
+
+//====================================================
+// BUTTERFLY
+//====================================================
+
+{
+    18,
+    40,
+    16,
+    18,
+    -30,
+    70
+},
+
+//====================================================
+// KATANA
+//====================================================
+
+{
+    42,
+    80,
+    28,
+    24,
+    8,
+    36
+},
+
+//====================================================
+// SHADOW DAGGERS
+//====================================================
+
+{
+    24,
+    45,
+    14,
+    16,
+    0,
+    44
+}
+
+};
+
+//====================================================
+// PROFILE
+//====================================================
+
+const AnimationProfile&
+AnimationProfiles::profile(
+    KnifeType knife
+)
+{
+    return knifeProfiles[
+        (uint8_t)knife
+    ];
+}

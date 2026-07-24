@@ -14648,7 +14648,10636 @@ void WebServerManager::handleNotFound()
         "404 - Page Not Found"
     );
 }
+#ifndef PLAYTIME_MANAGER_H
+#define PLAYTIME_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// PLAYTIME MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
 
 
+//---------------- Constants ----------------
+
+#define PLAYTIME_INVALID_GAME_ID    0xFFFF
+
+#define PLAYTIME_MODE_UNKNOWN       0
+#define PLAYTIME_MODE_SINGLEPLAYER  1
+#define PLAYTIME_MODE_MULTIPLAYER   2
+
+#define PLAYTIME_DIFFICULTY_UNKNOWN 0
+#define PLAYTIME_DIFFICULTY_EASY    1
+#define PLAYTIME_DIFFICULTY_NORMAL  2
+#define PLAYTIME_DIFFICULTY_HARD    3
+#define PLAYTIME_DIFFICULTY_EXTREME 4
+
+
+//---------------- Session State ----------------
+
+enum PlaytimeSessionState
+{
+    PLAYTIME_SESSION_STOPPED = 0,
+    PLAYTIME_SESSION_RUNNING,
+    PLAYTIME_SESSION_PAUSED
+};
+
+
+//---------------- Session Information ----------------
+
+struct PlaytimeSession
+{
+    uint16_t gameID;
+
+    uint8_t gameMode;
+
+    uint8_t difficulty;
+
+    PlaytimeSessionState state;
+
+    uint32_t startTime;
+
+    uint32_t lastUpdateTime;
+
+    uint32_t pauseStartTime;
+
+    uint32_t sessionMilliseconds;
+
+    uint32_t pausedMilliseconds;
+
+    uint32_t frameCount;
+
+    bool valid;
+};
+
+
+//---------------- Game Statistics ----------------
+
+struct PlaytimeStatistics
+{
+    uint16_t gameID;
+
+    uint32_t launchCount;
+
+    uint32_t completedSessionCount;
+
+    uint32_t interruptedSessionCount;
+
+    uint64_t totalMilliseconds;
+
+    uint64_t singlePlayerMilliseconds;
+
+    uint64_t multiplayerMilliseconds;
+
+    uint64_t easyMilliseconds;
+
+    uint64_t normalMilliseconds;
+
+    uint64_t hardMilliseconds;
+
+    uint64_t extremeMilliseconds;
+
+    uint32_t longestSessionMilliseconds;
+
+    uint32_t shortestSessionMilliseconds;
+
+    uint32_t lastSessionMilliseconds;
+
+    uint32_t totalFrames;
+
+    bool initialized;
+};
+
+
+//---------------- Initialization ----------------
+
+void initPlaytimeManager();
+
+
+//---------------- Session Control ----------------
+
+bool startPlaytimeSession(
+    uint16_t gameID
+);
+
+
+bool startPlaytimeSession(
+    uint16_t gameID,
+    uint8_t gameMode,
+    uint8_t difficulty
+);
+
+
+bool pausePlaytimeSession();
+
+
+bool resumePlaytimeSession();
+
+
+bool stopPlaytimeSession();
+
+
+bool stopPlaytimeSession(
+    bool completed
+);
+
+
+//---------------- Update ----------------
+
+void updatePlaytimeManager();
+
+
+//---------------- Session Reset ----------------
+
+void resetCurrentPlaytimeSession();
+
+
+//---------------- Statistics Reset ----------------
+
+void resetPlaytimeStatistics();
+
+
+//---------------- Session State ----------------
+
+bool isPlaytimeSessionActive();
+
+
+bool isPlaytimeSessionRunning();
+
+
+bool isPlaytimeSessionPaused();
+
+
+PlaytimeSessionState getPlaytimeSessionState();
+
+
+//---------------- Session Information ----------------
+
+uint16_t getCurrentPlaytimeGameID();
+
+
+uint8_t getCurrentPlaytimeGameMode();
+
+
+uint8_t getCurrentPlaytimeDifficulty();
+
+
+uint32_t getCurrentSessionMilliseconds();
+
+
+uint32_t getCurrentSessionSeconds();
+
+
+uint32_t getCurrentSessionMinutes();
+
+
+uint32_t getCurrentSessionFrames();
+
+
+//---------------- Pause Information ----------------
+
+uint32_t getCurrentPausedMilliseconds();
+
+
+uint32_t getCurrentPausedSeconds();
+
+
+//---------------- Statistics Information ----------------
+
+const PlaytimeStatistics& getPlaytimeStatistics();
+
+
+uint64_t getTotalPlaytimeMilliseconds();
+
+
+uint32_t getTotalPlaytimeSeconds();
+
+
+uint32_t getTotalPlaytimeMinutes();
+
+
+uint32_t getTotalPlaytimeHours();
+
+
+uint32_t getPlaytimeLaunchCount();
+
+
+uint32_t getCompletedSessionCount();
+
+
+uint32_t getInterruptedSessionCount();
+
+
+uint32_t getLongestSessionMilliseconds();
+
+
+uint32_t getShortestSessionMilliseconds();
+
+
+uint32_t getLastSessionMilliseconds();
+
+
+uint32_t getTotalPlaytimeFrames();
+
+
+//---------------- Mode Statistics ----------------
+
+uint64_t getSinglePlayerMilliseconds();
+
+
+uint64_t getMultiplayerMilliseconds();
+
+
+//---------------- Difficulty Statistics ----------------
+
+uint64_t getEasyPlaytimeMilliseconds();
+
+
+uint64_t getNormalPlaytimeMilliseconds();
+
+
+uint64_t getHardPlaytimeMilliseconds();
+
+
+uint64_t getExtremePlaytimeMilliseconds();
+
+
+//---------------- Debug ----------------
+
+void printPlaytimeSession();
+
+
+void printPlaytimeStatistics();
+
+
+
+#endif
+#include "91_playtime_manager.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// PLAYTIME MANAGER IMPLEMENTATION
+//==================================================
+
+
+
+static PlaytimeSession currentSession;
+
+
+static PlaytimeStatistics currentStatistics;
+
+
+
+//---------------- Internal Functions ----------------
+
+
+static void clearSessionData()
+{
+    currentSession.gameID =
+        PLAYTIME_INVALID_GAME_ID;
+
+
+    currentSession.gameMode =
+        PLAYTIME_MODE_UNKNOWN;
+
+
+    currentSession.difficulty =
+        PLAYTIME_DIFFICULTY_UNKNOWN;
+
+
+    currentSession.state =
+        PLAYTIME_SESSION_STOPPED;
+
+
+    currentSession.startTime =
+        0;
+
+
+    currentSession.lastUpdateTime =
+        0;
+
+
+    currentSession.pauseStartTime =
+        0;
+
+
+    currentSession.sessionMilliseconds =
+        0;
+
+
+    currentSession.pausedMilliseconds =
+        0;
+
+
+    currentSession.frameCount =
+        0;
+
+
+    currentSession.valid =
+        false;
+}
+
+
+
+static void clearStatisticsData()
+{
+    currentStatistics.gameID =
+        PLAYTIME_INVALID_GAME_ID;
+
+
+    currentStatistics.launchCount =
+        0;
+
+
+    currentStatistics.completedSessionCount =
+        0;
+
+
+    currentStatistics.interruptedSessionCount =
+        0;
+
+
+    currentStatistics.totalMilliseconds =
+        0;
+
+
+    currentStatistics.singlePlayerMilliseconds =
+        0;
+
+
+    currentStatistics.multiplayerMilliseconds =
+        0;
+
+
+    currentStatistics.easyMilliseconds =
+        0;
+
+
+    currentStatistics.normalMilliseconds =
+        0;
+
+
+    currentStatistics.hardMilliseconds =
+        0;
+
+
+    currentStatistics.extremeMilliseconds =
+        0;
+
+
+    currentStatistics.longestSessionMilliseconds =
+        0;
+
+
+    currentStatistics.shortestSessionMilliseconds =
+        0;
+
+
+    currentStatistics.lastSessionMilliseconds =
+        0;
+
+
+    currentStatistics.totalFrames =
+        0;
+
+
+    currentStatistics.initialized =
+        false;
+}
+
+
+
+static bool isValidGameMode(
+    uint8_t gameMode
+)
+{
+    return
+        gameMode == PLAYTIME_MODE_UNKNOWN ||
+        gameMode == PLAYTIME_MODE_SINGLEPLAYER ||
+        gameMode == PLAYTIME_MODE_MULTIPLAYER;
+}
+
+
+
+static bool isValidDifficulty(
+    uint8_t difficulty
+)
+{
+    return
+        difficulty == PLAYTIME_DIFFICULTY_UNKNOWN ||
+        difficulty == PLAYTIME_DIFFICULTY_EASY ||
+        difficulty == PLAYTIME_DIFFICULTY_NORMAL ||
+        difficulty == PLAYTIME_DIFFICULTY_HARD ||
+        difficulty == PLAYTIME_DIFFICULTY_EXTREME;
+}
+
+
+
+static void addModePlaytime(
+    uint8_t gameMode,
+    uint32_t milliseconds
+)
+{
+    switch(gameMode)
+    {
+        case PLAYTIME_MODE_SINGLEPLAYER:
+
+            currentStatistics.singlePlayerMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        case PLAYTIME_MODE_MULTIPLAYER:
+
+            currentStatistics.multiplayerMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        default:
+
+            break;
+    }
+}
+
+
+
+static void addDifficultyPlaytime(
+    uint8_t difficulty,
+    uint32_t milliseconds
+)
+{
+    switch(difficulty)
+    {
+        case PLAYTIME_DIFFICULTY_EASY:
+
+            currentStatistics.easyMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        case PLAYTIME_DIFFICULTY_NORMAL:
+
+            currentStatistics.normalMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        case PLAYTIME_DIFFICULTY_HARD:
+
+            currentStatistics.hardMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        case PLAYTIME_DIFFICULTY_EXTREME:
+
+            currentStatistics.extremeMilliseconds +=
+                milliseconds;
+
+            break;
+
+
+        default:
+
+            break;
+    }
+}
+
+
+
+static void updateSessionStatistics(
+    bool completed
+)
+{
+    uint32_t sessionTime =
+        currentSession.sessionMilliseconds;
+
+
+    currentStatistics.totalMilliseconds +=
+        sessionTime;
+
+
+    currentStatistics.totalFrames +=
+        currentSession.frameCount;
+
+
+    currentStatistics.lastSessionMilliseconds =
+        sessionTime;
+
+
+    if(sessionTime >
+       currentStatistics.longestSessionMilliseconds)
+    {
+        currentStatistics.longestSessionMilliseconds =
+            sessionTime;
+    }
+
+
+
+    if(sessionTime > 0)
+    {
+        if(currentStatistics.shortestSessionMilliseconds == 0 ||
+           sessionTime <
+           currentStatistics.shortestSessionMilliseconds)
+        {
+            currentStatistics.shortestSessionMilliseconds =
+                sessionTime;
+        }
+    }
+
+
+
+    if(completed)
+    {
+        currentStatistics.completedSessionCount++;
+    }
+    else
+    {
+        currentStatistics.interruptedSessionCount++;
+    }
+
+
+
+    addModePlaytime(
+        currentSession.gameMode,
+        sessionTime
+    );
+
+
+    addDifficultyPlaytime(
+        currentSession.difficulty,
+        sessionTime
+    );
+}
+
+
+
+//---------------- Initialization ----------------
+
+
+void initPlaytimeManager()
+{
+    clearSessionData();
+
+    clearStatisticsData();
+}
+
+
+
+//---------------- Start Session ----------------
+
+
+bool startPlaytimeSession(
+    uint16_t gameID
+)
+{
+    return startPlaytimeSession(
+        gameID,
+        PLAYTIME_MODE_UNKNOWN,
+        PLAYTIME_DIFFICULTY_UNKNOWN
+    );
+}
+
+
+
+bool startPlaytimeSession(
+    uint16_t gameID,
+    uint8_t gameMode,
+    uint8_t difficulty
+)
+{
+    if(gameID == PLAYTIME_INVALID_GAME_ID)
+    {
+        return false;
+    }
+
+
+
+    if(!isValidGameMode(gameMode))
+    {
+        return false;
+    }
+
+
+
+    if(!isValidDifficulty(difficulty))
+    {
+        return false;
+    }
+
+
+
+    if(currentSession.valid)
+    {
+        stopPlaytimeSession(
+            false
+        );
+    }
+
+
+
+    if(!currentStatistics.initialized ||
+       currentStatistics.gameID != gameID)
+    {
+        clearStatisticsData();
+
+
+        currentStatistics.gameID =
+            gameID;
+
+
+        currentStatistics.initialized =
+            true;
+    }
+
+
+
+    uint32_t currentTime =
+        millis();
+
+
+
+    currentSession.gameID =
+        gameID;
+
+
+    currentSession.gameMode =
+        gameMode;
+
+
+    currentSession.difficulty =
+        difficulty;
+
+
+    currentSession.state =
+        PLAYTIME_SESSION_RUNNING;
+
+
+    currentSession.startTime =
+        currentTime;
+
+
+    currentSession.lastUpdateTime =
+        currentTime;
+
+
+    currentSession.pauseStartTime =
+        0;
+
+
+    currentSession.sessionMilliseconds =
+        0;
+
+
+    currentSession.pausedMilliseconds =
+        0;
+
+
+    currentSession.frameCount =
+        0;
+
+
+    currentSession.valid =
+        true;
+
+
+
+    currentStatistics.launchCount++;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Pause Session ----------------
+
+
+bool pausePlaytimeSession()
+{
+    if(!currentSession.valid)
+    {
+        return false;
+    }
+
+
+
+    if(currentSession.state !=
+       PLAYTIME_SESSION_RUNNING)
+    {
+        return false;
+    }
+
+
+
+    updatePlaytimeManager();
+
+
+
+    currentSession.state =
+        PLAYTIME_SESSION_PAUSED;
+
+
+    currentSession.pauseStartTime =
+        millis();
+
+
+
+    return true;
+}
+
+
+
+//---------------- Resume Session ----------------
+
+
+bool resumePlaytimeSession()
+{
+    if(!currentSession.valid)
+    {
+        return false;
+    }
+
+
+
+    if(currentSession.state !=
+       PLAYTIME_SESSION_PAUSED)
+    {
+        return false;
+    }
+
+
+
+    uint32_t currentTime =
+        millis();
+
+
+
+    uint32_t pauseDuration =
+        currentTime -
+        currentSession.pauseStartTime;
+
+
+
+    currentSession.pausedMilliseconds +=
+        pauseDuration;
+
+
+    currentSession.pauseStartTime =
+        0;
+
+
+    currentSession.lastUpdateTime =
+        currentTime;
+
+
+    currentSession.state =
+        PLAYTIME_SESSION_RUNNING;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Stop Session ----------------
+
+
+bool stopPlaytimeSession()
+{
+    return stopPlaytimeSession(
+        true
+    );
+}
+
+
+
+bool stopPlaytimeSession(
+    bool completed
+)
+{
+    if(!currentSession.valid)
+    {
+        return false;
+    }
+
+
+
+    if(currentSession.state ==
+       PLAYTIME_SESSION_RUNNING)
+    {
+        updatePlaytimeManager();
+    }
+
+
+
+    if(currentSession.state ==
+       PLAYTIME_SESSION_PAUSED)
+    {
+        uint32_t currentTime =
+            millis();
+
+
+        uint32_t pauseDuration =
+            currentTime -
+            currentSession.pauseStartTime;
+
+
+        currentSession.pausedMilliseconds +=
+            pauseDuration;
+
+
+        currentSession.pauseStartTime =
+            0;
+    }
+
+
+
+    updateSessionStatistics(
+        completed
+    );
+
+
+
+    currentSession.state =
+        PLAYTIME_SESSION_STOPPED;
+
+
+    currentSession.valid =
+        false;
+
+
+
+    return true;
+}
+
+
+
+//---------------- Update ----------------
+
+
+void updatePlaytimeManager()
+{
+    if(!currentSession.valid)
+    {
+        return;
+    }
+
+
+
+    if(currentSession.state !=
+       PLAYTIME_SESSION_RUNNING)
+    {
+        return;
+    }
+
+
+
+    uint32_t currentTime =
+        millis();
+
+
+
+    uint32_t elapsedTime =
+        currentTime -
+        currentSession.lastUpdateTime;
+
+
+
+    currentSession.sessionMilliseconds +=
+        elapsedTime;
+
+
+    currentSession.lastUpdateTime =
+        currentTime;
+
+
+    currentSession.frameCount++;
+}
+
+
+
+//---------------- Session Reset ----------------
+
+
+void resetCurrentPlaytimeSession()
+{
+    clearSessionData();
+}
+
+
+
+//---------------- Statistics Reset ----------------
+
+
+void resetPlaytimeStatistics()
+{
+    clearStatisticsData();
+}
+
+
+
+//---------------- Session State ----------------
+
+
+bool isPlaytimeSessionActive()
+{
+    return currentSession.valid;
+}
+
+
+
+bool isPlaytimeSessionRunning()
+{
+    return
+        currentSession.valid &&
+        currentSession.state ==
+        PLAYTIME_SESSION_RUNNING;
+}
+
+
+
+bool isPlaytimeSessionPaused()
+{
+    return
+        currentSession.valid &&
+        currentSession.state ==
+        PLAYTIME_SESSION_PAUSED;
+}
+
+
+
+PlaytimeSessionState getPlaytimeSessionState()
+{
+    return currentSession.state;
+}
+
+
+
+//---------------- Session Information ----------------
+
+
+uint16_t getCurrentPlaytimeGameID()
+{
+    return currentSession.gameID;
+}
+
+
+
+uint8_t getCurrentPlaytimeGameMode()
+{
+    return currentSession.gameMode;
+}
+
+
+
+uint8_t getCurrentPlaytimeDifficulty()
+{
+    return currentSession.difficulty;
+}
+
+
+
+uint32_t getCurrentSessionMilliseconds()
+{
+    return currentSession.sessionMilliseconds;
+}
+
+
+
+uint32_t getCurrentSessionSeconds()
+{
+    return
+        currentSession.sessionMilliseconds /
+        1000UL;
+}
+
+
+
+uint32_t getCurrentSessionMinutes()
+{
+    return
+        currentSession.sessionMilliseconds /
+        60000UL;
+}
+
+
+
+uint32_t getCurrentSessionFrames()
+{
+    return currentSession.frameCount;
+}
+
+
+
+//---------------- Pause Information ----------------
+
+
+uint32_t getCurrentPausedMilliseconds()
+{
+    if(currentSession.state ==
+       PLAYTIME_SESSION_PAUSED)
+    {
+        return
+            currentSession.pausedMilliseconds +
+            (
+                millis() -
+                currentSession.pauseStartTime
+            );
+    }
+
+
+
+    return currentSession.pausedMilliseconds;
+}
+
+
+
+uint32_t getCurrentPausedSeconds()
+{
+    return
+        getCurrentPausedMilliseconds() /
+        1000UL;
+}
+
+
+
+//---------------- Statistics Information ----------------
+
+
+const PlaytimeStatistics& getPlaytimeStatistics()
+{
+    return currentStatistics;
+}
+
+
+
+uint64_t getTotalPlaytimeMilliseconds()
+{
+    return currentStatistics.totalMilliseconds;
+}
+
+
+
+uint32_t getTotalPlaytimeSeconds()
+{
+    return
+        (uint32_t)
+        (
+            currentStatistics.totalMilliseconds /
+            1000ULL
+        );
+}
+
+
+
+uint32_t getTotalPlaytimeMinutes()
+{
+    return
+        (uint32_t)
+        (
+            currentStatistics.totalMilliseconds /
+            60000ULL
+        );
+}
+
+
+
+uint32_t getTotalPlaytimeHours()
+{
+    return
+        (uint32_t)
+        (
+            currentStatistics.totalMilliseconds /
+            3600000ULL
+        );
+}
+
+
+
+uint32_t getPlaytimeLaunchCount()
+{
+    return currentStatistics.launchCount;
+}
+
+
+
+uint32_t getCompletedSessionCount()
+{
+    return currentStatistics.completedSessionCount;
+}
+
+
+
+uint32_t getInterruptedSessionCount()
+{
+    return currentStatistics.interruptedSessionCount;
+}
+
+
+
+uint32_t getLongestSessionMilliseconds()
+{
+    return
+        currentStatistics.longestSessionMilliseconds;
+}
+
+
+
+uint32_t getShortestSessionMilliseconds()
+{
+    return
+        currentStatistics.shortestSessionMilliseconds;
+}
+
+
+
+uint32_t getLastSessionMilliseconds()
+{
+    return
+        currentStatistics.lastSessionMilliseconds;
+}
+
+
+
+uint32_t getTotalPlaytimeFrames()
+{
+    return currentStatistics.totalFrames;
+}
+
+
+
+//---------------- Mode Statistics ----------------
+
+
+uint64_t getSinglePlayerMilliseconds()
+{
+    return
+        currentStatistics.singlePlayerMilliseconds;
+}
+
+
+
+uint64_t getMultiplayerMilliseconds()
+{
+    return
+        currentStatistics.multiplayerMilliseconds;
+}
+
+
+
+//---------------- Difficulty Statistics ----------------
+
+
+uint64_t getEasyPlaytimeMilliseconds()
+{
+    return
+        currentStatistics.easyMilliseconds;
+}
+
+
+
+uint64_t getNormalPlaytimeMilliseconds()
+{
+    return
+        currentStatistics.normalMilliseconds;
+}
+
+
+
+uint64_t getHardPlaytimeMilliseconds()
+{
+    return
+        currentStatistics.hardMilliseconds;
+}
+
+
+
+uint64_t getExtremePlaytimeMilliseconds()
+{
+    return
+        currentStatistics.extremeMilliseconds;
+}
+
+
+
+//---------------- Debug Session ----------------
+
+
+void printPlaytimeSession()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PLAYTIME SESSION"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Game ID: "
+    );
+
+
+    Serial.println(
+        currentSession.gameID
+    );
+
+
+    Serial.print(
+        "Mode: "
+    );
+
+
+    Serial.println(
+        currentSession.gameMode
+    );
+
+
+    Serial.print(
+        "Difficulty: "
+    );
+
+
+    Serial.println(
+        currentSession.difficulty
+    );
+
+
+    Serial.print(
+        "State: "
+    );
+
+
+    Serial.println(
+        (uint8_t)currentSession.state
+    );
+
+
+    Serial.print(
+        "Session ms: "
+    );
+
+
+    Serial.println(
+        currentSession.sessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Paused ms: "
+    );
+
+
+    Serial.println(
+        getCurrentPausedMilliseconds()
+    );
+
+
+    Serial.print(
+        "Frames: "
+    );
+
+
+    Serial.println(
+        currentSession.frameCount
+    );
+
+
+    Serial.print(
+        "Valid: "
+    );
+
+
+    Serial.println(
+        currentSession.valid ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+//---------------- Debug Statistics ----------------
+
+
+void printPlaytimeStatistics()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PLAYTIME STATISTICS"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Game ID: "
+    );
+
+
+    Serial.println(
+        currentStatistics.gameID
+    );
+
+
+    Serial.print(
+        "Launch Count: "
+    );
+
+
+    Serial.println(
+        currentStatistics.launchCount
+    );
+
+
+    Serial.print(
+        "Completed Sessions: "
+    );
+
+
+    Serial.println(
+        currentStatistics.completedSessionCount
+    );
+
+
+    Serial.print(
+        "Interrupted Sessions: "
+    );
+
+
+    Serial.println(
+        currentStatistics.interruptedSessionCount
+    );
+
+
+    Serial.print(
+        "Total Seconds: "
+    );
+
+
+    Serial.println(
+        getTotalPlaytimeSeconds()
+    );
+
+
+    Serial.print(
+        "Total Minutes: "
+    );
+
+
+    Serial.println(
+        getTotalPlaytimeMinutes()
+    );
+
+
+    Serial.print(
+        "Total Hours: "
+    );
+
+
+    Serial.println(
+        getTotalPlaytimeHours()
+    );
+
+
+    Serial.print(
+        "Longest Session ms: "
+    );
+
+
+    Serial.println(
+        currentStatistics.longestSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Shortest Session ms: "
+    );
+
+
+    Serial.println(
+        currentStatistics.shortestSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Last Session ms: "
+    );
+
+
+    Serial.println(
+        currentStatistics.lastSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Single Player ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.singlePlayerMilliseconds
+    );
+
+
+    Serial.print(
+        "Multiplayer ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.multiplayerMilliseconds
+    );
+
+
+    Serial.print(
+        "Easy ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.easyMilliseconds
+    );
+
+
+    Serial.print(
+        "Normal ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.normalMilliseconds
+    );
+
+
+    Serial.print(
+        "Hard ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.hardMilliseconds
+    );
+
+
+    Serial.print(
+        "Extreme ms: "
+    );
+
+
+    Serial.println(
+        (unsigned long)
+        currentStatistics.extremeMilliseconds
+    );
+
+
+    Serial.print(
+        "Total Frames: "
+    );
+
+
+    Serial.println(
+        currentStatistics.totalFrames
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+#ifndef RTC_MANAGER_H
+#define RTC_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// RTC MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- RTC Module Selection ----------------
+
+// Kullanılan RTC modülüne göre yalnızca birini 1 yap.
+
+#define RTC_USE_DS3231  1
+#define RTC_USE_DS1307  0
+
+
+//---------------- RTC Status ----------------
+
+enum RTCManagerStatus
+{
+    RTC_STATUS_NOT_INITIALIZED = 0,
+    RTC_STATUS_READY,
+    RTC_STATUS_NOT_FOUND,
+    RTC_STATUS_INVALID_TIME,
+    RTC_STATUS_ERROR
+};
+
+
+//---------------- Date Time Data ----------------
+
+struct RTCDateTime
+{
+    uint16_t year;
+
+    uint8_t month;
+
+    uint8_t day;
+
+    uint8_t hour;
+
+    uint8_t minute;
+
+    uint8_t second;
+
+    uint8_t dayOfWeek;
+
+    uint32_t unixTime;
+
+    bool valid;
+};
+
+
+//---------------- Date Data ----------------
+
+struct RTCDate
+{
+    uint16_t year;
+
+    uint8_t month;
+
+    uint8_t day;
+
+    uint8_t dayOfWeek;
+
+    bool valid;
+};
+
+
+//---------------- Time Data ----------------
+
+struct RTCTime
+{
+    uint8_t hour;
+
+    uint8_t minute;
+
+    uint8_t second;
+
+    bool valid;
+};
+
+
+//---------------- Initialization ----------------
+
+bool initRTCManager();
+
+
+//---------------- Update ----------------
+
+void updateRTCManager();
+
+
+//---------------- RTC State ----------------
+
+bool isRTCAvailable();
+
+bool isRTCInitialized();
+
+bool isRTCDateTimeValid();
+
+RTCManagerStatus getRTCManagerStatus();
+
+
+//---------------- Date Time Read ----------------
+
+RTCDateTime getRTCDateTime();
+
+RTCDate getRTCDate();
+
+RTCTime getRTCTime();
+
+
+//---------------- Date Time Write ----------------
+
+bool setRTCDateTime(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day,
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+);
+
+
+bool setRTCDate(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day
+);
+
+
+bool setRTCTime(
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+);
+
+
+//---------------- Build Time ----------------
+
+bool setRTCFromBuildTime();
+
+
+//---------------- Unix Time ----------------
+
+uint32_t getRTCUnixTime();
+
+
+//---------------- Date Information ----------------
+
+uint16_t getRTCYear();
+
+uint8_t getRTCMonth();
+
+uint8_t getRTCDay();
+
+uint8_t getRTCDayOfWeek();
+
+
+//---------------- Time Information ----------------
+
+uint8_t getRTCHour();
+
+uint8_t getRTCMinute();
+
+uint8_t getRTCSecond();
+
+
+//---------------- Validation ----------------
+
+bool isRTCLeapYear(
+    uint16_t year
+);
+
+
+uint8_t getRTCDaysInMonth(
+    uint16_t year,
+    uint8_t month
+);
+
+
+bool isRTCDateValid(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day
+);
+
+
+bool isRTCTimeValid(
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+);
+
+
+//---------------- Formatting ----------------
+
+void getRTCDateString(
+    char* buffer,
+    size_t bufferSize
+);
+
+
+void getRTCTimeString(
+    char* buffer,
+    size_t bufferSize
+);
+
+
+void getRTCDateTimeString(
+    char* buffer,
+    size_t bufferSize
+);
+
+
+//---------------- Day Names ----------------
+
+const char* getRTCDayName(
+    uint8_t dayOfWeek
+);
+
+
+//---------------- Month Names ----------------
+
+const char* getRTCMonthName(
+    uint8_t month
+);
+
+
+//---------------- Difference ----------------
+
+uint32_t getRTCSecondsBetween(
+    uint32_t startUnixTime,
+    uint32_t endUnixTime
+);
+
+
+//---------------- Debug ----------------
+
+void printRTCInformation();
+
+
+
+#endif
+#include "92_rtc_manager.h"
+
+#include <Wire.h>
+#include <RTClib.h>
+
+
+//==================================================
+// ESP32 GAME STATION
+// RTC MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- RTC Device ----------------
+
+#if RTC_USE_DS3231
+
+static RTC_DS3231 rtcDevice;
+
+#elif RTC_USE_DS1307
+
+static RTC_DS1307 rtcDevice;
+
+#endif
+
+
+//---------------- Internal State ----------------
+
+static RTCManagerStatus rtcStatus =
+    RTC_STATUS_NOT_INITIALIZED;
+
+
+static RTCDateTime currentRTCDateTime;
+
+
+static bool rtcInitialized =
+    false;
+
+
+static bool rtcAvailable =
+    false;
+
+
+//---------------- Internal Constants ----------------
+
+static const uint32_t RTC_UPDATE_INTERVAL =
+    250UL;
+
+
+//---------------- Internal Timing ----------------
+
+static uint32_t lastRTCUpdateTime =
+    0;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearRTCDateTime()
+{
+    currentRTCDateTime.year =
+        0;
+
+
+    currentRTCDateTime.month =
+        0;
+
+
+    currentRTCDateTime.day =
+        0;
+
+
+    currentRTCDateTime.hour =
+        0;
+
+
+    currentRTCDateTime.minute =
+        0;
+
+
+    currentRTCDateTime.second =
+        0;
+
+
+    currentRTCDateTime.dayOfWeek =
+        0;
+
+
+    currentRTCDateTime.unixTime =
+        0;
+
+
+    currentRTCDateTime.valid =
+        false;
+}
+
+
+
+static void copyDateTimeToRTCData(
+    const DateTime& dateTime
+)
+{
+    currentRTCDateTime.year =
+        dateTime.year();
+
+
+    currentRTCDateTime.month =
+        dateTime.month();
+
+
+    currentRTCDateTime.day =
+        dateTime.day();
+
+
+    currentRTCDateTime.hour =
+        dateTime.hour();
+
+
+    currentRTCDateTime.minute =
+        dateTime.minute();
+
+
+    currentRTCDateTime.second =
+        dateTime.second();
+
+
+    currentRTCDateTime.dayOfWeek =
+        dateTime.dayOfTheWeek();
+
+
+    currentRTCDateTime.unixTime =
+        dateTime.unixtime();
+
+
+    currentRTCDateTime.valid =
+        isRTCDateValid(
+            currentRTCDateTime.year,
+            currentRTCDateTime.month,
+            currentRTCDateTime.day
+        )
+        &&
+        isRTCTimeValid(
+            currentRTCDateTime.hour,
+            currentRTCDateTime.minute,
+            currentRTCDateTime.second
+        );
+}
+
+
+
+static bool readRTCDevice()
+{
+    if(!rtcInitialized ||
+       !rtcAvailable)
+    {
+        clearRTCDateTime();
+
+        return false;
+    }
+
+
+    DateTime now =
+        rtcDevice.now();
+
+
+    copyDateTimeToRTCData(
+        now
+    );
+
+
+    if(!currentRTCDateTime.valid)
+    {
+        rtcStatus =
+            RTC_STATUS_INVALID_TIME;
+
+
+        return false;
+    }
+
+
+    rtcStatus =
+        RTC_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Initialization ----------------
+
+bool initRTCManager()
+{
+    clearRTCDateTime();
+
+
+    rtcInitialized =
+        false;
+
+
+    rtcAvailable =
+        false;
+
+
+    rtcStatus =
+        RTC_STATUS_NOT_INITIALIZED;
+
+
+    Wire.begin();
+
+
+    bool beginResult =
+        rtcDevice.begin();
+
+
+    if(!beginResult)
+    {
+        rtcStatus =
+            RTC_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    rtcInitialized =
+        true;
+
+
+    rtcAvailable =
+        true;
+
+
+#if RTC_USE_DS3231
+
+    if(rtcDevice.lostPower())
+    {
+        rtcStatus =
+            RTC_STATUS_INVALID_TIME;
+
+
+        setRTCFromBuildTime();
+    }
+
+#elif RTC_USE_DS1307
+
+    if(!rtcDevice.isrunning())
+    {
+        rtcStatus =
+            RTC_STATUS_INVALID_TIME;
+
+
+        setRTCFromBuildTime();
+    }
+
+#endif
+
+
+    if(!readRTCDevice())
+    {
+        if(rtcStatus != RTC_STATUS_INVALID_TIME)
+        {
+            rtcStatus =
+                RTC_STATUS_ERROR;
+        }
+
+
+        return false;
+    }
+
+
+    lastRTCUpdateTime =
+        millis();
+
+
+    rtcStatus =
+        RTC_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Update ----------------
+
+void updateRTCManager()
+{
+    if(!rtcInitialized ||
+       !rtcAvailable)
+    {
+        return;
+    }
+
+
+    uint32_t currentTime =
+        millis();
+
+
+    if(currentTime - lastRTCUpdateTime <
+       RTC_UPDATE_INTERVAL)
+    {
+        return;
+    }
+
+
+    lastRTCUpdateTime =
+        currentTime;
+
+
+    readRTCDevice();
+}
+
+
+
+//---------------- RTC State ----------------
+
+bool isRTCAvailable()
+{
+    return rtcAvailable;
+}
+
+
+
+bool isRTCInitialized()
+{
+    return rtcInitialized;
+}
+
+
+
+bool isRTCDateTimeValid()
+{
+    return currentRTCDateTime.valid;
+}
+
+
+
+RTCManagerStatus getRTCManagerStatus()
+{
+    return rtcStatus;
+}
+
+
+
+//---------------- Date Time Read ----------------
+
+RTCDateTime getRTCDateTime()
+{
+    return currentRTCDateTime;
+}
+
+
+
+RTCDate getRTCDate()
+{
+    RTCDate date;
+
+
+    date.year =
+        currentRTCDateTime.year;
+
+
+    date.month =
+        currentRTCDateTime.month;
+
+
+    date.day =
+        currentRTCDateTime.day;
+
+
+    date.dayOfWeek =
+        currentRTCDateTime.dayOfWeek;
+
+
+    date.valid =
+        currentRTCDateTime.valid;
+
+
+    return date;
+}
+
+
+
+RTCTime getRTCTime()
+{
+    RTCTime time;
+
+
+    time.hour =
+        currentRTCDateTime.hour;
+
+
+    time.minute =
+        currentRTCDateTime.minute;
+
+
+    time.second =
+        currentRTCDateTime.second;
+
+
+    time.valid =
+        currentRTCDateTime.valid;
+
+
+    return time;
+}
+
+
+
+//---------------- Date Time Write ----------------
+
+bool setRTCDateTime(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day,
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+)
+{
+    if(!rtcInitialized ||
+       !rtcAvailable)
+    {
+        return false;
+    }
+
+
+    if(!isRTCDateValid(
+        year,
+        month,
+        day
+    ))
+    {
+        return false;
+    }
+
+
+    if(!isRTCTimeValid(
+        hour,
+        minute,
+        second
+    ))
+    {
+        return false;
+    }
+
+
+    DateTime newDateTime(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
+
+
+    rtcDevice.adjust(
+        newDateTime
+    );
+
+
+    return readRTCDevice();
+}
+
+
+
+bool setRTCDate(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day
+)
+{
+    if(!currentRTCDateTime.valid)
+    {
+        return false;
+    }
+
+
+    return setRTCDateTime(
+        year,
+        month,
+        day,
+        currentRTCDateTime.hour,
+        currentRTCDateTime.minute,
+        currentRTCDateTime.second
+    );
+}
+
+
+
+bool setRTCTime(
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+)
+{
+    if(!currentRTCDateTime.valid)
+    {
+        return false;
+    }
+
+
+    return setRTCDateTime(
+        currentRTCDateTime.year,
+        currentRTCDateTime.month,
+        currentRTCDateTime.day,
+        hour,
+        minute,
+        second
+    );
+}
+
+
+
+//---------------- Build Time ----------------
+
+bool setRTCFromBuildTime()
+{
+    if(!rtcInitialized ||
+       !rtcAvailable)
+    {
+        return false;
+    }
+
+
+    DateTime buildDateTime(
+        F(__DATE__),
+        F(__TIME__)
+    );
+
+
+    rtcDevice.adjust(
+        buildDateTime
+    );
+
+
+    return readRTCDevice();
+}
+
+
+
+//---------------- Unix Time ----------------
+
+uint32_t getRTCUnixTime()
+{
+    return currentRTCDateTime.unixTime;
+}
+
+
+
+//---------------- Date Information ----------------
+
+uint16_t getRTCYear()
+{
+    return currentRTCDateTime.year;
+}
+
+
+
+uint8_t getRTCMonth()
+{
+    return currentRTCDateTime.month;
+}
+
+
+
+uint8_t getRTCDay()
+{
+    return currentRTCDateTime.day;
+}
+
+
+
+uint8_t getRTCDayOfWeek()
+{
+    return currentRTCDateTime.dayOfWeek;
+}
+
+
+
+//---------------- Time Information ----------------
+
+uint8_t getRTCHour()
+{
+    return currentRTCDateTime.hour;
+}
+
+
+
+uint8_t getRTCMinute()
+{
+    return currentRTCDateTime.minute;
+}
+
+
+
+uint8_t getRTCSecond()
+{
+    return currentRTCDateTime.second;
+}
+
+
+
+//---------------- Validation ----------------
+
+bool isRTCLeapYear(
+    uint16_t year
+)
+{
+    if(year % 400 == 0)
+    {
+        return true;
+    }
+
+
+    if(year % 100 == 0)
+    {
+        return false;
+    }
+
+
+    return year % 4 == 0;
+}
+
+
+
+uint8_t getRTCDaysInMonth(
+    uint16_t year,
+    uint8_t month
+)
+{
+    switch(month)
+    {
+        case 1:
+
+        case 3:
+
+        case 5:
+
+        case 7:
+
+        case 8:
+
+        case 10:
+
+        case 12:
+
+            return 31;
+
+
+        case 4:
+
+        case 6:
+
+        case 9:
+
+        case 11:
+
+            return 30;
+
+
+        case 2:
+
+            return
+                isRTCLeapYear(year) ?
+                29 :
+                28;
+
+
+        default:
+
+            return 0;
+    }
+}
+
+
+
+bool isRTCDateValid(
+    uint16_t year,
+    uint8_t month,
+    uint8_t day
+)
+{
+    if(year < 2000 ||
+       year > 2099)
+    {
+        return false;
+    }
+
+
+    if(month < 1 ||
+       month > 12)
+    {
+        return false;
+    }
+
+
+    uint8_t daysInMonth =
+        getRTCDaysInMonth(
+            year,
+            month
+        );
+
+
+    if(day < 1 ||
+       day > daysInMonth)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool isRTCTimeValid(
+    uint8_t hour,
+    uint8_t minute,
+    uint8_t second
+)
+{
+    if(hour > 23)
+    {
+        return false;
+    }
+
+
+    if(minute > 59)
+    {
+        return false;
+    }
+
+
+    if(second > 59)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Formatting ----------------
+
+void getRTCDateString(
+    char* buffer,
+    size_t bufferSize
+)
+{
+    if(buffer == nullptr ||
+       bufferSize == 0)
+    {
+        return;
+    }
+
+
+    if(!currentRTCDateTime.valid)
+    {
+        snprintf(
+            buffer,
+            bufferSize,
+            "--/--/----"
+        );
+
+
+        return;
+    }
+
+
+    snprintf(
+        buffer,
+        bufferSize,
+        "%02u/%02u/%04u",
+        currentRTCDateTime.day,
+        currentRTCDateTime.month,
+        currentRTCDateTime.year
+    );
+}
+
+
+
+void getRTCTimeString(
+    char* buffer,
+    size_t bufferSize
+)
+{
+    if(buffer == nullptr ||
+       bufferSize == 0)
+    {
+        return;
+    }
+
+
+    if(!currentRTCDateTime.valid)
+    {
+        snprintf(
+            buffer,
+            bufferSize,
+            "--:--:--"
+        );
+
+
+        return;
+    }
+
+
+    snprintf(
+        buffer,
+        bufferSize,
+        "%02u:%02u:%02u",
+        currentRTCDateTime.hour,
+        currentRTCDateTime.minute,
+        currentRTCDateTime.second
+    );
+}
+
+
+
+void getRTCDateTimeString(
+    char* buffer,
+    size_t bufferSize
+)
+{
+    if(buffer == nullptr ||
+       bufferSize == 0)
+    {
+        return;
+    }
+
+
+    if(!currentRTCDateTime.valid)
+    {
+        snprintf(
+            buffer,
+            bufferSize,
+            "--/--/---- --:--:--"
+        );
+
+
+        return;
+    }
+
+
+    snprintf(
+        buffer,
+        bufferSize,
+        "%02u/%02u/%04u %02u:%02u:%02u",
+        currentRTCDateTime.day,
+        currentRTCDateTime.month,
+        currentRTCDateTime.year,
+        currentRTCDateTime.hour,
+        currentRTCDateTime.minute,
+        currentRTCDateTime.second
+    );
+}
+
+
+
+//---------------- Day Names ----------------
+
+const char* getRTCDayName(
+    uint8_t dayOfWeek
+)
+{
+    static const char* dayNames[7] =
+    {
+        "PAZAR",
+        "PAZARTESI",
+        "SALI",
+        "CARSAMBA",
+        "PERSEMBE",
+        "CUMA",
+        "CUMARTESI"
+    };
+
+
+    if(dayOfWeek > 6)
+    {
+        return "BILINMIYOR";
+    }
+
+
+    return dayNames[dayOfWeek];
+}
+
+
+
+//---------------- Month Names ----------------
+
+const char* getRTCMonthName(
+    uint8_t month
+)
+{
+    static const char* monthNames[12] =
+    {
+        "OCAK",
+        "SUBAT",
+        "MART",
+        "NISAN",
+        "MAYIS",
+        "HAZIRAN",
+        "TEMMUZ",
+        "AGUSTOS",
+        "EYLUL",
+        "EKIM",
+        "KASIM",
+        "ARALIK"
+    };
+
+
+    if(month < 1 ||
+       month > 12)
+    {
+        return "BILINMIYOR";
+    }
+
+
+    return monthNames[month - 1];
+}
+
+
+
+//---------------- Difference ----------------
+
+uint32_t getRTCSecondsBetween(
+    uint32_t startUnixTime,
+    uint32_t endUnixTime
+)
+{
+    if(endUnixTime < startUnixTime)
+    {
+        return 0;
+    }
+
+
+    return
+        endUnixTime -
+        startUnixTime;
+}
+
+
+
+//---------------- Debug ----------------
+
+void printRTCInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "RTC MANAGER"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Initialized: "
+    );
+
+
+    Serial.println(
+        rtcInitialized ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Available: "
+    );
+
+
+    Serial.println(
+        rtcAvailable ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    Serial.println(
+        (uint8_t)rtcStatus
+    );
+
+
+    Serial.print(
+        "Valid: "
+    );
+
+
+    Serial.println(
+        currentRTCDateTime.valid ?
+        "YES" :
+        "NO"
+    );
+
+
+    if(currentRTCDateTime.valid)
+    {
+        char dateTimeBuffer[32];
+
+
+        getRTCDateTimeString(
+            dateTimeBuffer,
+            sizeof(dateTimeBuffer)
+        );
+
+
+        Serial.print(
+            "Date Time: "
+        );
+
+
+        Serial.println(
+            dateTimeBuffer
+        );
+
+
+        Serial.print(
+            "Day: "
+        );
+
+
+        Serial.println(
+            getRTCDayName(
+                currentRTCDateTime.dayOfWeek
+            )
+        );
+
+
+        Serial.print(
+            "Month: "
+        );
+
+
+        Serial.println(
+            getRTCMonthName(
+                currentRTCDateTime.month
+            )
+        );
+
+
+        Serial.print(
+            "Unix Time: "
+        );
+
+
+        Serial.println(
+            currentRTCDateTime.unixTime
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
+#ifndef PLAYTIME_STORAGE_H
+#define PLAYTIME_STORAGE_H
+
+//==================================================
+// ESP32 GAME STATION
+// PLAYTIME STORAGE MANAGER
+//==================================================
+
+#include <Arduino.h>
+
+#include "91_playtime_manager.h"
+
+
+//---------------- Storage Configuration ----------------
+
+#define PLAYTIME_STORAGE_FOLDER       "/SYSTEM"
+
+#define PLAYTIME_STORAGE_FILE         "/SYSTEM/playtime.dat"
+
+#define PLAYTIME_STORAGE_TEMP_FILE    "/SYSTEM/playtime.tmp"
+
+#define PLAYTIME_STORAGE_BACKUP_FILE  "/SYSTEM/playtime.bak"
+
+#define PLAYTIME_STORAGE_MAGIC        0x50544D47UL
+
+#define PLAYTIME_STORAGE_VERSION      1
+
+#define MAX_PLAYTIME_RECORDS          100
+
+
+//---------------- Storage Status ----------------
+
+enum PlaytimeStorageStatus
+{
+    PLAYTIME_STORAGE_NOT_INITIALIZED = 0,
+    PLAYTIME_STORAGE_READY,
+    PLAYTIME_STORAGE_SD_ERROR,
+    PLAYTIME_STORAGE_FILE_ERROR,
+    PLAYTIME_STORAGE_INVALID_FILE,
+    PLAYTIME_STORAGE_FULL,
+    PLAYTIME_STORAGE_RECORD_NOT_FOUND,
+    PLAYTIME_STORAGE_WRITE_ERROR,
+    PLAYTIME_STORAGE_READ_ERROR
+};
+
+
+//---------------- Date Information ----------------
+
+struct PlaytimeDateInfo
+{
+    uint32_t firstPlayedUnix;
+
+    uint32_t lastPlayedUnix;
+
+    uint32_t lastSavedUnix;
+
+    bool rtcTimeValid;
+};
+
+
+//---------------- Stored Record ----------------
+
+struct StoredPlaytimeRecord
+{
+    uint16_t gameID;
+
+    uint16_t reserved;
+
+    PlaytimeStatistics statistics;
+
+    PlaytimeDateInfo dateInfo;
+
+    uint32_t checksum;
+
+    bool valid;
+};
+
+
+//---------------- File Header ----------------
+
+struct PlaytimeStorageHeader
+{
+    uint32_t magic;
+
+    uint16_t version;
+
+    uint16_t recordCount;
+
+    uint16_t maximumRecords;
+
+    uint16_t reserved;
+
+    uint32_t dataChecksum;
+};
+
+
+//---------------- Initialization ----------------
+
+bool initPlaytimeStorage();
+
+
+//---------------- Storage State ----------------
+
+bool isPlaytimeStorageReady();
+
+PlaytimeStorageStatus getPlaytimeStorageStatus();
+
+
+//---------------- File Control ----------------
+
+bool createPlaytimeStorageFile();
+
+bool loadPlaytimeStorage();
+
+bool savePlaytimeStorage();
+
+bool backupPlaytimeStorage();
+
+bool restorePlaytimeStorageBackup();
+
+bool clearPlaytimeStorage();
+
+
+//---------------- Record Control ----------------
+
+bool savePlaytimeRecord(
+    const PlaytimeStatistics& statistics
+);
+
+
+bool saveCurrentPlaytimeRecord();
+
+
+bool loadPlaytimeRecord(
+    uint16_t gameID,
+    StoredPlaytimeRecord& record
+);
+
+
+bool deletePlaytimeRecord(
+    uint16_t gameID
+);
+
+
+bool hasPlaytimeRecord(
+    uint16_t gameID
+);
+
+
+//---------------- Record Access ----------------
+
+uint16_t getPlaytimeRecordCount();
+
+
+const StoredPlaytimeRecord* getPlaytimeRecord(
+    uint16_t index
+);
+
+
+const StoredPlaytimeRecord* findPlaytimeRecord(
+    uint16_t gameID
+);
+
+
+//---------------- Date Information ----------------
+
+uint32_t getFirstPlayedUnix(
+    uint16_t gameID
+);
+
+
+uint32_t getLastPlayedUnix(
+    uint16_t gameID
+);
+
+
+uint32_t getLastSavedUnix(
+    uint16_t gameID
+);
+
+
+//---------------- Record Statistics ----------------
+
+uint64_t getStoredTotalMilliseconds(
+    uint16_t gameID
+);
+
+
+uint32_t getStoredLaunchCount(
+    uint16_t gameID
+);
+
+
+uint32_t getStoredCompletedSessionCount(
+    uint16_t gameID
+);
+
+
+uint32_t getStoredInterruptedSessionCount(
+    uint16_t gameID
+);
+
+
+uint32_t getStoredLongestSessionMilliseconds(
+    uint16_t gameID
+);
+
+
+//---------------- Validation ----------------
+
+bool validatePlaytimeStorageFile();
+
+bool validatePlaytimeRecord(
+    const StoredPlaytimeRecord& record
+);
+
+
+//---------------- Checksum ----------------
+
+uint32_t calculatePlaytimeRecordChecksum(
+    const StoredPlaytimeRecord& record
+);
+
+
+uint32_t calculatePlaytimeStorageChecksum();
+
+
+//---------------- Debug ----------------
+
+void printPlaytimeStorageInformation();
+
+void printStoredPlaytimeRecord(
+    uint16_t gameID
+);
+
+
+
+#endif
+#include "93_playtime_storage.h"
+
+#include <SD.h>
+#include <FS.h>
+#include <string.h>
+
+#include "92_rtc_manager.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// PLAYTIME STORAGE MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Storage ----------------
+
+static StoredPlaytimeRecord playtimeRecords[
+    MAX_PLAYTIME_RECORDS
+];
+
+
+static uint16_t playtimeRecordCount =
+    0;
+
+
+static bool playtimeStorageReady =
+    false;
+
+
+static PlaytimeStorageStatus playtimeStorageStatus =
+    PLAYTIME_STORAGE_NOT_INITIALIZED;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearStoredRecord(
+    StoredPlaytimeRecord& record
+)
+{
+    memset(
+        &record,
+        0,
+        sizeof(StoredPlaytimeRecord)
+    );
+
+
+    record.gameID =
+        PLAYTIME_INVALID_GAME_ID;
+
+
+    record.statistics.gameID =
+        PLAYTIME_INVALID_GAME_ID;
+
+
+    record.valid =
+        false;
+}
+
+
+
+static void clearMemoryRecords()
+{
+    playtimeRecordCount =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < MAX_PLAYTIME_RECORDS;
+        i++)
+    {
+        clearStoredRecord(
+            playtimeRecords[i]
+        );
+    }
+}
+
+
+
+static int16_t findRecordIndex(
+    uint16_t gameID
+)
+{
+    if(gameID ==
+       PLAYTIME_INVALID_GAME_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint16_t i = 0;
+        i < playtimeRecordCount;
+        i++)
+    {
+        if(playtimeRecords[i].valid &&
+           playtimeRecords[i].gameID == gameID)
+        {
+            return (int16_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static bool ensureStorageFolder()
+{
+    if(SD.exists(
+        PLAYTIME_STORAGE_FOLDER
+    ))
+    {
+        return true;
+    }
+
+
+    return SD.mkdir(
+        PLAYTIME_STORAGE_FOLDER
+    );
+}
+
+
+
+static uint32_t getCurrentStorageUnixTime()
+{
+    if(!isRTCInitialized() ||
+       !isRTCAvailable() ||
+       !isRTCDateTimeValid())
+    {
+        return 0;
+    }
+
+
+    return getRTCUnixTime();
+}
+
+
+
+static uint32_t calculateBufferChecksum(
+    const uint8_t* data,
+    size_t length
+)
+{
+    if(data == nullptr ||
+       length == 0)
+    {
+        return 0;
+    }
+
+
+    uint32_t checksum =
+        2166136261UL;
+
+
+    for(size_t i = 0;
+        i < length;
+        i++)
+    {
+        checksum ^=
+            data[i];
+
+
+        checksum *=
+            16777619UL;
+    }
+
+
+    return checksum;
+}
+
+
+
+static bool copyFile(
+    const char* sourcePath,
+    const char* destinationPath
+)
+{
+    if(sourcePath == nullptr ||
+       destinationPath == nullptr)
+    {
+        return false;
+    }
+
+
+    File sourceFile =
+        SD.open(
+            sourcePath,
+            FILE_READ
+        );
+
+
+    if(!sourceFile)
+    {
+        return false;
+    }
+
+
+    if(SD.exists(
+        destinationPath
+    ))
+    {
+        SD.remove(
+            destinationPath
+        );
+    }
+
+
+    File destinationFile =
+        SD.open(
+            destinationPath,
+            FILE_WRITE
+        );
+
+
+    if(!destinationFile)
+    {
+        sourceFile.close();
+
+        return false;
+    }
+
+
+    uint8_t buffer[512];
+
+
+    bool result =
+        true;
+
+
+    while(sourceFile.available())
+    {
+        size_t bytesRead =
+            sourceFile.read(
+                buffer,
+                sizeof(buffer)
+            );
+
+
+        if(bytesRead == 0)
+        {
+            break;
+        }
+
+
+        size_t bytesWritten =
+            destinationFile.write(
+                buffer,
+                bytesRead
+            );
+
+
+        if(bytesWritten != bytesRead)
+        {
+            result =
+                false;
+
+            break;
+        }
+    }
+
+
+    destinationFile.flush();
+
+    destinationFile.close();
+
+    sourceFile.close();
+
+
+    if(!result)
+    {
+        SD.remove(
+            destinationPath
+        );
+    }
+
+
+    return result;
+}
+
+
+
+static void fillStorageHeader(
+    PlaytimeStorageHeader& header
+)
+{
+    header.magic =
+        PLAYTIME_STORAGE_MAGIC;
+
+
+    header.version =
+        PLAYTIME_STORAGE_VERSION;
+
+
+    header.recordCount =
+        playtimeRecordCount;
+
+
+    header.maximumRecords =
+        MAX_PLAYTIME_RECORDS;
+
+
+    header.reserved =
+        0;
+
+
+    header.dataChecksum =
+        calculatePlaytimeStorageChecksum();
+}
+
+
+
+static bool writeStorageToFile(
+    const char* path
+)
+{
+    if(path == nullptr)
+    {
+        return false;
+    }
+
+
+    File file =
+        SD.open(
+            path,
+            FILE_WRITE
+        );
+
+
+    if(!file)
+    {
+        return false;
+    }
+
+
+    PlaytimeStorageHeader header;
+
+
+    fillStorageHeader(
+        header
+    );
+
+
+    size_t headerWritten =
+        file.write(
+            reinterpret_cast<const uint8_t*>(
+                &header
+            ),
+            sizeof(PlaytimeStorageHeader)
+        );
+
+
+    if(headerWritten !=
+       sizeof(PlaytimeStorageHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    for(uint16_t i = 0;
+        i < playtimeRecordCount;
+        i++)
+    {
+        size_t recordWritten =
+            file.write(
+                reinterpret_cast<const uint8_t*>(
+                    &playtimeRecords[i]
+                ),
+                sizeof(StoredPlaytimeRecord)
+            );
+
+
+        if(recordWritten !=
+           sizeof(StoredPlaytimeRecord))
+        {
+            file.close();
+
+            return false;
+        }
+    }
+
+
+    file.flush();
+
+    file.close();
+
+
+    return true;
+}
+
+
+
+static bool readStorageFromFile(
+    const char* path
+)
+{
+    if(path == nullptr)
+    {
+        return false;
+    }
+
+
+    File file =
+        SD.open(
+            path,
+            FILE_READ
+        );
+
+
+    if(!file)
+    {
+        return false;
+    }
+
+
+    if(file.size() <
+       sizeof(PlaytimeStorageHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    PlaytimeStorageHeader header;
+
+
+    size_t headerRead =
+        file.read(
+            reinterpret_cast<uint8_t*>(
+                &header
+            ),
+            sizeof(PlaytimeStorageHeader)
+        );
+
+
+    if(headerRead !=
+       sizeof(PlaytimeStorageHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.magic !=
+       PLAYTIME_STORAGE_MAGIC)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.version !=
+       PLAYTIME_STORAGE_VERSION)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.recordCount >
+       MAX_PLAYTIME_RECORDS)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    clearMemoryRecords();
+
+
+    for(uint16_t i = 0;
+        i < header.recordCount;
+        i++)
+    {
+        StoredPlaytimeRecord record;
+
+
+        size_t recordRead =
+            file.read(
+                reinterpret_cast<uint8_t*>(
+                    &record
+                ),
+                sizeof(StoredPlaytimeRecord)
+            );
+
+
+        if(recordRead !=
+           sizeof(StoredPlaytimeRecord))
+        {
+            clearMemoryRecords();
+
+            file.close();
+
+            return false;
+        }
+
+
+        if(!validatePlaytimeRecord(
+            record
+        ))
+        {
+            clearMemoryRecords();
+
+            file.close();
+
+            return false;
+        }
+
+
+        playtimeRecords[
+            playtimeRecordCount
+        ] = record;
+
+
+        playtimeRecordCount++;
+    }
+
+
+    file.close();
+
+
+    uint32_t calculatedChecksum =
+        calculatePlaytimeStorageChecksum();
+
+
+    if(calculatedChecksum !=
+       header.dataChecksum)
+    {
+        clearMemoryRecords();
+
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Initialization ----------------
+
+bool initPlaytimeStorage()
+{
+    clearMemoryRecords();
+
+
+    playtimeStorageReady =
+        false;
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_NOT_INITIALIZED;
+
+
+    if(!ensureStorageFolder())
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_SD_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        if(!createPlaytimeStorageFile())
+        {
+            playtimeStorageStatus =
+                PLAYTIME_STORAGE_FILE_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(!loadPlaytimeStorage())
+    {
+        if(SD.exists(
+            PLAYTIME_STORAGE_BACKUP_FILE
+        ))
+        {
+            if(restorePlaytimeStorageBackup())
+            {
+                playtimeStorageReady =
+                    true;
+
+
+                playtimeStorageStatus =
+                    PLAYTIME_STORAGE_READY;
+
+
+                return true;
+            }
+        }
+
+
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    playtimeStorageReady =
+        true;
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Storage State ----------------
+
+bool isPlaytimeStorageReady()
+{
+    return playtimeStorageReady;
+}
+
+
+
+PlaytimeStorageStatus getPlaytimeStorageStatus()
+{
+    return playtimeStorageStatus;
+}
+
+
+
+//---------------- File Control ----------------
+
+bool createPlaytimeStorageFile()
+{
+    if(!ensureStorageFolder())
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_SD_ERROR;
+
+
+        return false;
+    }
+
+
+    clearMemoryRecords();
+
+
+    if(!writeStorageToFile(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    playtimeStorageReady =
+        true;
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool loadPlaytimeStorage()
+{
+    if(!SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!readStorageFromFile(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    playtimeStorageReady =
+        true;
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool savePlaytimeStorage()
+{
+    if(!ensureStorageFolder())
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_SD_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        PLAYTIME_STORAGE_TEMP_FILE
+    ))
+    {
+        SD.remove(
+            PLAYTIME_STORAGE_TEMP_FILE
+        );
+    }
+
+
+    if(!writeStorageToFile(
+        PLAYTIME_STORAGE_TEMP_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        if(!copyFile(
+            PLAYTIME_STORAGE_FILE,
+            PLAYTIME_STORAGE_BACKUP_FILE
+        ))
+        {
+            SD.remove(
+                PLAYTIME_STORAGE_TEMP_FILE
+            );
+
+
+            playtimeStorageStatus =
+                PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+            return false;
+        }
+
+
+        SD.remove(
+            PLAYTIME_STORAGE_FILE
+        );
+    }
+
+
+    if(!SD.rename(
+        PLAYTIME_STORAGE_TEMP_FILE,
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        copyFile(
+            PLAYTIME_STORAGE_BACKUP_FILE,
+            PLAYTIME_STORAGE_FILE
+        );
+
+
+        SD.remove(
+            PLAYTIME_STORAGE_TEMP_FILE
+        );
+
+
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    playtimeStorageReady =
+        true;
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool backupPlaytimeStorage()
+{
+    if(!SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!copyFile(
+        PLAYTIME_STORAGE_FILE,
+        PLAYTIME_STORAGE_BACKUP_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool restorePlaytimeStorageBackup()
+{
+    if(!SD.exists(
+        PLAYTIME_STORAGE_BACKUP_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!copyFile(
+        PLAYTIME_STORAGE_BACKUP_FILE,
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    return loadPlaytimeStorage();
+}
+
+
+
+bool clearPlaytimeStorage()
+{
+    clearMemoryRecords();
+
+
+    if(SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        SD.remove(
+            PLAYTIME_STORAGE_FILE
+        );
+    }
+
+
+    if(SD.exists(
+        PLAYTIME_STORAGE_TEMP_FILE
+    ))
+    {
+        SD.remove(
+            PLAYTIME_STORAGE_TEMP_FILE
+        );
+    }
+
+
+    if(SD.exists(
+        PLAYTIME_STORAGE_BACKUP_FILE
+    ))
+    {
+        SD.remove(
+            PLAYTIME_STORAGE_BACKUP_FILE
+        );
+    }
+
+
+    return createPlaytimeStorageFile();
+}
+
+
+
+//---------------- Record Control ----------------
+
+bool savePlaytimeRecord(
+    const PlaytimeStatistics& statistics
+)
+{
+    if(statistics.gameID ==
+       PLAYTIME_INVALID_GAME_ID)
+    {
+        return false;
+    }
+
+
+    if(!statistics.initialized)
+    {
+        return false;
+    }
+
+
+    int16_t recordIndex =
+        findRecordIndex(
+            statistics.gameID
+        );
+
+
+    bool newRecord =
+        recordIndex < 0;
+
+
+    if(newRecord)
+    {
+        if(playtimeRecordCount >=
+           MAX_PLAYTIME_RECORDS)
+        {
+            playtimeStorageStatus =
+                PLAYTIME_STORAGE_FULL;
+
+
+            return false;
+        }
+
+
+        recordIndex =
+            playtimeRecordCount;
+    }
+
+
+    StoredPlaytimeRecord record;
+
+
+    clearStoredRecord(
+        record
+    );
+
+
+    record.gameID =
+        statistics.gameID;
+
+
+    record.reserved =
+        0;
+
+
+    record.statistics =
+        statistics;
+
+
+    uint32_t currentUnixTime =
+        getCurrentStorageUnixTime();
+
+
+    if(newRecord)
+    {
+        record.dateInfo.firstPlayedUnix =
+            currentUnixTime;
+
+
+        record.dateInfo.lastPlayedUnix =
+            currentUnixTime;
+    }
+    else
+    {
+        record.dateInfo =
+            playtimeRecords[
+                recordIndex
+            ].dateInfo;
+
+
+        if(record.dateInfo.firstPlayedUnix == 0 &&
+           currentUnixTime > 0)
+        {
+            record.dateInfo.firstPlayedUnix =
+                currentUnixTime;
+        }
+
+
+        if(currentUnixTime > 0)
+        {
+            record.dateInfo.lastPlayedUnix =
+                currentUnixTime;
+        }
+    }
+
+
+    record.dateInfo.lastSavedUnix =
+        currentUnixTime;
+
+
+    record.dateInfo.rtcTimeValid =
+        currentUnixTime > 0;
+
+
+    record.valid =
+        true;
+
+
+    record.checksum =
+        calculatePlaytimeRecordChecksum(
+            record
+        );
+
+
+    playtimeRecords[
+        recordIndex
+    ] = record;
+
+
+    if(newRecord)
+    {
+        playtimeRecordCount++;
+    }
+
+
+    if(!savePlaytimeStorage())
+    {
+        return false;
+    }
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool saveCurrentPlaytimeRecord()
+{
+    const PlaytimeStatistics& statistics =
+        getPlaytimeStatistics();
+
+
+    return savePlaytimeRecord(
+        statistics
+    );
+}
+
+
+
+bool loadPlaytimeRecord(
+    uint16_t gameID,
+    StoredPlaytimeRecord& record
+)
+{
+    int16_t index =
+        findRecordIndex(
+            gameID
+        );
+
+
+    if(index < 0)
+    {
+        clearStoredRecord(
+            record
+        );
+
+
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_RECORD_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    record =
+        playtimeRecords[index];
+
+
+    playtimeStorageStatus =
+        PLAYTIME_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool deletePlaytimeRecord(
+    uint16_t gameID
+)
+{
+    int16_t index =
+        findRecordIndex(
+            gameID
+        );
+
+
+    if(index < 0)
+    {
+        playtimeStorageStatus =
+            PLAYTIME_STORAGE_RECORD_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    for(uint16_t i = index;
+        i + 1 < playtimeRecordCount;
+        i++)
+    {
+        playtimeRecords[i] =
+            playtimeRecords[i + 1];
+    }
+
+
+    if(playtimeRecordCount > 0)
+    {
+        playtimeRecordCount--;
+
+
+        clearStoredRecord(
+            playtimeRecords[
+                playtimeRecordCount
+            ]
+        );
+    }
+
+
+    return savePlaytimeStorage();
+}
+
+
+
+bool hasPlaytimeRecord(
+    uint16_t gameID
+)
+{
+    return
+        findRecordIndex(
+            gameID
+        ) >= 0;
+}
+
+
+
+//---------------- Record Access ----------------
+
+uint16_t getPlaytimeRecordCount()
+{
+    return playtimeRecordCount;
+}
+
+
+
+const StoredPlaytimeRecord* getPlaytimeRecord(
+    uint16_t index
+)
+{
+    if(index >= playtimeRecordCount)
+    {
+        return nullptr;
+    }
+
+
+    if(!playtimeRecords[index].valid)
+    {
+        return nullptr;
+    }
+
+
+    return &playtimeRecords[index];
+}
+
+
+
+const StoredPlaytimeRecord* findPlaytimeRecord(
+    uint16_t gameID
+)
+{
+    int16_t index =
+        findRecordIndex(
+            gameID
+        );
+
+
+    if(index < 0)
+    {
+        return nullptr;
+    }
+
+
+    return &playtimeRecords[index];
+}
+
+
+
+//---------------- Date Information ----------------
+
+uint32_t getFirstPlayedUnix(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->dateInfo.firstPlayedUnix;
+}
+
+
+
+uint32_t getLastPlayedUnix(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->dateInfo.lastPlayedUnix;
+}
+
+
+
+uint32_t getLastSavedUnix(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->dateInfo.lastSavedUnix;
+}
+
+
+
+//---------------- Record Statistics ----------------
+
+uint64_t getStoredTotalMilliseconds(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->statistics.totalMilliseconds;
+}
+
+
+
+uint32_t getStoredLaunchCount(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->statistics.launchCount;
+}
+
+
+
+uint32_t getStoredCompletedSessionCount(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+#include "95_profile_storage.h"
+
+#include <SD.h>
+#include <FS.h>
+#include <string.h>
+
+#include "92_rtc_manager.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE STORAGE MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Profile Index ----------------
+
+static ProfileIndexEntry profileIndex[
+    PROFILE_STORAGE_MAX_PROFILES
+];
+
+
+static uint8_t profileIndexCount =
+    0;
+
+
+//---------------- Internal State ----------------
+
+static bool profileStorageReady =
+    false;
+
+
+static ProfileStorageStatus profileStorageStatus =
+    PROFILE_STORAGE_NOT_INITIALIZED;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearProfileIndexEntry(
+    ProfileIndexEntry& entry
+)
+{
+    memset(
+        &entry,
+        0,
+        sizeof(ProfileIndexEntry)
+    );
+
+
+    entry.profileID =
+        PROFILE_INVALID_ID;
+
+
+    entry.playerName[0] =
+        '\0';
+
+
+    entry.valid =
+        false;
+}
+
+
+
+static void clearProfileIndexMemory()
+{
+    profileIndexCount =
+        0;
+
+
+    for(uint8_t i = 0;
+        i < PROFILE_STORAGE_MAX_PROFILES;
+        i++)
+    {
+        clearProfileIndexEntry(
+            profileIndex[i]
+        );
+    }
+}
+
+
+
+static int8_t findProfileIndexPosition(
+    uint16_t profileID
+)
+{
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        if(profileIndex[i].valid &&
+           profileIndex[i].profileID == profileID)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static int8_t findProfileNamePosition(
+    const char* playerName
+)
+{
+    if(playerName == nullptr)
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        if(!profileIndex[i].valid)
+        {
+            continue;
+        }
+
+
+        if(strcmp(
+            profileIndex[i].playerName,
+            playerName
+        ) == 0)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static uint32_t getProfileStorageUnixTime()
+{
+    if(!isRTCInitialized())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCAvailable())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCDateTimeValid())
+    {
+        return 0;
+    }
+
+
+    return getRTCUnixTime();
+}
+
+
+
+static uint32_t calculateMemoryChecksum(
+    const uint8_t* data,
+    size_t length
+)
+{
+    if(data == nullptr ||
+       length == 0)
+    {
+        return 0;
+    }
+
+
+    uint32_t checksum =
+        2166136261UL;
+
+
+    for(size_t i = 0;
+        i < length;
+        i++)
+    {
+        checksum ^=
+            data[i];
+
+
+        checksum *=
+            16777619UL;
+    }
+
+
+    return checksum;
+}
+
+
+
+static bool copyProfileFile(
+    const char* sourcePath,
+    const char* destinationPath
+)
+{
+    if(sourcePath == nullptr ||
+       destinationPath == nullptr)
+    {
+        return false;
+    }
+
+
+    File sourceFile =
+        SD.open(
+            sourcePath,
+            FILE_READ
+        );
+
+
+    if(!sourceFile)
+    {
+        return false;
+    }
+
+
+    if(SD.exists(
+        destinationPath
+    ))
+    {
+        SD.remove(
+            destinationPath
+        );
+    }
+
+
+    File destinationFile =
+        SD.open(
+            destinationPath,
+            FILE_WRITE
+        );
+
+
+    if(!destinationFile)
+    {
+        sourceFile.close();
+
+        return false;
+    }
+
+
+    uint8_t buffer[512];
+
+
+    bool result =
+        true;
+
+
+    while(sourceFile.available())
+    {
+        size_t bytesRead =
+            sourceFile.read(
+                buffer,
+                sizeof(buffer)
+            );
+
+
+        if(bytesRead == 0)
+        {
+            break;
+        }
+
+
+        size_t bytesWritten =
+            destinationFile.write(
+                buffer,
+                bytesRead
+            );
+
+
+        if(bytesWritten != bytesRead)
+        {
+            result =
+                false;
+
+            break;
+        }
+    }
+
+
+    destinationFile.flush();
+
+    destinationFile.close();
+
+    sourceFile.close();
+
+
+    if(!result)
+    {
+        SD.remove(
+            destinationPath
+        );
+    }
+
+
+    return result;
+}
+
+
+
+static void fillProfileIndexEntry(
+    ProfileIndexEntry& entry,
+    const PlayerProfile& profile,
+    uint32_t lastSavedUnix
+)
+{
+    clearProfileIndexEntry(
+        entry
+    );
+
+
+    entry.profileID =
+        profile.profileID;
+
+
+    strncpy(
+        entry.playerName,
+        profile.playerName,
+        PROFILE_NAME_LENGTH - 1
+    );
+
+
+    entry.playerName[
+        PROFILE_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    entry.createdUnix =
+        profile.dateInformation.createdUnix;
+
+
+    entry.lastLoginUnix =
+        profile.dateInformation.lastLoginUnix;
+
+
+    entry.lastSavedUnix =
+        lastSavedUnix;
+
+
+    entry.totalPlaytimeMilliseconds =
+        profile.statistics.totalPlaytimeMilliseconds;
+
+
+    entry.loginCount =
+        profile.loginCount;
+
+
+    entry.valid =
+        true;
+}
+
+
+
+static bool updateProfileIndexEntry(
+    const PlayerProfile& profile,
+    uint32_t lastSavedUnix
+)
+{
+    int8_t index =
+        findProfileIndexPosition(
+            profile.profileID
+        );
+
+
+    if(index < 0)
+    {
+        if(profileIndexCount >=
+           PROFILE_STORAGE_MAX_PROFILES)
+        {
+            profileStorageStatus =
+                PROFILE_STORAGE_PROFILE_LIMIT;
+
+
+            return false;
+        }
+
+
+        index =
+            profileIndexCount;
+
+
+        profileIndexCount++;
+    }
+
+
+    fillProfileIndexEntry(
+        profileIndex[index],
+        profile,
+        lastSavedUnix
+    );
+
+
+    return true;
+}
+
+
+
+static void fillProfileStorageHeader(
+    ProfileStorageHeader& header,
+    const PlayerProfile& profile
+)
+{
+    header.magic =
+        PROFILE_STORAGE_MAGIC;
+
+
+    header.version =
+        PROFILE_STORAGE_VERSION;
+
+
+    header.profileID =
+        profile.profileID;
+
+
+    header.profileDataSize =
+        sizeof(PlayerProfile);
+
+
+    header.profileChecksum =
+        calculateProfileChecksum(
+            profile
+        );
+
+
+    header.savedUnix =
+        getProfileStorageUnixTime();
+
+
+    header.reserved =
+        0;
+}
+
+
+
+static void fillProfileIndexHeader(
+    ProfileIndexHeader& header
+)
+{
+    header.magic =
+        PROFILE_STORAGE_INDEX_MAGIC;
+
+
+    header.version =
+        PROFILE_STORAGE_VERSION;
+
+
+    header.profileCount =
+        profileIndexCount;
+
+
+    header.maximumProfiles =
+        PROFILE_STORAGE_MAX_PROFILES;
+
+
+    header.reserved =
+        0;
+
+
+    header.entriesChecksum =
+        calculateProfileIndexChecksum();
+}
+
+
+
+static bool writeProfileFile(
+    const char* path,
+    const PlayerProfile& profile
+)
+{
+    if(path == nullptr)
+    {
+        return false;
+    }
+
+
+    File file =
+        SD.open(
+            path,
+            FILE_WRITE
+        );
+
+
+    if(!file)
+    {
+        return false;
+    }
+
+
+    ProfileStorageHeader header;
+
+
+    fillProfileStorageHeader(
+        header,
+        profile
+    );
+
+
+    size_t headerWritten =
+        file.write(
+            reinterpret_cast<const uint8_t*>(
+                &header
+            ),
+            sizeof(ProfileStorageHeader)
+        );
+
+
+    if(headerWritten !=
+       sizeof(ProfileStorageHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    size_t profileWritten =
+        file.write(
+            reinterpret_cast<const uint8_t*>(
+                &profile
+            ),
+            sizeof(PlayerProfile)
+        );
+
+
+    if(profileWritten !=
+       sizeof(PlayerProfile))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    file.flush();
+
+    file.close();
+
+
+    return true;
+}
+
+
+
+static bool readProfileFile(
+    const char* path,
+    PlayerProfile& profile,
+    ProfileStorageHeader* outputHeader
+)
+{
+    if(path == nullptr)
+    {
+        return false;
+    }
+
+
+    File file =
+        SD.open(
+            path,
+            FILE_READ
+        );
+
+
+    if(!file)
+    {
+        return false;
+    }
+
+
+    size_t expectedSize =
+        sizeof(ProfileStorageHeader) +
+        sizeof(PlayerProfile);
+
+
+    if(file.size() <
+       expectedSize)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    ProfileStorageHeader header;
+
+
+    size_t headerRead =
+        file.read(
+            reinterpret_cast<uint8_t*>(
+                &header
+            ),
+            sizeof(ProfileStorageHeader)
+        );
+
+
+    if(headerRead !=
+       sizeof(ProfileStorageHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.magic !=
+       PROFILE_STORAGE_MAGIC)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.version !=
+       PROFILE_STORAGE_VERSION)
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    if(header.profileDataSize !=
+       sizeof(PlayerProfile))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    size_t profileRead =
+        file.read(
+            reinterpret_cast<uint8_t*>(
+                &profile
+            ),
+            sizeof(PlayerProfile)
+        );
+
+
+    file.close();
+
+
+    if(profileRead !=
+       sizeof(PlayerProfile))
+    {
+        return false;
+    }
+
+
+    if(profile.profileID !=
+       header.profileID)
+    {
+        return false;
+    }
+
+
+    uint32_t calculatedChecksum =
+        calculateProfileChecksum(
+            profile
+        );
+
+
+    if(calculatedChecksum !=
+       header.profileChecksum)
+    {
+        return false;
+    }
+
+
+    if(!validateStoredProfile(
+        profile
+    ))
+    {
+        return false;
+    }
+
+
+    if(outputHeader != nullptr)
+    {
+        *outputHeader =
+            header;
+    }
+
+
+    return true;
+}
+
+
+
+static bool writeProfileIndexFile(
+    const char* path
+)
+{
+    if(path == nullptr)
+    {
+        return false;
+    }
+
+
+    File file =
+        SD.open(
+            path,
+            FILE_WRITE
+        );
+
+
+    if(!file)
+    {
+        return false;
+    }
+
+
+    ProfileIndexHeader header;
+
+
+    fillProfileIndexHeader(
+        header
+    );
+
+
+    size_t headerWritten =
+        file.write(
+            reinterpret_cast<const uint8_t*>(
+                &header
+            ),
+            sizeof(ProfileIndexHeader)
+        );
+
+
+    if(headerWritten !=
+       sizeof(ProfileIndexHeader))
+    {
+        file.close();
+
+        return false;
+    }
+
+
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        size_t entryWritten =
+            file.write(
+                reinterpret_cast<const uint8_t*>(
+                    &profileIndex[i]
+                ),
+                sizeof(ProfileIndexEntry)
+            );
+
+
+        if(entryWritten !=
+           sizeof(ProfileIndexEntry))
+        {
+            file.close();
+
+            return false;
+        }
+    }
+
+
+    file.flush();
+
+    file.close();
+
+
+    return true;
+}
+
+
+
+//---------------- Initialization ----------------
+
+bool initProfileStorage()
+{
+    clearProfileIndexMemory();
+
+
+    profileStorageReady =
+        false;
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_NOT_INITIALIZED;
+
+
+    if(!createProfileStorageFolder())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FOLDER_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!SD.exists(
+        PROFILE_STORAGE_INDEX_FILE
+    ))
+    {
+        if(!rebuildProfileIndex())
+        {
+            profileStorageStatus =
+                PROFILE_STORAGE_FILE_ERROR;
+
+
+            return false;
+        }
+    }
+    else
+    {
+        if(!loadProfileIndex())
+        {
+            if(!rebuildProfileIndex())
+            {
+                profileStorageStatus =
+                    PROFILE_STORAGE_INVALID_FILE;
+
+
+                return false;
+            }
+        }
+    }
+
+
+    profileStorageReady =
+        true;
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Storage State ----------------
+
+bool isProfileStorageReady()
+{
+    return profileStorageReady;
+}
+
+
+
+ProfileStorageStatus getProfileStorageStatus()
+{
+    return profileStorageStatus;
+}
+
+
+
+//---------------- Folder Control ----------------
+
+bool createProfileStorageFolder()
+{
+    if(SD.exists(
+        PROFILE_STORAGE_FOLDER
+    ))
+    {
+        return true;
+    }
+
+
+    if(!SD.mkdir(
+        PROFILE_STORAGE_FOLDER
+    ))
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool profileStorageFolderExists()
+{
+    return SD.exists(
+        PROFILE_STORAGE_FOLDER
+    );
+}
+
+
+
+//---------------- Profile Save ----------------
+
+bool saveActiveProfile()
+{
+    if(!isPlayerProfileInitialized())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    return savePlayerProfile(
+        getPlayerProfile()
+    );
+}
+
+
+
+bool savePlayerProfile(
+    const PlayerProfile& profile
+)
+{
+    if(!validateStoredProfile(
+        profile
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    if(!createProfileStorageFolder())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FOLDER_ERROR;
+
+
+        return false;
+    }
+
+
+    char profilePath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    char backupPath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    if(!buildProfileFilePath(
+        profile.profileID,
+        profilePath,
+        sizeof(profilePath)
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!buildProfileBackupPath(
+        profile.profileID,
+        backupPath,
+        sizeof(backupPath)
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        PROFILE_STORAGE_TEMP_FILE
+    ))
+    {
+        SD.remove(
+            PROFILE_STORAGE_TEMP_FILE
+        );
+    }
+
+
+    if(!writeProfileFile(
+        PROFILE_STORAGE_TEMP_FILE,
+        profile
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        profilePath
+    ))
+    {
+        if(SD.exists(
+            backupPath
+        ))
+        {
+            SD.remove(
+                backupPath
+            );
+        }
+
+
+        if(!copyProfileFile(
+            profilePath,
+            backupPath
+        ))
+        {
+            SD.remove(
+                PROFILE_STORAGE_TEMP_FILE
+            );
+
+
+            profileStorageStatus =
+                PROFILE_STORAGE_BACKUP_ERROR;
+
+
+            return false;
+        }
+
+
+        if(!SD.remove(
+            profilePath
+        ))
+        {
+            SD.remove(
+                PROFILE_STORAGE_TEMP_FILE
+            );
+
+
+            profileStorageStatus =
+                PROFILE_STORAGE_DELETE_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(!SD.rename(
+        PROFILE_STORAGE_TEMP_FILE,
+        profilePath
+    ))
+    {
+        if(SD.exists(
+            backupPath
+        ))
+        {
+            copyProfileFile(
+                backupPath,
+                profilePath
+            );
+        }
+
+
+        SD.remove(
+            PROFILE_STORAGE_TEMP_FILE
+        );
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    uint32_t currentUnix =
+        getProfileStorageUnixTime();
+
+
+    if(!updateProfileIndexEntry(
+        profile,
+        currentUnix
+    ))
+    {
+        return false;
+    }
+
+
+    if(!saveProfileIndex())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(isPlayerProfileInitialized() &&
+       getPlayerProfileID() == profile.profileID)
+    {
+        clearProfileModified();
+    }
+
+
+    profileStorageReady =
+        true;
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Load ----------------
+
+bool loadPlayerProfile(
+    uint16_t profileID
+)
+{
+    PlayerProfile loadedProfile;
+
+
+    if(!readPlayerProfile(
+        profileID,
+        loadedProfile
+    ))
+    {
+        return false;
+    }
+
+
+    getMutablePlayerProfile() =
+        loadedProfile;
+
+
+    clearProfileModified();
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool readPlayerProfile(
+    uint16_t profileID,
+    PlayerProfile& profile
+)
+{
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    char profilePath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    if(!buildProfileFilePath(
+        profileID,
+        profilePath,
+        sizeof(profilePath)
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!SD.exists(
+        profilePath
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    ProfileStorageHeader header;
+
+
+    if(!readProfileFile(
+        profilePath,
+        profile,
+        &header
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Creation ----------------
+
+bool createStoredProfile(
+    uint16_t profileID,
+    const char* playerName
+)
+{
+    if(storedProfileExists(
+        profileID
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_EXISTS;
+
+
+        return false;
+    }
+
+
+    if(storedProfileNameExists(
+        playerName
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_EXISTS;
+
+
+        return false;
+    }
+
+
+    if(profileIndexCount >=
+       PROFILE_STORAGE_MAX_PROFILES)
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_LIMIT;
+
+
+        return false;
+    }
+
+
+    PlayerProfile previousProfile;
+
+
+    bool hadPreviousProfile =
+        isPlayerProfileInitialized();
+
+
+    if(hadPreviousProfile)
+    {
+        previousProfile =
+            getPlayerProfile();
+    }
+
+
+    if(!createPlayerProfile(
+        profileID,
+        playerName
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    if(!saveActiveProfile())
+    {
+        if(hadPreviousProfile)
+        {
+            getMutablePlayerProfile() =
+                previousProfile;
+
+
+            clearProfileModified();
+        }
+        else
+        {
+            resetPlayerProfile();
+        }
+
+
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Deletion ----------------
+
+bool deleteStoredProfile(
+    uint16_t profileID
+)
+{
+    int8_t index =
+        findProfileIndexPosition(
+            profileID
+        );
+
+
+    if(index < 0)
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_PROFILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    char profilePath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    char backupPath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    buildProfileFilePath(
+        profileID,
+        profilePath,
+        sizeof(profilePath)
+    );
+
+
+    buildProfileBackupPath(
+        profileID,
+        backupPath,
+        sizeof(backupPath)
+    );
+
+
+    if(SD.exists(
+        profilePath
+    ))
+    {
+        if(!SD.remove(
+            profilePath
+        ))
+        {
+            profileStorageStatus =
+                PROFILE_STORAGE_DELETE_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(SD.exists(
+        backupPath
+    ))
+    {
+        SD.remove(
+            backupPath
+        );
+    }
+
+
+    for(uint8_t i = index;
+        i + 1 < profileIndexCount;
+        i++)
+    {
+        profileIndex[i] =
+            profileIndex[i + 1];
+    }
+
+
+    if(profileIndexCount > 0)
+    {
+        profileIndexCount--;
+
+
+        clearProfileIndexEntry(
+            profileIndex[
+                profileIndexCount
+            ]
+        );
+    }
+
+
+    if(isPlayerProfileInitialized() &&
+       getPlayerProfileID() == profileID)
+    {
+        resetPlayerProfile();
+    }
+
+
+    if(!saveProfileIndex())
+    {
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Detection ----------------
+
+bool storedProfileExists(
+    uint16_t profileID
+)
+{
+    if(findProfileIndexPosition(
+        profileID
+    ) >= 0)
+    {
+        return true;
+    }
+
+
+    char path[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    if(!buildProfileFilePath(
+        profileID,
+        path,
+        sizeof(path)
+    ))
+    {
+        return false;
+    }
+
+
+    return SD.exists(
+        path
+    );
+}
+
+
+
+bool storedProfileNameExists(
+    const char* playerName
+)
+{
+    return
+        findProfileNamePosition(
+            playerName
+        ) >= 0;
+}
+
+
+
+//---------------- Profile Index ----------------
+
+bool loadProfileIndex()
+{
+    clearProfileIndexMemory();
+
+
+    File file =
+        SD.open(
+            PROFILE_STORAGE_INDEX_FILE,
+            FILE_READ
+        );
+
+
+    if(!file)
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(file.size() <
+       sizeof(ProfileIndexHeader))
+    {
+        file.close();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    ProfileIndexHeader header;
+
+
+    size_t headerRead =
+        file.read(
+            reinterpret_cast<uint8_t*>(
+                &header
+            ),
+            sizeof(ProfileIndexHeader)
+        );
+
+
+    if(headerRead !=
+       sizeof(ProfileIndexHeader))
+    {
+        file.close();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    if(header.magic !=
+       PROFILE_STORAGE_INDEX_MAGIC)
+    {
+        file.close();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    if(header.version !=
+       PROFILE_STORAGE_VERSION)
+    {
+        file.close();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_VERSION_ERROR;
+
+
+        return false;
+    }
+
+
+    if(header.profileCount >
+       PROFILE_STORAGE_MAX_PROFILES)
+    {
+        file.close();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    for(uint8_t i = 0;
+        i < header.profileCount;
+        i++)
+    {
+        ProfileIndexEntry entry;
+
+
+        size_t entryRead =
+            file.read(
+                reinterpret_cast<uint8_t*>(
+                    &entry
+                ),
+                sizeof(ProfileIndexEntry)
+            );
+
+
+        if(entryRead !=
+           sizeof(ProfileIndexEntry))
+        {
+            file.close();
+
+
+            clearProfileIndexMemory();
+
+
+            profileStorageStatus =
+                PROFILE_STORAGE_READ_ERROR;
+
+
+            return false;
+        }
+
+
+        if(!entry.valid ||
+           entry.profileID == PROFILE_INVALID_ID)
+        {
+            file.close();
+
+
+            clearProfileIndexMemory();
+
+
+            profileStorageStatus =
+                PROFILE_STORAGE_INVALID_FILE;
+
+
+            return false;
+        }
+
+
+        profileIndex[
+            profileIndexCount
+        ] = entry;
+
+
+        profileIndexCount++;
+    }
+
+
+    file.close();
+
+
+    uint32_t checksum =
+        calculateProfileIndexChecksum();
+
+
+    if(checksum !=
+       header.entriesChecksum)
+    {
+        clearProfileIndexMemory();
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool saveProfileIndex()
+{
+    if(!createProfileStorageFolder())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FOLDER_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        PROFILE_STORAGE_INDEX_TEMP
+    ))
+    {
+        SD.remove(
+            PROFILE_STORAGE_INDEX_TEMP
+        );
+    }
+
+
+    if(!writeProfileIndexFile(
+        PROFILE_STORAGE_INDEX_TEMP
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(SD.exists(
+        PROFILE_STORAGE_INDEX_FILE
+    ))
+    {
+        if(!SD.remove(
+            PROFILE_STORAGE_INDEX_FILE
+        ))
+        {
+            SD.remove(
+                PROFILE_STORAGE_INDEX_TEMP
+            );
+
+
+            profileStorageStatus =
+                PROFILE_STORAGE_DELETE_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(!SD.rename(
+        PROFILE_STORAGE_INDEX_TEMP,
+        PROFILE_STORAGE_INDEX_FILE
+    ))
+    {
+        SD.remove(
+            PROFILE_STORAGE_INDEX_TEMP
+        );
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool rebuildProfileIndex()
+{
+    clearProfileIndexMemory();
+
+
+    if(!createProfileStorageFolder())
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FOLDER_ERROR;
+
+
+        return false;
+    }
+
+
+    File folder =
+        SD.open(
+            PROFILE_STORAGE_FOLDER
+        );
+
+
+    if(!folder ||
+       !folder.isDirectory())
+    {
+        if(folder)
+        {
+            folder.close();
+        }
+
+
+        profileStorageStatus =
+            PROFILE_STORAGE_FOLDER_ERROR;
+
+
+        return false;
+    }
+
+
+    File file =
+        folder.openNextFile();
+
+
+    while(file)
+    {
+        if(!file.isDirectory())
+        {
+            const char* fileName =
+                file.name();
+
+
+            if(fileName != nullptr)
+            {
+                size_t nameLength =
+                    strlen(
+                        fileName
+                    );
+
+
+                if(nameLength > 8 &&
+                   strstr(
+                       fileName,
+                       "profile_"
+                   ) != nullptr &&
+                   strstr(
+                       fileName,
+                       ".dat"
+                   ) != nullptr)
+                {
+                    PlayerProfile profile;
+
+
+                    ProfileStorageHeader header;
+
+
+                    char fullPath[
+                        PROFILE_FILE_PATH_LENGTH
+                    ];
+
+
+                    snprintf(
+                        fullPath,
+                        sizeof(fullPath),
+                        "%s/%s",
+                        PROFILE_STORAGE_FOLDER,
+                        fileName
+                    );
+
+
+                    if(readProfileFile(
+                        fullPath,
+                        profile,
+                        &header
+                    ))
+                    {
+                        if(profileIndexCount <
+                           PROFILE_STORAGE_MAX_PROFILES)
+                        {
+                            fillProfileIndexEntry(
+                                profileIndex[
+                                    profileIndexCount
+                                ],
+                                profile,
+                                header.savedUnix
+                            );
+
+
+                            profileIndexCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+
+        file.close();
+
+
+        file =
+            folder.openNextFile();
+    }
+
+
+    folder.close();
+
+
+    if(!saveProfileIndex())
+    {
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool clearProfileIndex()
+{
+    clearProfileIndexMemory();
+
+
+    if(SD.exists(
+        PROFILE_STORAGE_INDEX_FILE
+    ))
+    {
+        SD.remove(
+            PROFILE_STORAGE_INDEX_FILE
+        );
+    }
+
+
+    return saveProfileIndex();
+}
+
+
+
+uint8_t getStoredProfileCount()
+{
+    return profileIndexCount;
+}
+
+
+
+const ProfileIndexEntry* getProfileIndexEntry(
+    uint8_t index
+)
+{
+    if(index >=
+       profileIndexCount)
+    {
+        return nullptr;
+    }
+
+
+    if(!profileIndex[index].valid)
+    {
+        return nullptr;
+    }
+
+
+    return &profileIndex[index];
+}
+
+
+
+const ProfileIndexEntry* findProfileIndexEntry(
+    uint16_t profileID
+)
+{
+    int8_t index =
+        findProfileIndexPosition(
+            profileID
+        );
+
+
+    if(index < 0)
+    {
+        return nullptr;
+    }
+
+
+    return &profileIndex[index];
+}
+
+
+
+//---------------- Profile Information ----------------
+
+uint16_t getStoredProfileID(
+    uint8_t index
+)
+{
+    const ProfileIndexEntry* entry =
+        getProfileIndexEntry(
+            index
+        );
+
+
+    if(entry == nullptr)
+    {
+        return PROFILE_INVALID_ID;
+    }
+
+
+    return entry->profileID;
+}
+
+
+
+const char* getStoredProfileName(
+    uint8_t index
+)
+{
+    const ProfileIndexEntry* entry =
+        getProfileIndexEntry(
+            index
+        );
+
+
+    if(entry == nullptr)
+    {
+        return "";
+    }
+
+
+    return entry->playerName;
+}
+
+
+
+uint32_t getStoredProfileCreatedUnix(
+    uint16_t profileID
+)
+{
+    const ProfileIndexEntry* entry =
+        findProfileIndexEntry(
+            profileID
+        );
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->createdUnix;
+}
+
+
+
+uint32_t getStoredProfileLastLoginUnix(
+    uint16_t profileID
+)
+{
+    const ProfileIndexEntry* entry =
+        findProfileIndexEntry(
+            profileID
+        );
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->lastLoginUnix;
+}
+
+
+
+uint32_t getStoredProfileLastSavedUnix(
+    uint16_t profileID
+)
+{
+    const ProfileIndexEntry* entry =
+        findProfileIndexEntry(
+            profileID
+        );
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->lastSavedUnix;
+}
+
+
+
+uint32_t getStoredProfilePlaytimeMilliseconds(
+    uint16_t profileID
+)
+{
+    const ProfileIndexEntry* entry =
+        findProfileIndexEntry(
+            profileID
+        );
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->totalPlaytimeMilliseconds;
+}
+
+
+
+//---------------- Backup ----------------
+
+bool backupStoredProfile(
+    uint16_t profileID
+)
+{
+    char profilePath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    char backupPath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    if(!buildProfileFilePath(
+        profileID,
+        profilePath,
+        sizeof(profilePath)
+    ))
+    {
+        return false;
+    }
+
+
+    if(!buildProfileBackupPath(
+        profileID,
+        backupPath,
+        sizeof(backupPath)
+    ))
+    {
+        return false;
+    }
+
+
+    if(!SD.exists(
+        profilePath
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(!copyProfileFile(
+        profilePath,
+        backupPath
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_BACKUP_ERROR;
+
+
+        return false;
+    }
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+bool restoreStoredProfileBackup(
+    uint16_t profileID
+)
+{
+    char profilePath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    char backupPath[
+        PROFILE_FILE_PATH_LENGTH
+    ];
+
+
+    if(!buildProfileFilePath(
+        profileID,
+        profilePath,
+        sizeof(profilePath)
+    ))
+    {
+        return false;
+    }
+
+
+    if(!buildProfileBackupPath(
+        profileID,
+        backupPath,
+        sizeof(backupPath)
+    ))
+    {
+        return false;
+    }
+
+
+    if(!SD.exists(
+        backupPath
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_FILE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(!copyProfileFile(
+        backupPath,
+        profilePath
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_BACKUP_ERROR;
+
+
+        return false;
+    }
+
+
+    PlayerProfile profile;
+
+
+    ProfileStorageHeader header;
+
+
+    if(!readProfileFile(
+        profilePath,
+        profile,
+        &header
+    ))
+    {
+        profileStorageStatus =
+            PROFILE_STORAGE_INVALID_FILE;
+
+
+        return false;
+    }
+
+
+    updateProfileIndexEntry(
+        profile,
+        header.savedUnix
+    );
+
+
+    saveProfileIndex();
+
+
+    profileStorageStatus =
+        PROFILE_STORAGE_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Validation ----------------
+
+bool validateStoredProfile(
+    const PlayerProfile& profile
+)
+{
+    if(!profile.initialized)
+    {
+        return false;
+    }
+
+
+    if(profile.profileID ==
+       PROFILE_INVALID_ID)
+    {
+        return false;
+    }
+
+
+    if(profile.playerName[0] ==
+       '\0')
+    {
+        return false;
+    }
+
+
+    size_t nameLength =
+        strnlen(
+            profile.playerName,
+            PROFILE_NAME_LENGTH
+        );
+
+
+    if(nameLength == 0 ||
+       nameLength >= PROFILE_NAME_LENGTH)
+    {
+        return false;
+    }
+
+
+    if(profile.favoriteGameCount >
+       PROFILE_MAX_FAVORITES)
+    {
+        return false;
+    }
+
+
+    if(profile.preferences.volume >
+       100)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validateProfileFile(
+    uint16_t profileID
+)
+{
+    PlayerProfile profile;
+
+
+    return readPlayerProfile(
+        profileID,
+        profile
+    );
+}
+
+
+
+bool validateProfileIndex()
+{
+    if(profileIndexCount >
+       PROFILE_STORAGE_MAX_PROFILES)
+    {
+        return false;
+    }
+
+
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        if(!profileIndex[i].valid)
+        {
+            return false;
+        }
+
+
+        if(profileIndex[i].profileID ==
+           PROFILE_INVALID_ID)
+        {
+            return false;
+        }
+
+
+        if(profileIndex[i].playerName[0] ==
+           '\0')
+        {
+            return false;
+        }
+
+
+        for(uint8_t j = i + 1;
+            j < profileIndexCount;
+            j++)
+        {
+            if(profileIndex[i].profileID ==
+               profileIndex[j].profileID)
+            {
+                return false;
+            }
+        }
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- File Path ----------------
+
+bool buildProfileFilePath(
+    uint16_t profileID,
+    char* buffer,
+    size_t bufferSize
+)
+{
+    if(buffer == nullptr ||
+       bufferSize == 0)
+    {
+        return false;
+    }
+
+
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        buffer[0] =
+            '\0';
+
+
+        return false;
+    }
+
+
+    int result =
+        snprintf(
+            buffer,
+            bufferSize,
+            "%s/profile_%u.dat",
+            PROFILE_STORAGE_FOLDER,
+            profileID
+        );
+
+
+    return
+        result > 0 &&
+        (size_t)result < bufferSize;
+}
+
+
+
+bool buildProfileBackupPath(
+    uint16_t profileID,
+    char* buffer,
+    size_t bufferSize
+)
+{
+    if(buffer == nullptr ||
+       bufferSize == 0)
+    {
+        return false;
+    }
+
+
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        buffer[0] =
+            '\0';
+
+
+        return false;
+    }
+
+
+    int result =
+        snprintf(
+            buffer,
+            bufferSize,
+            "%s/profile_%u.bak",
+            PROFILE_STORAGE_FOLDER,
+            profileID
+        );
+
+
+    return
+        result > 0 &&
+        (size_t)result < bufferSize;
+}
+
+
+
+//---------------- Checksum ----------------
+
+uint32_t calculateProfileChecksum(
+    const PlayerProfile& profile
+)
+{
+    return calculateMemoryChecksum(
+        reinterpret_cast<const uint8_t*>(
+            &profile
+        ),
+        sizeof(PlayerProfile)
+    );
+}
+
+
+
+uint32_t calculateProfileIndexChecksum()
+{
+    if(profileIndexCount == 0)
+    {
+        return 0;
+    }
+
+
+    return calculateMemoryChecksum(
+        reinterpret_cast<const uint8_t*>(
+            profileIndex
+        ),
+        sizeof(ProfileIndexEntry) *
+        profileIndexCount
+    );
+}
+
+
+
+//---------------- Maintenance ----------------
+
+bool clearAllStoredProfiles()
+{
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        char profilePath[
+            PROFILE_FILE_PATH_LENGTH
+        ];
+
+
+        char backupPath[
+            PROFILE_FILE_PATH_LENGTH
+        ];
+
+
+        buildProfileFilePath(
+            profileIndex[i].profileID,
+            profilePath,
+            sizeof(profilePath)
+        );
+
+
+        buildProfileBackupPath(
+            profileIndex[i].profileID,
+            backupPath,
+            sizeof(backupPath)
+        );
+
+
+        if(SD.exists(
+            profilePath
+        ))
+        {
+            SD.remove(
+                profilePath
+            );
+        }
+
+
+        if(SD.exists(
+            backupPath
+        ))
+        {
+            SD.remove(
+                backupPath
+            );
+        }
+    }
+
+
+    clearProfileIndexMemory();
+
+
+    resetPlayerProfile();
+
+
+    return saveProfileIndex();
+}
+
+
+
+bool synchronizeActiveProfileIndex()
+{
+    if(!isPlayerProfileInitialized())
+    {
+        return false;
+    }
+
+
+    uint32_t lastSavedUnix =
+        getProfileStorageUnixTime();
+
+
+    if(!updateProfileIndexEntry(
+        getPlayerProfile(),
+        lastSavedUnix
+    ))
+    {
+        return false;
+    }
+
+
+    return saveProfileIndex();
+}
+
+
+
+//---------------- Debug ----------------
+
+void printProfileStorageInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE STORAGE"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Ready: "
+    );
+
+
+    Serial.println(
+        profileStorageReady ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    Serial.println(
+        (uint8_t)profileStorageStatus
+    );
+
+
+    Serial.print(
+        "Folder: "
+    );
+
+
+    Serial.println(
+        profileStorageFolderExists() ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Index File: "
+    );
+
+
+    Serial.println(
+        SD.exists(
+            PROFILE_STORAGE_INDEX_FILE
+        ) ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Profile Count: "
+    );
+
+
+    Serial.print(
+        profileIndexCount
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        PROFILE_STORAGE_MAX_PROFILES
+    );
+
+
+    Serial.print(
+        "Index Checksum: "
+    );
+
+
+    Serial.println(
+        calculateProfileIndexChecksum()
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printProfileIndex()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE INDEX"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    for(uint8_t i = 0;
+        i < profileIndexCount;
+        i++)
+    {
+        Serial.print(
+            "["
+        );
+
+
+        Serial.print(
+            i
+        );
+
+
+        Serial.print(
+            "] ID: "
+        );
+
+
+        Serial.print(
+            profileIndex[i].profileID
+        );
+
+
+        Serial.print(
+            " Name: "
+        );
+
+
+        Serial.print(
+            profileIndex[i].playerName
+        );
+
+
+        Serial.print(
+            " Playtime: "
+        );
+
+
+        Serial.print(
+            profileIndex[i].totalPlaytimeMilliseconds /
+            1000UL
+        );
+
+
+        Serial.print(
+            " sec Login: "
+        );
+
+
+        Serial.println(
+            profileIndex[i].loginCount
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printStoredProfileInformation(
+    uint16_t profileID
+)
+{
+    PlayerProfile profile;
+
+
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "STORED PROFILE"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(!readPlayerProfile(
+        profileID,
+        profile
+    ))
+    {
+        Serial.println(
+            "PROFILE NOT FOUND"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    Serial.print(
+        "Profile ID: "
+    );
+
+
+    Serial.println(
+        profile.profileID
+    );
+
+
+    Serial.print(
+        "Player Name: "
+    );
+
+
+    Serial.println(
+        profile.playerName
+    );
+
+
+    Serial.print(
+        "Active: "
+    );
+
+
+    Serial.println(
+        profile.active ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Login Count: "
+    );
+
+
+    Serial.println(
+        profile.loginCount
+    );
+
+
+    Serial.print(
+        "Total Playtime Seconds: "
+    );
+
+
+    Serial.println(
+        profile.statistics.totalPlaytimeMilliseconds /
+        1000UL
+    );
+
+
+    Serial.print(
+        "Sessions: "
+    );
+
+
+    Serial.println(
+        profile.statistics.totalSessions
+    );
+
+
+    Serial.print(
+        "Game Launches: "
+    );
+
+
+    Serial.println(
+        profile.statistics.totalGameLaunches
+    );
+
+
+    Serial.print(
+        "Achievements: "
+    );
+
+
+    Serial.println(
+        profile.statistics.achievementCount
+    );
+
+
+    Serial.print(
+        "Favorites: "
+    );
+
+
+    Serial.println(
+        profile.favoriteGameCount
+    );
+
+
+    Serial.print(
+        "Created Unix: "
+    );
+
+
+    Serial.println(
+        profile.dateInformation.createdUnix
+    );
+
+
+    Serial.print(
+        "Last Login Unix: "
+    );
+
+
+    Serial.println(
+        profile.dateInformation.lastLoginUnix
+    );
+
+
+    Serial.print(
+        "Checksum: "
+    );
+
+
+    Serial.println(
+        calculateProfileChecksum(
+            profile
+        )
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->statistics.completedSessionCount;
+}
+
+
+
+uint32_t getStoredInterruptedSessionCount(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->statistics.interruptedSessionCount;
+}
+
+
+
+uint32_t getStoredLongestSessionMilliseconds(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return
+        record->statistics.longestSessionMilliseconds;
+}
+
+
+
+//---------------- Validation ----------------
+
+bool validatePlaytimeStorageFile()
+{
+    if(!SD.exists(
+        PLAYTIME_STORAGE_FILE
+    ))
+    {
+        return false;
+    }
+
+
+    StoredPlaytimeRecord backupRecords[
+        MAX_PLAYTIME_RECORDS
+    ];
+
+
+    uint16_t backupCount =
+        playtimeRecordCount;
+
+
+    memcpy(
+        backupRecords,
+        playtimeRecords,
+        sizeof(playtimeRecords)
+    );
+
+
+    bool valid =
+        readStorageFromFile(
+            PLAYTIME_STORAGE_FILE
+        );
+
+
+    memcpy(
+        playtimeRecords,
+        backupRecords,
+        sizeof(playtimeRecords)
+    );
+
+
+    playtimeRecordCount =
+        backupCount;
+
+
+    return valid;
+}
+
+
+
+bool validatePlaytimeRecord(
+    const StoredPlaytimeRecord& record
+)
+{
+    if(!record.valid)
+    {
+        return false;
+    }
+
+
+    if(record.gameID ==
+       PLAYTIME_INVALID_GAME_ID)
+    {
+        return false;
+    }
+
+
+    if(record.statistics.gameID !=
+       record.gameID)
+    {
+        return false;
+    }
+
+
+    if(!record.statistics.initialized)
+    {
+        return false;
+    }
+
+
+    uint32_t calculatedChecksum =
+        calculatePlaytimeRecordChecksum(
+            record
+        );
+
+
+    return
+        calculatedChecksum ==
+        record.checksum;
+}
+
+
+
+//---------------- Checksum ----------------
+
+uint32_t calculatePlaytimeRecordChecksum(
+    const StoredPlaytimeRecord& record
+)
+{
+    StoredPlaytimeRecord checksumRecord =
+        record;
+
+
+    checksumRecord.checksum =
+        0;
+
+
+    return calculateBufferChecksum(
+        reinterpret_cast<const uint8_t*>(
+            &checksumRecord
+        ),
+        sizeof(StoredPlaytimeRecord)
+    );
+}
+
+
+
+uint32_t calculatePlaytimeStorageChecksum()
+{
+    if(playtimeRecordCount == 0)
+    {
+        return 0;
+    }
+
+
+    return calculateBufferChecksum(
+        reinterpret_cast<const uint8_t*>(
+            playtimeRecords
+        ),
+        sizeof(StoredPlaytimeRecord) *
+        playtimeRecordCount
+    );
+}
+
+
+
+//---------------- Debug ----------------
+
+void printPlaytimeStorageInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PLAYTIME STORAGE"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Ready: "
+    );
+
+
+    Serial.println(
+        playtimeStorageReady ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    Serial.println(
+        (uint8_t)playtimeStorageStatus
+    );
+
+
+    Serial.print(
+        "Records: "
+    );
+
+
+    Serial.print(
+        playtimeRecordCount
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        MAX_PLAYTIME_RECORDS
+    );
+
+
+    Serial.print(
+        "Storage File: "
+    );
+
+
+    Serial.println(
+        SD.exists(
+            PLAYTIME_STORAGE_FILE
+        ) ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Backup File: "
+    );
+
+
+    Serial.println(
+        SD.exists(
+            PLAYTIME_STORAGE_BACKUP_FILE
+        ) ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Checksum: "
+    );
+
+
+    Serial.println(
+        calculatePlaytimeStorageChecksum()
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printStoredPlaytimeRecord(
+    uint16_t gameID
+)
+{
+    const StoredPlaytimeRecord* record =
+        findPlaytimeRecord(
+            gameID
+        );
+
+
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "STORED PLAYTIME RECORD"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(record == nullptr)
+    {
+        Serial.println(
+            "RECORD NOT FOUND"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    Serial.print(
+        "Game ID: "
+    );
+
+
+    Serial.println(
+        record->gameID
+    );
+
+
+    Serial.print(
+        "Launch Count: "
+    );
+
+
+    Serial.println(
+        record->statistics.launchCount
+    );
+
+
+    Serial.print(
+        "Completed: "
+    );
+
+
+    Serial.println(
+        record->statistics.completedSessionCount
+    );
+
+
+    Serial.print(
+        "Interrupted: "
+    );
+
+
+    Serial.println(
+        record->statistics.interruptedSessionCount
+    );
+
+
+    Serial.print(
+        "Total Seconds: "
+    );
+
+
+    Serial.println(
+        (uint32_t)
+        (
+            record->statistics.totalMilliseconds /
+            1000ULL
+        )
+    );
+
+
+    Serial.print(
+        "Longest Session ms: "
+    );
+
+
+    Serial.println(
+        record->statistics.longestSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "First Played Unix: "
+    );
+
+
+    Serial.println(
+        record->dateInfo.firstPlayedUnix
+    );
+
+
+    Serial.print(
+        "Last Played Unix: "
+    );
+
+
+    Serial.println(
+        record->dateInfo.lastPlayedUnix
+    );
+
+
+    Serial.print(
+        "Last Saved Unix: "
+    );
+
+
+    Serial.println(
+        record->dateInfo.lastSavedUnix
+    );
+
+
+    Serial.print(
+        "RTC Valid: "
+    );
+
+
+    Serial.println(
+        record->dateInfo.rtcTimeValid ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Checksum: "
+    );
+
+
+    Serial.println(
+        record->checksum
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+#ifndef PROFILE_MANAGER_H
+#define PROFILE_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE MANAGER SYSTEM
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Profile Configuration ----------------
+
+#define PROFILE_INVALID_ID           0xFFFF
+
+#define PROFILE_NAME_LENGTH          24
+
+#define PROFILE_MAX_FAVORITES        16
+
+#define PROFILE_DEFAULT_THEME        0
+
+#define PROFILE_DEFAULT_VOLUME       100
+
+#define PROFILE_DEFAULT_BRIGHTNESS   220
+
+
+//---------------- Profile Status ----------------
+
+enum ProfileManagerStatus
+{
+    PROFILE_STATUS_NOT_INITIALIZED = 0,
+    PROFILE_STATUS_READY,
+    PROFILE_STATUS_NO_ACTIVE_PROFILE,
+    PROFILE_STATUS_INVALID_PROFILE,
+    PROFILE_STATUS_INVALID_NAME,
+    PROFILE_STATUS_FAVORITES_FULL,
+    PROFILE_STATUS_FAVORITE_NOT_FOUND,
+    PROFILE_STATUS_ERROR
+};
+
+
+//---------------- Profile Preferences ----------------
+
+struct ProfilePreferences
+{
+    uint8_t theme;
+
+    uint8_t volume;
+
+    uint8_t brightness;
+
+    bool soundEnabled;
+
+    bool vibrationEnabled;
+
+    bool showFPS;
+
+    bool showBatteryPercent;
+
+    bool autoSaveEnabled;
+};
+
+
+//---------------- Profile Statistics ----------------
+
+struct ProfileStatistics
+{
+    uint32_t totalPlaytimeMilliseconds;
+
+    uint32_t totalSessions;
+
+    uint32_t completedSessions;
+
+    uint32_t interruptedSessions;
+
+    uint32_t totalGameLaunches;
+
+    uint32_t longestSessionMilliseconds;
+
+    uint16_t uniqueGamesPlayed;
+
+    uint16_t achievementCount;
+};
+
+
+//---------------- Profile Date Information ----------------
+
+struct ProfileDateInformation
+{
+    uint32_t createdUnix;
+
+    uint32_t lastLoginUnix;
+
+    uint32_t lastLogoutUnix;
+
+    bool rtcTimeValid;
+};
+
+
+//---------------- Player Profile ----------------
+
+struct PlayerProfile
+{
+    uint16_t profileID;
+
+    char playerName[
+        PROFILE_NAME_LENGTH
+    ];
+
+    uint16_t favoriteGames[
+        PROFILE_MAX_FAVORITES
+    ];
+
+    uint8_t favoriteGameCount;
+
+    uint16_t primaryFavoriteGame;
+
+    ProfilePreferences preferences;
+
+    ProfileStatistics statistics;
+
+    ProfileDateInformation dateInformation;
+
+    uint32_t loginCount;
+
+    bool active;
+
+    bool initialized;
+
+    bool modified;
+};
+
+
+//---------------- Initialization ----------------
+
+void initProfileManager();
+
+
+//---------------- Profile Creation ----------------
+
+bool createPlayerProfile(
+    uint16_t profileID,
+    const char* playerName
+);
+
+
+//---------------- Profile Reset ----------------
+
+void resetPlayerProfile();
+
+
+//---------------- Active Profile ----------------
+
+bool activatePlayerProfile();
+
+bool deactivatePlayerProfile();
+
+bool isPlayerProfileActive();
+
+bool isPlayerProfileInitialized();
+
+
+//---------------- Profile Status ----------------
+
+ProfileManagerStatus getProfileManagerStatus();
+
+
+//---------------- Profile Access ----------------
+
+const PlayerProfile& getPlayerProfile();
+
+PlayerProfile& getMutablePlayerProfile();
+
+
+//---------------- Profile ID ----------------
+
+bool setPlayerProfileID(
+    uint16_t profileID
+);
+
+
+uint16_t getPlayerProfileID();
+
+
+//---------------- Player Name ----------------
+
+bool setPlayerName(
+    const char* playerName
+);
+
+
+const char* getPlayerName();
+
+
+//---------------- Favorite Games ----------------
+
+bool addFavoriteGame(
+    uint16_t gameID
+);
+
+
+bool removeFavoriteGame(
+    uint16_t gameID
+);
+
+
+bool isFavoriteGame(
+    uint16_t gameID
+);
+
+
+void clearFavoriteGames();
+
+
+uint8_t getFavoriteGameCount();
+
+
+uint16_t getFavoriteGame(
+    uint8_t index
+);
+
+
+bool setPrimaryFavoriteGame(
+    uint16_t gameID
+);
+
+
+uint16_t getPrimaryFavoriteGame();
+
+
+//---------------- Preferences ----------------
+
+void setProfileTheme(
+    uint8_t theme
+);
+
+
+uint8_t getProfileTheme();
+
+
+void setProfileVolume(
+    uint8_t volume
+);
+
+
+uint8_t getProfileVolume();
+
+
+void setProfileBrightness(
+    uint8_t brightness
+);
+
+
+uint8_t getProfileBrightness();
+
+
+void setProfileSoundEnabled(
+    bool enabled
+);
+
+
+bool isProfileSoundEnabled();
+
+
+void setProfileVibrationEnabled(
+    bool enabled
+);
+
+
+bool isProfileVibrationEnabled();
+
+
+void setProfileShowFPS(
+    bool enabled
+);
+
+
+bool isProfileShowFPSEnabled();
+
+
+void setProfileShowBatteryPercent(
+    bool enabled
+);
+
+
+bool isProfileBatteryPercentEnabled();
+
+
+void setProfileAutoSaveEnabled(
+    bool enabled
+);
+
+
+bool isProfileAutoSaveEnabled();
+
+
+//---------------- Statistics ----------------
+
+void addProfilePlaytime(
+    uint32_t milliseconds
+);
+
+
+void registerProfileSession(
+    uint32_t sessionMilliseconds,
+    bool completed
+);
+
+
+void registerProfileGameLaunch();
+
+
+void registerUniqueGamePlayed();
+
+
+void setProfileAchievementCount(
+    uint16_t achievementCount
+);
+
+
+void incrementProfileAchievementCount();
+
+
+uint32_t getProfileTotalPlaytimeMilliseconds();
+
+
+uint32_t getProfileTotalPlaytimeSeconds();
+
+
+uint32_t getProfileTotalPlaytimeMinutes();
+
+
+uint32_t getProfileTotalPlaytimeHours();
+
+
+uint32_t getProfileTotalSessions();
+
+
+uint32_t getProfileCompletedSessions();
+
+
+uint32_t getProfileInterruptedSessions();
+
+
+uint32_t getProfileTotalGameLaunches();
+
+
+uint32_t getProfileLongestSessionMilliseconds();
+
+
+uint16_t getProfileUniqueGamesPlayed();
+
+
+uint16_t getProfileAchievementCount();
+
+
+//---------------- Date Information ----------------
+
+void updateProfileCreatedTime();
+
+void updateProfileLoginTime();
+
+void updateProfileLogoutTime();
+
+
+uint32_t getProfileCreatedUnix();
+
+uint32_t getProfileLastLoginUnix();
+
+uint32_t getProfileLastLogoutUnix();
+
+
+//---------------- Login Information ----------------
+
+uint32_t getProfileLoginCount();
+
+
+//---------------- Modification State ----------------
+
+void markProfileModified();
+
+void clearProfileModified();
+
+bool isProfileModified();
+
+
+//---------------- Validation ----------------
+
+bool validatePlayerProfile();
+
+bool validatePlayerName(
+    const char* playerName
+);
+
+
+//---------------- Debug ----------------
+
+void printPlayerProfile();
+
+void printProfilePreferences();
+
+void printProfileStatistics();
+
+
+
+#endif
+#include "94_profile_manager.h"
+
+#include <string.h>
+
+#include "92_rtc_manager.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Profile ----------------
+
+static PlayerProfile playerProfile;
+
+
+//---------------- Internal Status ----------------
+
+static ProfileManagerStatus profileManagerStatus =
+    PROFILE_STATUS_NOT_INITIALIZED;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearProfilePreferences()
+{
+    playerProfile.preferences.theme =
+        PROFILE_DEFAULT_THEME;
+
+
+    playerProfile.preferences.volume =
+        PROFILE_DEFAULT_VOLUME;
+
+
+    playerProfile.preferences.brightness =
+        PROFILE_DEFAULT_BRIGHTNESS;
+
+
+    playerProfile.preferences.soundEnabled =
+        true;
+
+
+    playerProfile.preferences.vibrationEnabled =
+        false;
+
+
+    playerProfile.preferences.showFPS =
+        false;
+
+
+    playerProfile.preferences.showBatteryPercent =
+        true;
+
+
+    playerProfile.preferences.autoSaveEnabled =
+        true;
+}
+
+
+
+static void clearProfileStatistics()
+{
+    playerProfile.statistics.totalPlaytimeMilliseconds =
+        0;
+
+
+    playerProfile.statistics.totalSessions =
+        0;
+
+
+    playerProfile.statistics.completedSessions =
+        0;
+
+
+    playerProfile.statistics.interruptedSessions =
+        0;
+
+
+    playerProfile.statistics.totalGameLaunches =
+        0;
+
+
+    playerProfile.statistics.longestSessionMilliseconds =
+        0;
+
+
+    playerProfile.statistics.uniqueGamesPlayed =
+        0;
+
+
+    playerProfile.statistics.achievementCount =
+        0;
+}
+
+
+
+static void clearProfileDateInformation()
+{
+    playerProfile.dateInformation.createdUnix =
+        0;
+
+
+    playerProfile.dateInformation.lastLoginUnix =
+        0;
+
+
+    playerProfile.dateInformation.lastLogoutUnix =
+        0;
+
+
+    playerProfile.dateInformation.rtcTimeValid =
+        false;
+}
+
+
+
+static void clearProfileFavorites()
+{
+    playerProfile.favoriteGameCount =
+        0;
+
+
+    playerProfile.primaryFavoriteGame =
+        PROFILE_INVALID_ID;
+
+
+    for(uint8_t i = 0;
+        i < PROFILE_MAX_FAVORITES;
+        i++)
+    {
+        playerProfile.favoriteGames[i] =
+            PROFILE_INVALID_ID;
+    }
+}
+
+
+
+static int8_t findFavoriteGameIndex(
+    uint16_t gameID
+)
+{
+    if(gameID ==
+       PROFILE_INVALID_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < playerProfile.favoriteGameCount;
+        i++)
+    {
+        if(playerProfile.favoriteGames[i] ==
+           gameID)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static uint32_t getCurrentProfileUnixTime()
+{
+    if(!isRTCInitialized())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCAvailable())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCDateTimeValid())
+    {
+        return 0;
+    }
+
+
+    return getRTCUnixTime();
+}
+
+
+
+//---------------- Initialization ----------------
+
+void initProfileManager()
+{
+    memset(
+        &playerProfile,
+        0,
+        sizeof(PlayerProfile)
+    );
+
+
+    playerProfile.profileID =
+        PROFILE_INVALID_ID;
+
+
+    playerProfile.playerName[0] =
+        '\0';
+
+
+    clearProfileFavorites();
+
+    clearProfilePreferences();
+
+    clearProfileStatistics();
+
+    clearProfileDateInformation();
+
+
+    playerProfile.loginCount =
+        0;
+
+
+    playerProfile.active =
+        false;
+
+
+    playerProfile.initialized =
+        false;
+
+
+    playerProfile.modified =
+        false;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+}
+
+
+
+//---------------- Profile Creation ----------------
+
+bool createPlayerProfile(
+    uint16_t profileID,
+    const char* playerName
+)
+{
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    if(!validatePlayerName(
+        playerName
+    ))
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_NAME;
+
+
+        return false;
+    }
+
+
+    initProfileManager();
+
+
+    playerProfile.profileID =
+        profileID;
+
+
+    strncpy(
+        playerProfile.playerName,
+        playerName,
+        PROFILE_NAME_LENGTH - 1
+    );
+
+
+    playerProfile.playerName[
+        PROFILE_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    playerProfile.initialized =
+        true;
+
+
+    playerProfile.active =
+        true;
+
+
+    playerProfile.modified =
+        true;
+
+
+    playerProfile.loginCount =
+        1;
+
+
+    updateProfileCreatedTime();
+
+
+    playerProfile.dateInformation.lastLoginUnix =
+        playerProfile.dateInformation.createdUnix;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Reset ----------------
+
+void resetPlayerProfile()
+{
+    initProfileManager();
+}
+
+
+
+//---------------- Active Profile ----------------
+
+bool activatePlayerProfile()
+{
+    if(!playerProfile.initialized)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    if(!validatePlayerProfile())
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    playerProfile.active =
+        true;
+
+
+    playerProfile.loginCount++;
+
+
+    updateProfileLoginTime();
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool deactivatePlayerProfile()
+{
+    if(!playerProfile.initialized)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    if(!playerProfile.active)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_NO_ACTIVE_PROFILE;
+
+
+        return false;
+    }
+
+
+    updateProfileLogoutTime();
+
+
+    playerProfile.active =
+        false;
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool isPlayerProfileActive()
+{
+    return
+        playerProfile.initialized &&
+        playerProfile.active;
+}
+
+
+
+bool isPlayerProfileInitialized()
+{
+    return playerProfile.initialized;
+}
+
+
+
+//---------------- Profile Status ----------------
+
+ProfileManagerStatus getProfileManagerStatus()
+{
+    return profileManagerStatus;
+}
+
+
+
+//---------------- Profile Access ----------------
+
+const PlayerProfile& getPlayerProfile()
+{
+    return playerProfile;
+}
+
+
+
+PlayerProfile& getMutablePlayerProfile()
+{
+    playerProfile.modified =
+        true;
+
+
+    return playerProfile;
+}
+
+
+
+//---------------- Profile ID ----------------
+
+bool setPlayerProfileID(
+    uint16_t profileID
+)
+{
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    playerProfile.profileID =
+        profileID;
+
+
+    playerProfile.initialized =
+        true;
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+uint16_t getPlayerProfileID()
+{
+    return playerProfile.profileID;
+}
+
+
+
+//---------------- Player Name ----------------
+
+bool setPlayerName(
+    const char* playerName
+)
+{
+    if(!validatePlayerName(
+        playerName
+    ))
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_NAME;
+
+
+        return false;
+    }
+
+
+    strncpy(
+        playerProfile.playerName,
+        playerName,
+        PROFILE_NAME_LENGTH - 1
+    );
+
+
+    playerProfile.playerName[
+        PROFILE_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+const char* getPlayerName()
+{
+    return playerProfile.playerName;
+}
+
+
+
+//---------------- Favorite Games ----------------
+
+bool addFavoriteGame(
+    uint16_t gameID
+)
+{
+    if(gameID ==
+       PROFILE_INVALID_ID)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    if(isFavoriteGame(
+        gameID
+    ))
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_READY;
+
+
+        return true;
+    }
+
+
+    if(playerProfile.favoriteGameCount >=
+       PROFILE_MAX_FAVORITES)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_FAVORITES_FULL;
+
+
+        return false;
+    }
+
+
+    playerProfile.favoriteGames[
+        playerProfile.favoriteGameCount
+    ] = gameID;
+
+
+    playerProfile.favoriteGameCount++;
+
+
+    if(playerProfile.primaryFavoriteGame ==
+       PROFILE_INVALID_ID)
+    {
+        playerProfile.primaryFavoriteGame =
+            gameID;
+    }
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool removeFavoriteGame(
+    uint16_t gameID
+)
+{
+    int8_t index =
+        findFavoriteGameIndex(
+            gameID
+        );
+
+
+    if(index < 0)
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_FAVORITE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    for(uint8_t i = index;
+        i + 1 < playerProfile.favoriteGameCount;
+        i++)
+    {
+        playerProfile.favoriteGames[i] =
+            playerProfile.favoriteGames[i + 1];
+    }
+
+
+    if(playerProfile.favoriteGameCount > 0)
+    {
+        playerProfile.favoriteGameCount--;
+
+
+        playerProfile.favoriteGames[
+            playerProfile.favoriteGameCount
+        ] = PROFILE_INVALID_ID;
+    }
+
+
+    if(playerProfile.primaryFavoriteGame ==
+       gameID)
+    {
+        if(playerProfile.favoriteGameCount > 0)
+        {
+            playerProfile.primaryFavoriteGame =
+                playerProfile.favoriteGames[0];
+        }
+        else
+        {
+            playerProfile.primaryFavoriteGame =
+                PROFILE_INVALID_ID;
+        }
+    }
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool isFavoriteGame(
+    uint16_t gameID
+)
+{
+    return
+        findFavoriteGameIndex(
+            gameID
+        ) >= 0;
+}
+
+
+
+void clearFavoriteGames()
+{
+    clearProfileFavorites();
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+}
+
+
+
+uint8_t getFavoriteGameCount()
+{
+    return playerProfile.favoriteGameCount;
+}
+
+
+
+uint16_t getFavoriteGame(
+    uint8_t index
+)
+{
+    if(index >=
+       playerProfile.favoriteGameCount)
+    {
+        return PROFILE_INVALID_ID;
+    }
+
+
+    return playerProfile.favoriteGames[index];
+}
+
+
+
+bool setPrimaryFavoriteGame(
+    uint16_t gameID
+)
+{
+    if(!isFavoriteGame(
+        gameID
+    ))
+    {
+        profileManagerStatus =
+            PROFILE_STATUS_FAVORITE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    playerProfile.primaryFavoriteGame =
+        gameID;
+
+
+    playerProfile.modified =
+        true;
+
+
+    profileManagerStatus =
+        PROFILE_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+uint16_t getPrimaryFavoriteGame()
+{
+    return playerProfile.primaryFavoriteGame;
+}
+
+
+
+//---------------- Preferences ----------------
+
+void setProfileTheme(
+    uint8_t theme
+)
+{
+    playerProfile.preferences.theme =
+        theme;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+uint8_t getProfileTheme()
+{
+    return playerProfile.preferences.theme;
+}
+
+
+
+void setProfileVolume(
+    uint8_t volume
+)
+{
+    playerProfile.preferences.volume =
+        constrain(
+            volume,
+            0,
+            100
+        );
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+uint8_t getProfileVolume()
+{
+    return playerProfile.preferences.volume;
+}
+
+
+
+void setProfileBrightness(
+    uint8_t brightness
+)
+{
+    playerProfile.preferences.brightness =
+        brightness;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+uint8_t getProfileBrightness()
+{
+    return playerProfile.preferences.brightness;
+}
+
+
+
+void setProfileSoundEnabled(
+    bool enabled
+)
+{
+    playerProfile.preferences.soundEnabled =
+        enabled;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+bool isProfileSoundEnabled()
+{
+    return
+        playerProfile.preferences.soundEnabled;
+}
+
+
+
+void setProfileVibrationEnabled(
+    bool enabled
+)
+{
+    playerProfile.preferences.vibrationEnabled =
+        enabled;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+bool isProfileVibrationEnabled()
+{
+    return
+        playerProfile.preferences.vibrationEnabled;
+}
+
+
+
+void setProfileShowFPS(
+    bool enabled
+)
+{
+    playerProfile.preferences.showFPS =
+        enabled;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+bool isProfileShowFPSEnabled()
+{
+    return
+        playerProfile.preferences.showFPS;
+}
+
+
+
+void setProfileShowBatteryPercent(
+    bool enabled
+)
+{
+    playerProfile.preferences.showBatteryPercent =
+        enabled;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+bool isProfileBatteryPercentEnabled()
+{
+    return
+        playerProfile.preferences.showBatteryPercent;
+}
+
+
+
+void setProfileAutoSaveEnabled(
+    bool enabled
+)
+{
+    playerProfile.preferences.autoSaveEnabled =
+        enabled;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+bool isProfileAutoSaveEnabled()
+{
+    return
+        playerProfile.preferences.autoSaveEnabled;
+}
+
+
+
+//---------------- Statistics ----------------
+
+void addProfilePlaytime(
+    uint32_t milliseconds
+)
+{
+    playerProfile.statistics.totalPlaytimeMilliseconds +=
+        milliseconds;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void registerProfileSession(
+    uint32_t sessionMilliseconds,
+    bool completed
+)
+{
+    playerProfile.statistics.totalSessions++;
+
+
+    playerProfile.statistics.totalPlaytimeMilliseconds +=
+        sessionMilliseconds;
+
+
+    if(completed)
+    {
+        playerProfile.statistics.completedSessions++;
+    }
+    else
+    {
+        playerProfile.statistics.interruptedSessions++;
+    }
+
+
+    if(sessionMilliseconds >
+       playerProfile.statistics.longestSessionMilliseconds)
+    {
+        playerProfile.statistics.longestSessionMilliseconds =
+            sessionMilliseconds;
+    }
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void registerProfileGameLaunch()
+{
+    playerProfile.statistics.totalGameLaunches++;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void registerUniqueGamePlayed()
+{
+    if(playerProfile.statistics.uniqueGamesPlayed <
+       0xFFFF)
+    {
+        playerProfile.statistics.uniqueGamesPlayed++;
+    }
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void setProfileAchievementCount(
+    uint16_t achievementCount
+)
+{
+    playerProfile.statistics.achievementCount =
+        achievementCount;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void incrementProfileAchievementCount()
+{
+    if(playerProfile.statistics.achievementCount <
+       0xFFFF)
+    {
+        playerProfile.statistics.achievementCount++;
+    }
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+uint32_t getProfileTotalPlaytimeMilliseconds()
+{
+    return
+        playerProfile.statistics.totalPlaytimeMilliseconds;
+}
+
+
+
+uint32_t getProfileTotalPlaytimeSeconds()
+{
+    return
+        playerProfile.statistics.totalPlaytimeMilliseconds /
+        1000UL;
+}
+
+
+
+uint32_t getProfileTotalPlaytimeMinutes()
+{
+    return
+        playerProfile.statistics.totalPlaytimeMilliseconds /
+        60000UL;
+}
+
+
+
+uint32_t getProfileTotalPlaytimeHours()
+{
+    return
+        playerProfile.statistics.totalPlaytimeMilliseconds /
+        3600000UL;
+}
+
+
+
+uint32_t getProfileTotalSessions()
+{
+    return
+        playerProfile.statistics.totalSessions;
+}
+
+
+
+uint32_t getProfileCompletedSessions()
+{
+    return
+        playerProfile.statistics.completedSessions;
+}
+
+
+
+uint32_t getProfileInterruptedSessions()
+{
+    return
+        playerProfile.statistics.interruptedSessions;
+}
+
+
+
+uint32_t getProfileTotalGameLaunches()
+{
+    return
+        playerProfile.statistics.totalGameLaunches;
+}
+
+
+
+uint32_t getProfileLongestSessionMilliseconds()
+{
+    return
+        playerProfile.statistics.longestSessionMilliseconds;
+}
+
+
+
+uint16_t getProfileUniqueGamesPlayed()
+{
+    return
+        playerProfile.statistics.uniqueGamesPlayed;
+}
+
+
+
+uint16_t getProfileAchievementCount()
+{
+    return
+        playerProfile.statistics.achievementCount;
+}
+
+
+
+//---------------- Date Information ----------------
+
+void updateProfileCreatedTime()
+{
+    uint32_t unixTime =
+        getCurrentProfileUnixTime();
+
+
+    playerProfile.dateInformation.createdUnix =
+        unixTime;
+
+
+    playerProfile.dateInformation.rtcTimeValid =
+        unixTime > 0;
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void updateProfileLoginTime()
+{
+    uint32_t unixTime =
+        getCurrentProfileUnixTime();
+
+
+    if(unixTime > 0)
+    {
+        playerProfile.dateInformation.lastLoginUnix =
+            unixTime;
+
+
+        playerProfile.dateInformation.rtcTimeValid =
+            true;
+    }
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+void updateProfileLogoutTime()
+{
+    uint32_t unixTime =
+        getCurrentProfileUnixTime();
+
+
+    if(unixTime > 0)
+    {
+        playerProfile.dateInformation.lastLogoutUnix =
+            unixTime;
+
+
+        playerProfile.dateInformation.rtcTimeValid =
+            true;
+    }
+
+
+    playerProfile.modified =
+        true;
+}
+
+
+
+uint32_t getProfileCreatedUnix()
+{
+    return
+        playerProfile.dateInformation.createdUnix;
+}
+
+
+
+uint32_t getProfileLastLoginUnix()
+{
+    return
+        playerProfile.dateInformation.lastLoginUnix;
+}
+
+
+
+uint32_t getProfileLastLogoutUnix()
+{
+    return
+        playerProfile.dateInformation.lastLogoutUnix;
+}
+
+
+
+//---------------- Login Information ----------------
+
+uint32_t getProfileLoginCount()
+{
+    return playerProfile.loginCount;
+}
+
+
+
+//---------------- Modification State ----------------
+
+void markProfileModified()
+{
+    playerProfile.modified =
+        true;
+}
+
+
+
+void clearProfileModified()
+{
+    playerProfile.modified =
+        false;
+}
+
+
+
+bool isProfileModified()
+{
+    return playerProfile.modified;
+}
+
+
+
+//---------------- Validation ----------------
+
+bool validatePlayerProfile()
+{
+    if(!playerProfile.initialized)
+    {
+        return false;
+    }
+
+
+    if(playerProfile.profileID ==
+       PROFILE_INVALID_ID)
+    {
+        return false;
+    }
+
+
+    if(!validatePlayerName(
+        playerProfile.playerName
+    ))
+    {
+        return false;
+    }
+
+
+    if(playerProfile.favoriteGameCount >
+       PROFILE_MAX_FAVORITES)
+    {
+        return false;
+    }
+
+
+    if(playerProfile.preferences.volume >
+       100)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validatePlayerName(
+    const char* playerName
+)
+{
+    if(playerName == nullptr)
+    {
+        return false;
+    }
+
+
+    size_t length =
+        strlen(
+            playerName
+        );
+
+
+    if(length == 0)
+    {
+        return false;
+    }
+
+
+    if(length >=
+       PROFILE_NAME_LENGTH)
+    {
+        return false;
+    }
+
+
+    for(size_t i = 0;
+        i < length;
+        i++)
+    {
+        char character =
+            playerName[i];
+
+
+        if(character < 32 ||
+           character > 126)
+        {
+            return false;
+        }
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Debug ----------------
+
+void printPlayerProfile()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PLAYER PROFILE"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Profile ID: "
+    );
+
+
+    Serial.println(
+        playerProfile.profileID
+    );
+
+
+    Serial.print(
+        "Player Name: "
+    );
+
+
+    Serial.println(
+        playerProfile.playerName
+    );
+
+
+    Serial.print(
+        "Initialized: "
+    );
+
+
+    Serial.println(
+        playerProfile.initialized ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Active: "
+    );
+
+
+    Serial.println(
+        playerProfile.active ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Modified: "
+    );
+
+
+    Serial.println(
+        playerProfile.modified ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Login Count: "
+    );
+
+
+    Serial.println(
+        playerProfile.loginCount
+    );
+
+
+    Serial.print(
+        "Favorite Count: "
+    );
+
+
+    Serial.println(
+        playerProfile.favoriteGameCount
+    );
+
+
+    Serial.print(
+        "Primary Favorite: "
+    );
+
+
+    Serial.println(
+        playerProfile.primaryFavoriteGame
+    );
+
+
+    Serial.print(
+        "Created Unix: "
+    );
+
+
+    Serial.println(
+        playerProfile.dateInformation.createdUnix
+    );
+
+
+    Serial.print(
+        "Last Login Unix: "
+    );
+
+
+    Serial.println(
+        playerProfile.dateInformation.lastLoginUnix
+    );
+
+
+    Serial.print(
+        "Last Logout Unix: "
+    );
+
+
+    Serial.println(
+        playerProfile.dateInformation.lastLogoutUnix
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printProfilePreferences()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE PREFERENCES"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Theme: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.theme
+    );
+
+
+    Serial.print(
+        "Volume: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.volume
+    );
+
+
+    Serial.print(
+        "Brightness: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.brightness
+    );
+
+
+    Serial.print(
+        "Sound: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.soundEnabled ?
+        "ON" :
+        "OFF"
+    );
+
+
+    Serial.print(
+        "Vibration: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.vibrationEnabled ?
+        "ON" :
+        "OFF"
+    );
+
+
+    Serial.print(
+        "Show FPS: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.showFPS ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Battery Percent: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.showBatteryPercent ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Auto Save: "
+    );
+
+
+    Serial.println(
+        playerProfile.preferences.autoSaveEnabled ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printProfileStatistics()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE STATISTICS"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Total Playtime Seconds: "
+    );
+
+
+    Serial.println(
+        getProfileTotalPlaytimeSeconds()
+    );
+
+
+    Serial.print(
+        "Total Playtime Minutes: "
+    );
+
+
+    Serial.println(
+        getProfileTotalPlaytimeMinutes()
+    );
+
+
+    Serial.print(
+        "Total Playtime Hours: "
+    );
+
+
+    Serial.println(
+        getProfileTotalPlaytimeHours()
+    );
+
+
+    Serial.print(
+        "Total Sessions: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.totalSessions
+    );
+
+
+    Serial.print(
+        "Completed Sessions: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.completedSessions
+    );
+
+
+    Serial.print(
+        "Interrupted Sessions: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.interruptedSessions
+    );
+
+
+    Serial.print(
+        "Game Launches: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.totalGameLaunches
+    );
+
+
+    Serial.print(
+        "Longest Session ms: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.longestSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Unique Games: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.uniqueGamesPlayed
+    );
+
+
+    Serial.print(
+        "Achievements: "
+    );
+
+
+    Serial.println(
+        playerProfile.statistics.achievementCount
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+#ifndef PROFILE_STORAGE_H
+#define PROFILE_STORAGE_H
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE STORAGE MANAGER
+//==================================================
+
+#include <Arduino.h>
+
+#include "94_profile_manager.h"
+
+
+//---------------- Storage Configuration ----------------
+
+#define PROFILE_STORAGE_FOLDER        "/SYSTEM/PROFILES"
+
+#define PROFILE_STORAGE_TEMP_FILE      "/SYSTEM/PROFILES/profile.tmp"
+
+#define PROFILE_STORAGE_BACKUP_FILE    "/SYSTEM/PROFILES/profile.bak"
+
+#define PROFILE_STORAGE_INDEX_FILE     "/SYSTEM/PROFILES/profiles.idx"
+
+#define PROFILE_STORAGE_INDEX_TEMP     "/SYSTEM/PROFILES/profiles.tmp"
+
+#define PROFILE_STORAGE_MAGIC          0x5052464CUL
+
+#define PROFILE_STORAGE_INDEX_MAGIC    0x50524958UL
+
+#define PROFILE_STORAGE_VERSION        1
+
+#define PROFILE_STORAGE_MAX_PROFILES   8
+
+#define PROFILE_FILE_PATH_LENGTH       64
+
+
+//---------------- Storage Status ----------------
+
+enum ProfileStorageStatus
+{
+    PROFILE_STORAGE_NOT_INITIALIZED = 0,
+    PROFILE_STORAGE_READY,
+    PROFILE_STORAGE_SD_ERROR,
+    PROFILE_STORAGE_FOLDER_ERROR,
+    PROFILE_STORAGE_FILE_NOT_FOUND,
+    PROFILE_STORAGE_FILE_ERROR,
+    PROFILE_STORAGE_INVALID_FILE,
+    PROFILE_STORAGE_VERSION_ERROR,
+    PROFILE_STORAGE_PROFILE_NOT_FOUND,
+    PROFILE_STORAGE_PROFILE_EXISTS,
+    PROFILE_STORAGE_PROFILE_LIMIT,
+    PROFILE_STORAGE_READ_ERROR,
+    PROFILE_STORAGE_WRITE_ERROR,
+    PROFILE_STORAGE_DELETE_ERROR,
+    PROFILE_STORAGE_BACKUP_ERROR
+};
+
+
+//---------------- Profile File Header ----------------
+
+struct ProfileStorageHeader
+{
+    uint32_t magic;
+
+    uint16_t version;
+
+    uint16_t profileID;
+
+    uint32_t profileDataSize;
+
+    uint32_t profileChecksum;
+
+    uint32_t savedUnix;
+
+    uint32_t reserved;
+};
+
+
+//---------------- Profile Index Entry ----------------
+
+struct ProfileIndexEntry
+{
+    uint16_t profileID;
+
+    char playerName[
+        PROFILE_NAME_LENGTH
+    ];
+
+    uint32_t createdUnix;
+
+    uint32_t lastLoginUnix;
+
+    uint32_t lastSavedUnix;
+
+    uint32_t totalPlaytimeMilliseconds;
+
+    uint32_t loginCount;
+
+    bool valid;
+};
+
+
+//---------------- Profile Index Header ----------------
+
+struct ProfileIndexHeader
+{
+    uint32_t magic;
+
+    uint16_t version;
+
+    uint16_t profileCount;
+
+    uint16_t maximumProfiles;
+
+    uint16_t reserved;
+
+    uint32_t entriesChecksum;
+};
+
+
+//---------------- Initialization ----------------
+
+bool initProfileStorage();
+
+
+//---------------- Storage State ----------------
+
+bool isProfileStorageReady();
+
+ProfileStorageStatus getProfileStorageStatus();
+
+
+//---------------- Folder Control ----------------
+
+bool createProfileStorageFolder();
+
+bool profileStorageFolderExists();
+
+
+//---------------- Profile Save ----------------
+
+bool saveActiveProfile();
+
+bool savePlayerProfile(
+    const PlayerProfile& profile
+);
+
+
+//---------------- Profile Load ----------------
+
+bool loadPlayerProfile(
+    uint16_t profileID
+);
+
+
+bool readPlayerProfile(
+    uint16_t profileID,
+    PlayerProfile& profile
+);
+
+
+//---------------- Profile Creation ----------------
+
+bool createStoredProfile(
+    uint16_t profileID,
+    const char* playerName
+);
+
+
+//---------------- Profile Deletion ----------------
+
+bool deleteStoredProfile(
+    uint16_t profileID
+);
+
+
+//---------------- Profile Detection ----------------
+
+bool storedProfileExists(
+    uint16_t profileID
+);
+
+
+bool storedProfileNameExists(
+    const char* playerName
+);
+
+
+//---------------- Profile Index ----------------
+
+bool loadProfileIndex();
+
+bool saveProfileIndex();
+
+bool rebuildProfileIndex();
+
+bool clearProfileIndex();
+
+
+uint8_t getStoredProfileCount();
+
+
+const ProfileIndexEntry* getProfileIndexEntry(
+    uint8_t index
+);
+
+
+const ProfileIndexEntry* findProfileIndexEntry(
+    uint16_t profileID
+);
+
+
+//---------------- Profile Information ----------------
+
+uint16_t getStoredProfileID(
+    uint8_t index
+);
+
+
+const char* getStoredProfileName(
+    uint8_t index
+);
+
+
+uint32_t getStoredProfileCreatedUnix(
+    uint16_t profileID
+);
+
+
+uint32_t getStoredProfileLastLoginUnix(
+    uint16_t profileID
+);
+
+
+uint32_t getStoredProfileLastSavedUnix(
+    uint16_t profileID
+);
+
+
+uint32_t getStoredProfilePlaytimeMilliseconds(
+    uint16_t profileID
+);
+
+
+//---------------- Backup ----------------
+
+bool backupStoredProfile(
+    uint16_t profileID
+);
+
+
+bool restoreStoredProfileBackup(
+    uint16_t profileID
+);
+
+
+//---------------- Validation ----------------
+
+bool validateStoredProfile(
+    const PlayerProfile& profile
+);
+
+
+bool validateProfileFile(
+    uint16_t profileID
+);
+
+
+bool validateProfileIndex();
+
+
+//---------------- File Path ----------------
+
+bool buildProfileFilePath(
+    uint16_t profileID,
+    char* buffer,
+    size_t bufferSize
+);
+
+
+bool buildProfileBackupPath(
+    uint16_t profileID,
+    char* buffer,
+    size_t bufferSize
+);
+
+
+//---------------- Checksum ----------------
+
+uint32_t calculateProfileChecksum(
+    const PlayerProfile& profile
+);
+
+
+uint32_t calculateProfileIndexChecksum();
+
+
+//---------------- Maintenance ----------------
+
+bool clearAllStoredProfiles();
+
+bool synchronizeActiveProfileIndex();
+
+
+//---------------- Debug ----------------
+
+void printProfileStorageInformation();
+
+void printProfileIndex();
+
+void printStoredProfileInformation(
+    uint16_t profileID
+);
+
+
+
+#endif
+
+#ifndef PROFILE_SELECTOR_H
+#define PROFILE_SELECTOR_H
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE SELECTOR MANAGER
+//==================================================
+
+#include <Arduino.h>
+
+#include "94_profile_manager.h"
+#include "95_profile_storage.h"
+
+
+//---------------- Selector Configuration ----------------
+
+#define PROFILE_SELECTOR_INVALID_INDEX     0xFF
+
+#define PROFILE_SELECTOR_NAME_LENGTH       PROFILE_NAME_LENGTH
+
+#define PROFILE_SELECTOR_REFRESH_INTERVAL  1000UL
+
+
+//---------------- Selector Status ----------------
+
+enum ProfileSelectorStatus
+{
+    PROFILE_SELECTOR_NOT_INITIALIZED = 0,
+    PROFILE_SELECTOR_READY,
+    PROFILE_SELECTOR_NO_PROFILES,
+    PROFILE_SELECTOR_INVALID_INDEX,
+    PROFILE_SELECTOR_INVALID_PROFILE,
+    PROFILE_SELECTOR_LOAD_ERROR,
+    PROFILE_SELECTOR_CREATE_ERROR,
+    PROFILE_SELECTOR_DELETE_ERROR,
+    PROFILE_SELECTOR_STORAGE_ERROR
+};
+
+
+//---------------- Selector Entry ----------------
+
+struct ProfileSelectorEntry
+{
+    uint16_t profileID;
+
+    char playerName[
+        PROFILE_SELECTOR_NAME_LENGTH
+    ];
+
+    uint32_t createdUnix;
+
+    uint32_t lastLoginUnix;
+
+    uint32_t lastSavedUnix;
+
+    uint32_t totalPlaytimeMilliseconds;
+
+    uint32_t loginCount;
+
+    bool selected;
+
+    bool valid;
+};
+
+
+//---------------- Initialization ----------------
+
+bool initProfileSelector();
+
+
+//---------------- Selector Update ----------------
+
+void updateProfileSelector();
+
+bool refreshProfileSelector();
+
+
+//---------------- Selector State ----------------
+
+bool isProfileSelectorReady();
+
+ProfileSelectorStatus getProfileSelectorStatus();
+
+
+//---------------- Entry Information ----------------
+
+uint8_t getProfileSelectorCount();
+
+const ProfileSelectorEntry* getProfileSelectorEntry(
+    uint8_t index
+);
+
+const ProfileSelectorEntry* getSelectedProfileEntry();
+
+
+//---------------- Selection ----------------
+
+bool selectProfileByIndex(
+    uint8_t index
+);
+
+bool selectProfileByID(
+    uint16_t profileID
+);
+
+bool selectNextProfile();
+
+bool selectPreviousProfile();
+
+bool clearProfileSelection();
+
+
+//---------------- Selected Profile ----------------
+
+bool hasSelectedProfile();
+
+uint8_t getSelectedProfileIndex();
+
+uint16_t getSelectedProfileID();
+
+const char* getSelectedProfileName();
+
+
+//---------------- Profile Activation ----------------
+
+bool activateSelectedProfile();
+
+bool activateProfileByIndex(
+    uint8_t index
+);
+
+bool activateProfileByID(
+    uint16_t profileID
+);
+
+
+//---------------- Profile Creation ----------------
+
+bool createAndSelectProfile(
+    uint16_t profileID,
+    const char* playerName
+);
+
+bool createAndActivateProfile(
+    uint16_t profileID,
+    const char* playerName
+);
+
+
+//---------------- Profile Deletion ----------------
+
+bool deleteSelectedProfile();
+
+bool deleteProfileByIndex(
+    uint8_t index
+);
+
+bool deleteProfileByID(
+    uint16_t profileID
+);
+
+
+//---------------- Profile Detection ----------------
+
+bool profileSelectorContainsID(
+    uint16_t profileID
+);
+
+bool profileSelectorContainsName(
+    const char* playerName
+);
+
+
+//---------------- Profile Search ----------------
+
+int8_t findProfileSelectorIndexByID(
+    uint16_t profileID
+);
+
+int8_t findProfileSelectorIndexByName(
+    const char* playerName
+);
+
+
+//---------------- Active Profile Synchronization ----------------
+
+bool synchronizeSelectedProfile();
+
+bool selectActiveProfile();
+
+bool saveAndRefreshActiveProfile();
+
+
+//---------------- Navigation Information ----------------
+
+bool canSelectNextProfile();
+
+bool canSelectPreviousProfile();
+
+
+//---------------- Time Information ----------------
+
+uint32_t getSelectedProfilePlaytimeMilliseconds();
+
+uint32_t getSelectedProfilePlaytimeSeconds();
+
+uint32_t getSelectedProfilePlaytimeMinutes();
+
+uint32_t getSelectedProfilePlaytimeHours();
+
+uint32_t getSelectedProfileCreatedUnix();
+
+uint32_t getSelectedProfileLastLoginUnix();
+
+uint32_t getSelectedProfileLastSavedUnix();
+
+uint32_t getSelectedProfileLoginCount();
+
+
+//---------------- Validation ----------------
+
+bool validateProfileSelectorEntry(
+    const ProfileSelectorEntry& entry
+);
+
+bool validateProfileSelector();
+
+
+//---------------- Debug ----------------
+
+void printProfileSelectorInformation();
+
+void printProfileSelectorEntries();
+
+void printSelectedProfileInformation();
+
+
+
+#endif
 
 

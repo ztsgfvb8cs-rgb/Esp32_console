@@ -13802,4 +13802,2845 @@ void NESEmulator::render()
     // DisplayManager
     //================================================
 }
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
+
+#include <Arduino.h>
+#include <WiFi.h>
+
+//====================================================
+// ESP32 GAME STATION
+// WIFI MANAGER
+// 87_wifi_manager.h
+//====================================================
+
+enum NetworkState
+{
+    WIFI_DISABLED = 0,
+
+    WIFI_CONNECTING,
+
+    WIFI_CONNECTED,
+
+    WIFI_AP_MODE,
+
+    WIFI_ERROR
+};
+
+
+class NetworkManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static void stop();
+
+
+    //================================================
+    // CLIENT MODE
+    //================================================
+
+    static bool connect(
+        const String& ssid,
+        const String& password
+    );
+
+    static void disconnect();
+
+
+    //================================================
+    // ACCESS POINT
+    //================================================
+
+    static bool startAP(
+        const String& ssid,
+        const String& password
+    );
+
+    static void stopAP();
+
+
+    //================================================
+    // STATUS
+    //================================================
+
+    static bool connected();
+
+    static bool apMode();
+
+    static NetworkState state();
+
+    static IPAddress ip();
+
+
+    //================================================
+    // INFO
+    //================================================
+
+    static String ssid();
+
+    static int32_t signalStrength();
+
+
+private:
+
+    static bool initialized;
+
+    static NetworkState currentState;
+
+    static String currentSSID;
+
+    static IPAddress currentIP;
+
+    static uint32_t lastReconnect;
+
+    static void checkConnection();
+
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// WIFI MANAGER
+// 88_wifi_manager.cpp
+//====================================================
+
+#include "wifi_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool NetworkManager::initialized = false;
+
+
+WiFiState NetworkManager::currentState =
+    WIFI_DISABLED;
+
+
+String NetworkManager::currentSSID = "";
+
+
+IPAddress NetworkManager::currentIP(
+    0,
+    0,
+    0,
+    0
+);
+
+
+uint32_t NetworkManager::lastReconnect = 0;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool NetworkManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    WiFi.mode(WIFI_OFF);
+
+    currentState = WIFI_DISABLED;
+
+    currentSSID = "";
+
+    currentIP = IPAddress(
+        0,
+        0,
+        0,
+        0
+    );
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void NetworkManager::update()
+{
+    if (!initialized)
+        return;
+
+
+    checkConnection();
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void NetworkManager::stop()
+{
+    WiFi.disconnect(true, true);
+
+    WiFi.mode(WIFI_OFF);
+
+    currentState = WIFI_DISABLED;
+
+    currentSSID = "";
+
+    currentIP = IPAddress(
+        0,
+        0,
+        0,
+        0
+    );
+}
+//====================================================
+// CONNECT
+//====================================================
+
+bool NetworkManager::connect(
+    const String& ssid,
+    const String& password)
+{
+    if (!initialized)
+        return false;
+
+
+    WiFi.mode(WIFI_STA);
+
+    WiFi.begin(
+        ssid.c_str(),
+        password.c_str()
+    );
+
+
+    currentSSID = ssid;
+
+    currentState = WIFI_CONNECTING;
+
+    lastReconnect = millis();
+
+
+    return true;
+}
+
+
+//====================================================
+// DISCONNECT
+//====================================================
+
+void NetworkManager::disconnect()
+{
+    WiFi.disconnect();
+
+    currentState = WIFI_DISABLED;
+
+    currentSSID = "";
+
+    currentIP = IPAddress(
+        0,
+        0,
+        0,
+        0
+    );
+}
+
+
+//====================================================
+// START ACCESS POINT
+//====================================================
+
+bool NetworkManager::startAP(
+    const String& ssid,
+    const String& password)
+{
+    if (!initialized)
+        return false;
+
+
+    WiFi.mode(WIFI_AP);
+
+
+    if (!WiFi.softAP(
+            ssid.c_str(),
+            password.c_str()))
+    {
+        currentState = WIFI_ERROR;
+
+        return false;
+    }
+
+
+    currentSSID = ssid;
+
+    currentIP = WiFi.softAPIP();
+
+    currentState = WIFI_AP_MODE;
+
+
+    return true;
+}
+
+
+//====================================================
+// STOP ACCESS POINT
+//====================================================
+
+void NetworkManager::stopAP()
+{
+    WiFi.softAPdisconnect(true);
+
+    WiFi.mode(WIFI_OFF);
+
+    currentState = WIFI_DISABLED;
+
+    currentSSID = "";
+
+    currentIP = IPAddress(
+        0,
+        0,
+        0,
+        0
+    );
+}
+//====================================================
+// CONNECTED
+//====================================================
+
+bool NetworkManager::connected()
+{
+    return currentState == WIFI_CONNECTED;
+}
+
+
+//====================================================
+// AP MODE
+//====================================================
+
+bool NetworkManager::apMode()
+{
+    return currentState == WIFI_AP_MODE;
+}
+
+
+//====================================================
+// STATE
+//====================================================
+
+WiFiState NetworkManager::state()
+{
+    return currentState;
+}
+
+
+//====================================================
+// IP ADDRESS
+//====================================================
+
+IPAddress NetworkManager::ip()
+{
+    return currentIP;
+}
+
+
+//====================================================
+// SSID
+//====================================================
+
+String NetworkManager::ssid()
+{
+    return currentSSID;
+}
+
+
+//====================================================
+// SIGNAL STRENGTH
+//====================================================
+
+int32_t NetworkManager::signalStrength()
+{
+    if (currentState != WIFI_CONNECTED)
+        return -127;
+
+
+    return WiFi.RSSI();
+}
+//====================================================
+// CHECK CONNECTION
+//====================================================
+
+void NetworkManager::checkConnection()
+{
+    if (currentState == WIFI_AP_MODE)
+    {
+        currentIP = WiFi.softAPIP();
+
+        return;
+    }
+
+
+    if (currentState != WIFI_CONNECTING &&
+        currentState != WIFI_CONNECTED)
+    {
+        return;
+    }
+
+
+    wl_status_t status = WiFi.status();
+
+
+    if (status == WL_CONNECTED)
+    {
+        currentState = WIFI_CONNECTED;
+
+        currentIP = WiFi.localIP();
+
+        return;
+    }
+
+
+    currentState = WIFI_CONNECTING;
+
+
+    if (millis() - lastReconnect < 5000)
+        return;
+
+
+    lastReconnect = millis();
+
+
+    WiFi.disconnect();
+
+
+    WiFi.begin(
+        currentSSID.c_str()
+    );
+}
+#ifndef WEB_SERVER_MANAGER_H
+#define WEB_SERVER_MANAGER_H
+
+#include <Arduino.h>
+#include <WebServer.h>
+
+#include "network_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// WEB SERVER MANAGER
+// 89_web_server.h
+//====================================================
+
+enum WebServerState
+{
+    WEB_SERVER_STOPPED = 0,
+
+    WEB_SERVER_RUNNING
+};
+
+
+class WebServerManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static void stop();
+
+
+    //================================================
+    // SERVER
+    //================================================
+
+    static bool start(uint16_t port = 80);
+
+    static bool running();
+
+
+    //================================================
+    // INFO
+    //================================================
+
+    static uint16_t port();
+
+    static String address();
+
+    static WebServerState state();
+
+
+private:
+
+    static bool initialized;
+
+    static WebServer server;
+
+    static WebServerState currentState;
+
+    static uint16_t currentPort;
+
+
+    //================================================
+    // ROUTES
+    //================================================
+
+    static void setupRoutes();
+
+    static void handleRoot();
+
+    static void handleNotFound();
+
+    static void handleStatus();
+
+    static void handleFiles();
+
+    static void handleUpload();
+
+    static void handleSettings();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// WEB SERVER MANAGER
+// 90_web_server.cpp
+//====================================================
+
+#include "web_server_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool WebServerManager::initialized = false;
+
+
+WebServer WebServerManager::server(80);
+
+
+WebServerState WebServerManager::currentState =
+    WEB_SERVER_STOPPED;
+
+
+uint16_t WebServerManager::currentPort = 80;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool WebServerManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentState = WEB_SERVER_STOPPED;
+
+    currentPort = 80;
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void WebServerManager::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (currentState != WEB_SERVER_RUNNING)
+        return;
+
+
+    server.handleClient();
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void WebServerManager::stop()
+{
+    server.stop();
+
+    currentState = WEB_SERVER_STOPPED;
+}
+//====================================================
+// START
+//====================================================
+
+bool WebServerManager::start(uint16_t port)
+{
+    if (!initialized)
+        return false;
+
+
+    if (!NetworkManager::connected() &&
+        !NetworkManager::apMode())
+    {
+        return false;
+    }
+
+
+    currentPort = port;
+
+
+    setupRoutes();
+
+
+    server.begin();
+
+    currentState = WEB_SERVER_RUNNING;
+
+
+    return true;
+}
+
+
+//====================================================
+// RUNNING
+//====================================================
+
+bool WebServerManager::running()
+{
+    return currentState == WEB_SERVER_RUNNING;
+}
+
+
+//====================================================
+// PORT
+//====================================================
+
+uint16_t WebServerManager::port()
+{
+    return currentPort;
+}
+
+
+//====================================================
+// ADDRESS
+//====================================================
+
+String WebServerManager::address()
+{
+    if (!running())
+        return "";
+
+
+    return NetworkManager::ip().toString();
+}
+
+
+//====================================================
+// STATE
+//====================================================
+
+WebServerState WebServerManager::state()
+{
+    return currentState;
+}
+//====================================================
+// SETUP ROUTES
+//====================================================
+
+void WebServerManager::setupRoutes()
+{
+    server.on(
+        "/",
+        HTTP_GET,
+        handleRoot
+    );
+
+
+    server.on(
+        "/status",
+        HTTP_GET,
+        handleStatus
+    );
+
+
+    server.on(
+        "/files",
+        HTTP_GET,
+        handleFiles
+    );
+
+
+    server.on(
+        "/settings",
+        HTTP_GET,
+        handleSettings
+    );
+
+
+    server.on(
+        "/upload",
+        HTTP_POST,
+        []()
+        {
+            server.send(
+                200,
+                "text/plain",
+                "Upload Complete"
+            );
+        },
+        handleUpload
+    );
+
+
+    server.onNotFound(
+        handleNotFound
+    );
+}
+
+
+//====================================================
+// ROOT PAGE
+//====================================================
+
+void WebServerManager::handleRoot()
+{
+    String html;
+
+    html += "<!DOCTYPE html>";
+    html += "<html>";
+    html += "<head>";
+    html += "<meta charset='utf-8'>";
+    html += "<title>ESP32 Game Station</title>";
+    html += "</head>";
+    html += "<body>";
+
+    html += "<h1>ESP32 Game Station</h1>";
+
+    html += "<p>Web Server Running</p>";
+
+    html += "<hr>";
+
+    html += "<a href='/status'>Status</a><br>";
+
+    html += "<a href='/files'>Files</a><br>";
+
+    html += "<a href='/settings'>Settings</a><br>";
+
+    html += "</body>";
+
+    html += "</html>";
+
+
+    server.send(
+        200,
+        "text/html",
+        html
+    );
+}
+//====================================================
+// STATUS
+//====================================================
+
+void WebServerManager::handleStatus()
+{
+    String json = "{";
+
+    json += "\"network\":\"";
+    json += NetworkManager::connected() ?
+            "connected" :
+            "offline";
+    json += "\",";
+
+    json += "\"ip\":\"";
+    json += NetworkManager::ip().toString();
+    json += "\",";
+
+    json += "\"server\":\"running\"";
+
+    json += "}";
+
+
+    server.send(
+        200,
+        "application/json",
+        json
+    );
+}
+
+
+//====================================================
+// FILES
+//====================================================
+
+void WebServerManager::handleFiles()
+{
+    server.send(
+        200,
+        "text/plain",
+        "File Browser Coming Soon"
+    );
+}
+
+
+//====================================================
+// UPLOAD
+//====================================================
+
+void WebServerManager::handleUpload()
+{
+    //================================================
+    // İleride:
+    //
+    // SD karta dosya yükleme
+    // ROM yükleme
+    // MP3 yükleme
+    // PDF yükleme
+    // Tema yükleme
+    //================================================
+}
+
+
+//====================================================
+// SETTINGS
+//====================================================
+
+void WebServerManager::handleSettings()
+{
+    server.send(
+        200,
+        "text/plain",
+        "Settings Page Coming Soon"
+    );
+}
+
+
+//====================================================
+// NOT FOUND
+//====================================================
+
+void WebServerManager::handleNotFound()
+{
+    server.send(
+        404,
+        "text/plain",
+        "404 - Page Not Found"
+    );
+}
+#ifndef FILE_BROWSER_H
+#define FILE_BROWSER_H
+
+#include <Arduino.h>
+#include <FS.h>
+#include <SD.h>
+
+//====================================================
+// ESP32 GAME STATION
+// FILE BROWSER
+// 91_file_browser.h
+//====================================================
+
+enum FileType
+{
+    FILE_UNKNOWN = 0,
+
+    FILE_ROM,
+
+    FILE_MUSIC,
+
+    FILE_PDF,
+
+    FILE_IMAGE,
+
+    FILE_FOLDER
+};
+
+
+struct FileEntry
+{
+    String name;
+
+    String path;
+
+    uint32_t size;
+
+    bool directory;
+
+    FileType type;
+};
+
+
+class FileBrowser
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static bool mounted();
+
+
+    //================================================
+    // DIRECTORY
+    //================================================
+
+    static bool openDirectory(
+        const String& path
+    );
+
+    static uint16_t count();
+
+    static FileEntry entry(
+        uint16_t index
+    );
+
+
+    //================================================
+    // FILES
+    //================================================
+
+    static bool exists(
+        const String& path
+    );
+
+    static bool remove(
+        const String& path
+    );
+
+    static bool createFolder(
+        const String& path
+    );
+
+
+    //================================================
+    // INFO
+    //================================================
+
+    static uint64_t totalSpace();
+
+    static uint64_t usedSpace();
+
+
+private:
+
+    static bool initialized;
+
+    static bool sdMounted;
+
+    static String currentDirectory;
+
+    static std::vector<FileEntry> entries;
+
+    static FileType detectType(
+        const String& fileName
+    );
+
+    static void clearEntries();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// FILE BROWSER
+// 92_file_browser.cpp
+//====================================================
+
+#include "file_browser.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool FileBrowser::initialized = false;
+
+bool FileBrowser::sdMounted = false;
+
+String FileBrowser::currentDirectory = "/";
+
+std::vector<FileEntry> FileBrowser::entries;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool FileBrowser::begin()
+{
+    if (initialized)
+        return sdMounted;
+
+
+    sdMounted = SD.begin();
+
+
+    if (sdMounted)
+    {
+        currentDirectory = "/";
+    }
+
+
+    initialized = true;
+
+
+    return sdMounted;
+}
+
+
+//====================================================
+// MOUNTED
+//====================================================
+
+bool FileBrowser::mounted()
+{
+    return sdMounted;
+}
+
+
+//====================================================
+// CLEAR ENTRIES
+//====================================================
+
+void FileBrowser::clearEntries()
+{
+    entries.clear();
+
+    entries.shrink_to_fit();
+}
+//====================================================
+// OPEN DIRECTORY
+//====================================================
+
+bool FileBrowser::openDirectory(
+    const String& path)
+{
+    if (!sdMounted)
+        return false;
+
+
+    File directory = SD.open(path);
+
+    if (!directory)
+        return false;
+
+
+    if (!directory.isDirectory())
+    {
+        directory.close();
+        return false;
+    }
+
+
+    clearEntries();
+
+    currentDirectory = path;
+
+
+    File file = directory.openNextFile();
+
+
+    while (file)
+    {
+        FileEntry entry;
+
+        entry.name = String(file.name());
+
+        entry.path = String(file.path());
+
+        entry.size = file.size();
+
+        entry.directory = file.isDirectory();
+
+        if (entry.directory)
+        {
+            entry.type = FILE_FOLDER;
+        }
+        else
+        {
+            entry.type = detectType(entry.name);
+        }
+
+
+        entries.push_back(entry);
+
+        file.close();
+
+        file = directory.openNextFile();
+    }
+
+
+    directory.close();
+
+    return true;
+}
+
+
+//====================================================
+// COUNT
+//====================================================
+
+uint16_t FileBrowser::count()
+{
+    return entries.size();
+}
+
+
+//====================================================
+// ENTRY
+//====================================================
+
+FileEntry FileBrowser::entry(
+    uint16_t index)
+{
+    if (index >= entries.size())
+    {
+        FileEntry empty;
+
+        empty.name = "";
+
+        empty.path = "";
+
+        empty.size = 0;
+
+        empty.directory = false;
+
+        empty.type = FILE_UNKNOWN;
+
+        return empty;
+    }
+
+
+    return entries[index];
+}
+//====================================================
+// EXISTS
+//====================================================
+
+bool FileBrowser::exists(
+    const String& path)
+{
+    if (!sdMounted)
+        return false;
+
+    return SD.exists(path);
+}
+
+
+//====================================================
+// REMOVE
+//====================================================
+
+bool FileBrowser::remove(
+    const String& path)
+{
+    if (!sdMounted)
+        return false;
+
+    return SD.remove(path);
+}
+
+
+//====================================================
+// CREATE FOLDER
+//====================================================
+
+bool FileBrowser::createFolder(
+    const String& path)
+{
+    if (!sdMounted)
+        return false;
+
+    if (SD.exists(path))
+        return true;
+
+    return SD.mkdir(path);
+}
+
+
+//====================================================
+// TOTAL SPACE
+//====================================================
+
+uint64_t FileBrowser::totalSpace()
+{
+    if (!sdMounted)
+        return 0;
+
+    return SD.totalBytes();
+}
+
+
+//====================================================
+// USED SPACE
+//====================================================
+
+uint64_t FileBrowser::usedSpace()
+{
+    if (!sdMounted)
+        return 0;
+
+    return SD.usedBytes();
+}
+//====================================================
+// DETECT FILE TYPE
+//====================================================
+
+FileType FileBrowser::detectType(
+    const String& fileName)
+{
+    String name = fileName;
+
+    name.toLowerCase();
+
+
+    //================================================
+    // GAME ROMS
+    //================================================
+
+    if (name.endsWith(".gb")  ||
+        name.endsWith(".gbc") ||
+        name.endsWith(".nes") ||
+        name.endsWith(".smc") ||
+        name.endsWith(".sfc") ||
+        name.endsWith(".bin") ||
+        name.endsWith(".gba"))
+    {
+        return FILE_ROM;
+    }
+
+
+    //================================================
+    // MUSIC
+    //================================================
+
+    if (name.endsWith(".mp3") ||
+        name.endsWith(".wav") ||
+        name.endsWith(".ogg") ||
+        name.endsWith(".flac"))
+    {
+        return FILE_MUSIC;
+    }
+
+
+    //================================================
+    // PDF
+    //================================================
+
+    if (name.endsWith(".pdf"))
+    {
+        return FILE_PDF;
+    }
+
+
+    //================================================
+    // IMAGES
+    //================================================
+
+    if (name.endsWith(".png")  ||
+        name.endsWith(".jpg")  ||
+        name.endsWith(".jpeg") ||
+        name.endsWith(".bmp")  ||
+        name.endsWith(".gif"))
+    {
+        return FILE_IMAGE;
+    }
+
+
+    return FILE_UNKNOWN;
+}
+#ifndef HEADPHONE_MANAGER_H
+#define HEADPHONE_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// HEADPHONE MANAGER
+// 93_headphone_manager.h
+//====================================================
+
+enum AudioOutput
+{
+    AUDIO_OUTPUT_SPEAKER = 0,
+
+    AUDIO_OUTPUT_HEADPHONE
+};
+
+
+class HeadphoneManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+
+    //================================================
+    // OUTPUT
+    //================================================
+
+    static void setOutput(
+        AudioOutput output
+    );
+
+    static AudioOutput output();
+
+
+    //================================================
+    // VOLUME
+    //================================================
+
+    static void setMasterVolume(
+        uint8_t volume
+    );
+
+    static void setMusicVolume(
+        uint8_t volume
+    );
+
+    static void setGameVolume(
+        uint8_t volume
+    );
+
+    static uint8_t masterVolume();
+
+    static uint8_t musicVolume();
+
+    static uint8_t gameVolume();
+
+
+    //================================================
+    // STATUS
+    //================================================
+
+    static bool headphoneConnected();
+
+
+private:
+
+    static bool initialized;
+
+    static AudioOutput currentOutput;
+
+    static bool headphoneDetected;
+
+    static uint8_t masterVol;
+
+    static uint8_t musicVol;
+
+    static uint8_t gameVol;
+
+    static void detectHeadphone();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// HEADPHONE MANAGER
+// 94_headphone_manager.cpp
+//====================================================
+
+#include "headphone_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool HeadphoneManager::initialized = false;
+
+
+AudioOutput HeadphoneManager::currentOutput =
+    AUDIO_OUTPUT_SPEAKER;
+
+
+bool HeadphoneManager::headphoneDetected = false;
+
+
+uint8_t HeadphoneManager::masterVol = 100;
+
+uint8_t HeadphoneManager::musicVol = 80;
+
+uint8_t HeadphoneManager::gameVol = 100;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool HeadphoneManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    currentOutput = AUDIO_OUTPUT_SPEAKER;
+
+    headphoneDetected = false;
+
+    masterVol = 100;
+
+    musicVol = 80;
+
+    gameVol = 100;
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void HeadphoneManager::update()
+{
+    if (!initialized)
+        return;
+
+
+    detectHeadphone();
+}
+//====================================================
+// SET OUTPUT
+//====================================================
+
+void HeadphoneManager::setOutput(
+    AudioOutput output)
+{
+    if (!initialized)
+        return;
+
+
+    currentOutput = output;
+
+
+    switch (currentOutput)
+    {
+        case AUDIO_OUTPUT_SPEAKER:
+        {
+            // TODO:
+            // Hoparlörü aktif et
+            // Kulaklık amfisini pasif et
+
+            break;
+        }
+
+        case AUDIO_OUTPUT_HEADPHONE:
+        {
+            // TODO:
+            // Hoparlörü kapat
+            // TDA1308'i aktif et
+
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+
+//====================================================
+// OUTPUT
+//====================================================
+
+AudioOutput HeadphoneManager::output()
+{
+    return currentOutput;
+}
+
+
+//====================================================
+// MASTER VOLUME
+//====================================================
+
+void HeadphoneManager::setMasterVolume(
+    uint8_t volume)
+{
+    if (volume > 100)
+        volume = 100;
+
+    masterVol = volume;
+}
+
+
+//====================================================
+// MUSIC VOLUME
+//====================================================
+
+void HeadphoneManager::setMusicVolume(
+    uint8_t volume)
+{
+    if (volume > 100)
+        volume = 100;
+
+    musicVol = volume;
+}
+
+
+//====================================================
+// GAME VOLUME
+//====================================================
+
+void HeadphoneManager::setGameVolume(
+    uint8_t volume)
+{
+    if (volume > 100)
+        volume = 100;
+
+    gameVol = volume;
+}
+//====================================================
+// MASTER VOLUME
+//====================================================
+
+uint8_t HeadphoneManager::masterVolume()
+{
+    return masterVol;
+}
+
+
+//====================================================
+// MUSIC VOLUME
+//====================================================
+
+uint8_t HeadphoneManager::musicVolume()
+{
+    return musicVol;
+}
+
+
+//====================================================
+// GAME VOLUME
+//====================================================
+
+uint8_t HeadphoneManager::gameVolume()
+{
+    return gameVol;
+}
+
+
+//====================================================
+// HEADPHONE CONNECTED
+//====================================================
+
+bool HeadphoneManager::headphoneConnected()
+{
+    return headphoneDetected;
+}
+//====================================================
+// DETECT HEADPHONE
+//====================================================
+
+void HeadphoneManager::detectHeadphone()
+{
+    //================================================
+    // NOT:
+    //
+    // Bu fonksiyon board_config.h
+    // tamamlandıktan sonra aktif hale gelecek.
+    //
+    // Örnek akış:
+    //
+    // bool connected =
+    //     digitalRead(PIN_HEADPHONE_DETECT);
+    //
+    // if (connected != headphoneDetected)
+    // {
+    //     headphoneDetected = connected;
+    //
+    //     if (connected)
+    //         setOutput(AUDIO_OUTPUT_HEADPHONE);
+    //     else
+    //         setOutput(AUDIO_OUTPUT_SPEAKER);
+    // }
+    //================================================
+
+    // Şimdilik otomatik algılama devre dışı.
+}
+#ifndef OTA_MANAGER_H
+#define OTA_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// OTA MANAGER
+// 95_ota_manager.h
+//====================================================
+
+enum OTAState
+{
+    OTA_IDLE = 0,
+
+    OTA_RUNNING,
+
+    OTA_UPDATING,
+
+    OTA_FINISHED,
+
+    OTA_ERROR
+};
+
+class OTAManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static void stop();
+
+
+    //================================================
+    // OTA
+    //================================================
+
+    static bool start();
+
+    static bool enabled();
+
+    static OTAState state();
+
+
+    //================================================
+    // INFO
+    //================================================
+
+    static uint8_t progress();
+
+    static String lastError();
+
+
+private:
+
+    static bool initialized;
+
+    static bool otaEnabled;
+
+    static OTAState currentState;
+
+    static uint8_t currentProgress;
+
+    static String errorMessage;
+
+
+    static void onStart();
+
+    static void onEnd();
+
+    static void onProgress(
+        unsigned int progress,
+        unsigned int total
+    );
+
+    static void onError(
+        int error
+    );
+};
+
+#endif//====================================================
+// ESP32 GAME STATION
+// OTA MANAGER
+// 96_ota_manager.cpp
+//====================================================
+
+#include "ota_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool OTAManager::initialized = false;
+
+bool OTAManager::otaEnabled = false;
+
+OTAState OTAManager::currentState =
+    OTA_IDLE;
+
+uint8_t OTAManager::currentProgress = 0;
+
+String OTAManager::errorMessage = "";
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool OTAManager::begin()
+{
+    if (initialized)
+        return true;
+
+
+    otaEnabled = false;
+
+    currentState = OTA_IDLE;
+
+    currentProgress = 0;
+
+    errorMessage = "";
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void OTAManager::update()
+{
+    if (!initialized)
+        return;
+
+
+    if (!otaEnabled)
+        return;
+
+
+    //================================================
+    // ArduinoOTA.handle();
+    //
+    // Board ve OTA yapılandırması
+    // tamamlandıktan sonra
+    // aktif edilecek.
+    //================================================
+}
+
+
+//====================================================
+// STOP
+//====================================================
+
+void OTAManager::stop()
+{
+    otaEnabled = false;
+
+    currentState = OTA_IDLE;
+
+    currentProgress = 0;
+}
+//====================================================
+// START OTA
+//====================================================
+
+bool OTAManager::start()
+{
+    if (!initialized)
+        return false;
+
+
+    otaEnabled = true;
+
+    currentProgress = 0;
+
+    errorMessage = "";
+
+    currentState = OTA_RUNNING;
+
+
+    //================================================
+    // ArduinoOTA.begin();
+    //
+    // OTA callback'leri burada
+    // bağlanacak.
+    //================================================
+
+    return true;
+}
+
+
+//====================================================
+// ENABLED
+//====================================================
+
+bool OTAManager::enabled()
+{
+    return otaEnabled;
+}
+
+
+//====================================================
+// STATE
+//====================================================
+
+OTAState OTAManager::state()
+{
+    return currentState;
+}
+
+
+//====================================================
+// PROGRESS
+//====================================================
+
+uint8_t OTAManager::progress()
+{
+    return currentProgress;
+}
+
+
+//====================================================
+// LAST ERROR
+//====================================================
+
+String OTAManager::lastError()
+{
+    return errorMessage;
+}
+//====================================================
+// OTA START CALLBACK
+//====================================================
+
+void OTAManager::onStart()
+{
+    currentState = OTA_UPDATING;
+
+    currentProgress = 0;
+
+    errorMessage = "";
+}
+
+
+//====================================================
+// OTA END CALLBACK
+//====================================================
+
+void OTAManager::onEnd()
+{
+    currentProgress = 100;
+
+    currentState = OTA_FINISHED;
+}
+
+
+//====================================================
+// OTA PROGRESS CALLBACK
+//====================================================
+
+void OTAManager::onProgress(
+    unsigned int progress,
+    unsigned int total)
+{
+    if (total == 0)
+        return;
+
+
+    currentProgress =
+        (progress * 100) / total;
+
+
+    if (currentProgress > 100)
+        currentProgress = 100;
+}
+//====================================================
+// OTA ERROR CALLBACK
+//====================================================
+
+void OTAManager::onError(
+    int error)
+{
+    currentState = OTA_ERROR;
+
+    currentProgress = 0;
+
+
+    switch (error)
+    {
+        case 1:
+            errorMessage = "OTA Begin Error";
+            break;
+
+        case 2:
+            errorMessage = "OTA Connect Error";
+            break;
+
+        case 3:
+            errorMessage = "OTA Receive Error";
+            break;
+
+        case 4:
+            errorMessage = "OTA End Error";
+            break;
+
+        default:
+            errorMessage = "Unknown OTA Error";
+            break;
+    }
+}
+#ifndef SYSTEM_MONITOR_H
+#define SYSTEM_MONITOR_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// SYSTEM MONITOR
+// 97_system_monitor.h
+//====================================================
+
+class SystemMonitor
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+
+    //================================================
+    // FPS
+    //================================================
+
+    static void beginFrame();
+
+    static void endFrame();
+
+    static uint16_t fps();
+
+    static float frameTime();
+
+
+    //================================================
+    // MEMORY
+    //================================================
+
+    static uint32_t freeHeap();
+
+    static uint32_t totalHeap();
+
+    static uint32_t freePSRAM();
+
+    static uint32_t totalPSRAM();
+
+
+    //================================================
+    // CPU
+    //================================================
+
+    static uint8_t cpuLoad();
+
+
+    //================================================
+    // BATTERY
+    //================================================
+
+    static uint8_t batteryLevel();
+
+    static float batteryVoltage();
+
+    static bool charging();
+
+
+private:
+
+    static bool initialized;
+
+    static uint32_t frameCounter;
+
+    static uint32_t lastFPSUpdate;
+
+    static uint16_t currentFPS;
+
+    static float currentFrameTime;
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// SYSTEM MONITOR
+// 97_system_monitor.cpp
+//====================================================
+
+#include "system_monitor.h"
+
+#include <esp_system.h>
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool SystemMonitor::initialized = false;
+
+uint32_t SystemMonitor::frameCounter = 0;
+
+uint32_t SystemMonitor::lastFPSUpdate = 0;
+
+uint16_t SystemMonitor::currentFPS = 0;
+
+float SystemMonitor::currentFrameTime = 0.0f;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool SystemMonitor::begin()
+{
+    if (initialized)
+        return true;
+
+
+    frameCounter = 0;
+
+    currentFPS = 0;
+
+    currentFrameTime = 0.0f;
+
+    lastFPSUpdate = millis();
+
+
+    initialized = true;
+
+
+    return true;
+}
+
+
+//====================================================
+// UPDATE
+//====================================================
+
+void SystemMonitor::update()
+{
+    if (!initialized)
+        return;
+
+
+    uint32_t now = millis();
+
+
+    if ((now - lastFPSUpdate) >= 1000)
+    {
+        currentFPS = frameCounter;
+
+        frameCounter = 0;
+
+        lastFPSUpdate = now;
+    }
+}
+//====================================================
+// BEGIN FRAME
+//====================================================
+
+void SystemMonitor::beginFrame()
+{
+    //================================================
+    // Gelecekte GameLoop tarafından
+    // kare başlangıcında çağrılacak.
+    //================================================
+}
+
+
+//====================================================
+// END FRAME
+//====================================================
+
+void SystemMonitor::endFrame()
+{
+    static uint32_t frameStart = micros();
+
+    uint32_t now = micros();
+
+    currentFrameTime =
+        (now - frameStart) / 1000.0f;
+
+    frameStart = now;
+
+    frameCounter++;
+}
+
+
+//====================================================
+// FPS
+//====================================================
+
+uint16_t SystemMonitor::fps()
+{
+    return currentFPS;
+}
+
+
+//====================================================
+// FRAME TIME
+//====================================================
+
+float SystemMonitor::frameTime()
+{
+    return currentFrameTime;
+}
+//====================================================
+// FREE HEAP
+//====================================================
+
+uint32_t SystemMonitor::freeHeap()
+{
+    return ESP.getFreeHeap();
+}
+
+
+//====================================================
+// TOTAL HEAP
+//====================================================
+
+uint32_t SystemMonitor::totalHeap()
+{
+    return ESP.getHeapSize();
+}
+
+
+//====================================================
+// FREE PSRAM
+//====================================================
+
+uint32_t SystemMonitor::freePSRAM()
+{
+    if (!psramFound())
+        return 0;
+
+    return ESP.getFreePsram();
+}
+
+
+//====================================================
+// TOTAL PSRAM
+//====================================================
+
+uint32_t SystemMonitor::totalPSRAM()
+{
+    if (!psramFound())
+        return 0;
+
+    return ESP.getPsramSize();
+}
+//====================================================
+// CPU LOAD
+//====================================================
+
+uint8_t SystemMonitor::cpuLoad()
+{
+    //================================================
+    // TODO:
+    //
+    // Gerçek CPU yükü ileride
+    // GameLoop zamanlayıcısından
+    // hesaplanacak.
+    //================================================
+
+    return 0;
+}
+
+
+//====================================================
+// BATTERY LEVEL
+//====================================================
+
+uint8_t SystemMonitor::batteryLevel()
+{
+    //================================================
+    // TODO:
+    // BatteryManager üzerinden
+    // okunacak.
+    //================================================
+
+    return 100;
+}
+
+
+//====================================================
+// BATTERY VOLTAGE
+//====================================================
+
+float SystemMonitor::batteryVoltage()
+{
+    //================================================
+    // TODO:
+    // ADC + kalibrasyon
+    // eklenecek.
+    //================================================
+
+    return 4.20f;
+}
+
+
+//====================================================
+// CHARGING
+//====================================================
+
+bool SystemMonitor::charging()
+{
+    //================================================
+    // TODO:
+    // Şarj algılama pini
+    // board_config.h
+    // üzerinden okunacak.
+    //================================================
+
+    return false;
+}
+#ifndef SYSTEM_INFO_H
+#define SYSTEM_INFO_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// SYSTEM INFO
+// 98_system_info.h
+//====================================================
+
+class SystemInfo
+{
+public:
+
+    //================================================
+    // BUILD
+    //================================================
+
+    static String firmwareName();
+
+    static String firmwareVersion();
+
+    static String buildDate();
+
+    static String buildTime();
+
+
+    //================================================
+    // HARDWARE
+    //================================================
+
+    static String chipModel();
+
+    static uint8_t cpuCores();
+
+    static uint32_t cpuFrequency();
+
+    static uint32_t flashSize();
+
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static String sdkVersion();
+
+    static bool psramAvailable();
+};
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// SYSTEM INFO
+// 98_system_info.cpp
+//====================================================
+
+#include "system_info.h"
+
+#include <esp_system.h>
+
+
+//====================================================
+// FIRMWARE NAME
+//====================================================
+
+String SystemInfo::firmwareName()
+{
+    return "ESP32 Game Station";
+}
+
+
+//====================================================
+// FIRMWARE VERSION
+//====================================================
+
+String SystemInfo::firmwareVersion()
+{
+    return "v1.0.0";
+}
+
+
+//====================================================
+// BUILD DATE
+//====================================================
+
+String SystemInfo::buildDate()
+{
+    return String(__DATE__);
+}
+
+
+//====================================================
+// BUILD TIME
+//====================================================
+
+String SystemInfo::buildTime()
+{
+    return String(__TIME__);
+}
+//====================================================
+// CHIP MODEL
+//====================================================
+
+String SystemInfo::chipModel()
+{
+    return String(
+        ESP.getChipModel()
+    );
+}
+
+
+//====================================================
+// CPU CORES
+//====================================================
+
+uint8_t SystemInfo::cpuCores()
+{
+    return ESP.getChipCores();
+}
+
+
+//====================================================
+// CPU FREQUENCY
+//====================================================
+
+uint32_t SystemInfo::cpuFrequency()
+{
+    return getCpuFrequencyMhz();
+}
+
+
+//====================================================
+// FLASH SIZE
+//====================================================
+
+uint32_t SystemInfo::flashSize()
+{
+    return ESP.getFlashChipSize();
+}
+
+
+//====================================================
+// SDK VERSION
+//====================================================
+
+String SystemInfo::sdkVersion()
+{
+    return String(
+        ESP.getSdkVersion()
+    );
+}
+
+
+//====================================================
+// PSRAM AVAILABLE
+//====================================================
+
+bool SystemInfo::psramAvailable()
+{
+    return psramFound();
+}
+//====================================================
+// ESP32 GAME STATION
+// STORAGE MANAGER
+// 99_storage_manager.cpp
+//====================================================
+
+#include "storage_manager.h"
+
+
+//====================================================
+// STATIC DEFINITIONS
+//====================================================
+
+bool StorageManager::initialized = false;
+
+bool StorageManager::sdReady = false;
+
+
+//====================================================
+// BEGIN
+//====================================================
+
+bool StorageManager::begin()
+{
+    if (initialized)
+        return sdReady;
+
+
+    sdReady = SD.begin();
+
+
+    if (sdReady)
+    {
+        createSystemFolders();
+    }
+
+
+    initialized = true;
+
+
+    return sdReady;
+}
+
+
+//====================================================
+// MOUNTED
+//====================================================
+
+bool StorageManager::mounted()
+{
+    return sdReady;
+}
+
+
+//====================================================
+// CREATE FOLDER
+//====================================================
+
+bool StorageManager::createFolder(
+    const String& path)
+{
+    if (!sdReady)
+        return false;
+
+
+    if (SD.exists(path))
+        return true;
+
+
+    return SD.mkdir(path);
+}
+//====================================================
+// CREATE SYSTEM FOLDERS
+//====================================================
+
+bool StorageManager::createSystemFolders()
+{
+    if (!sdReady)
+        return false;
+
+
+    bool result = true;
+
+
+    //================================================
+    // GAMES
+    //================================================
+
+    result &= createFolder("/Games");
+
+    result &= createFolder("/Games/GB");
+
+    result &= createFolder("/Games/NES");
+
+    result &= createFolder("/Games/GBA");
+
+    result &= createFolder("/Games/PS1");
+
+
+    //================================================
+    // MEDIA
+    //================================================
+
+    result &= createFolder("/Music");
+
+    result &= createFolder("/PDF");
+
+    result &= createFolder("/Themes");
+
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    result &= createFolder("/Saves");
+
+    result &= createFolder("/Screenshots");
+
+    result &= createFolder("/Firmware");
+
+
+    return result;
+}
+
+
+//====================================================
+// FOLDER EXISTS
+//====================================================
+
+bool StorageManager::folderExists(
+    const String& path)
+{
+    if (!sdReady)
+        return false;
+
+
+    File folder = SD.open(path);
+
+
+    if (!folder)
+        return false;
+
+
+    bool result = folder.isDirectory();
+
+
+    folder.close();
+
+
+    return result;
+}
+//====================================================
+// TOTAL SPACE
+//====================================================
+
+uint64_t StorageManager::totalSpace()
+{
+    if (!sdReady)
+        return 0;
+
+
+    return SD.totalBytes();
+}
+
+
+//====================================================
+// USED SPACE
+//====================================================
+
+uint64_t StorageManager::usedSpace()
+{
+    if (!sdReady)
+        return 0;
+
+
+    return SD.usedBytes();
+}
+
+
+//====================================================
+// FREE SPACE
+//====================================================
+
+uint64_t StorageManager::freeSpace()
+{
+    if (!sdReady)
+        return 0;
+
+
+    uint64_t total = totalSpace();
+
+    uint64_t used = usedSpace();
+
+
+    if (used > total)
+        return 0;
+
+
+    return total - used;
+}
+//====================================================
+// STORAGE MANAGER
+// END OF FILE
+//====================================================
+
+// Bu modülün görevleri:
+//
+// - SD kartı başlatmak
+// - Sistem klasörlerini oluşturmak
+// - Depolama alanını raporlamak
+//
+// Dosya listeleme işlemleri
+// FileBrowser tarafından yapılacaktır.
+//
+// ROM yönetimi EmulatorManager,
+// müzik yönetimi MusicPlayer,
+// PDF yönetimi PDFReader tarafından
+// gerçekleştirilecektir.
+#ifndef PROJECT_CONFIG_H
+#define PROJECT_CONFIG_H
+
+//====================================================
+// ESP32 GAME STATION
+// PROJECT CONFIGURATION
+//====================================================
+
+
+//====================================================
+// VERSION
+//====================================================
+
+#define PROJECT_NAME           "ESP32 Game Station"
+
+#define PROJECT_VERSION        "1.0.0"
+
+#define TARGET_FPS             45
+
+
+//====================================================
+// DISPLAY
+//====================================================
+
+#define ENABLE_SPLASH_SCREEN   1
+
+#define ENABLE_ANIMATIONS      1
+
+#define ENABLE_VSYNC           1
+
+
+//====================================================
+// AUDIO
+//====================================================
+
+#define ENABLE_AUDIO           1
+
+#define ENABLE_HEADPHONE       1
+
+#define ENABLE_BACKGROUND_MUSIC 1
+
+
+//====================================================
+// STORAGE
+//====================================================
+
+#define ENABLE_SD_CARD         1
+
+#define ENABLE_SCREENSHOTS     1
+
+#define ENABLE_SAVE_SYSTEM     1
+
+
+//====================================================
+// NETWORK
+//====================================================
+
+#define ENABLE_WIFI            1
+
+#define ENABLE_WEB_SERVER      1
+
+#define ENABLE_OTA             1
+
+
+//====================================================
+// SYSTEM
+//====================================================
+
+#define ENABLE_BATTERY         1
+
+#define ENABLE_SYSTEM_MONITOR  1
+
+#define ENABLE_LOGGER          1
+
+
+//====================================================
+// GAMES
+//====================================================
+
+#define ENABLE_BHOP            1
+
+#define ENABLE_ANGRY_BIRDS     1
+
+#define ENABLE_HILL_CLIMB      1
+
+#define ENABLE_FRUIT_NINJA     1
+
+#define ENABLE_TETRIS          1
+
+#define ENABLE_MULTIPLAYER     1
+
+
+#endif
+//====================================================
+// ESP32 GAME STATION
+// MAIN
+//====================================================
+
+#include <Arduino.h>
+
+#include "project_config.h"
+
+#include "board_config.h"
+
+#include "storage_manager.h"
+
+#include "network_manager.h"
+
+#include "audio_manager.h"
+
+#include "ota_manager.h"
+
+#include "system_monitor.h"
+
+
+//====================================================
+// SETUP
+//====================================================
+
+void setup()
+{
+    Serial.begin(115200);
+
+    delay(500);
+
+
+#if ENABLE_SD_CARD
+
+    StorageManager::begin();
+
+#endif
+
+
+#if ENABLE_WIFI
+
+    NetworkManager::begin();
+
+#endif
+
+
+#if ENABLE_AUDIO
+
+    AudioManager::begin();
+
+#endif
+
+
+#if ENABLE_OTA
+
+    OTAManager::begin();
+
+#endif
+
+
+#if ENABLE_SYSTEM_MONITOR
+
+    SystemMonitor::begin();
+
+#endif
+}
+//====================================================
+// LOOP
+//====================================================
+
+void loop()
+{
+
+#if ENABLE_SYSTEM_MONITOR
+
+    SystemMonitor::beginFrame();
+
+#endif
+
+
+#if ENABLE_AUDIO
+
+    AudioManager::update();
+
+#endif
+
+
+#if ENABLE_WIFI
+
+    NetworkManager::update();
+
+#endif
+
+
+#if ENABLE_OTA
+
+    OTAManager::update();
+
+#endif
+
+
+#if ENABLE_SYSTEM_MONITOR
+
+    SystemMonitor::update();
+
+#endif
+
+}
+//====================================================
+// SYSTEM CHECK
+//====================================================
+
+static bool systemReady()
+{
+
+#if ENABLE_SD_CARD
+
+    if (!StorageManager::mounted())
+    {
+        return false;
+    }
+
+#endif
+
+
+#if ENABLE_SYSTEM_MONITOR
+
+    if (!SystemMonitor::initialized())
+    {
+        return false;
+    }
+
+#endif
+
+
+    return true;
+}
+
+
+
+
 

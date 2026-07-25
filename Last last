@@ -14648,3 +14648,5606 @@ void WebServerManager::handleNotFound()
         "404 - Page Not Found"
     );
 }
+#ifndef PLAYTIME_MANAGER_H
+#define PLAYTIME_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// PLAYTIME MANAGER
+// 91_playtime_manager.h
+//====================================================
+
+
+//====================================================
+// CONFIGURATION
+//====================================================
+
+#define PLAYTIME_MAX_GAMES              64
+
+#define PLAYTIME_GAME_NAME_LENGTH       32
+
+#define PLAYTIME_INVALID_GAME_INDEX     (-1)
+
+
+//====================================================
+// SESSION STATE
+//====================================================
+
+enum PlaytimeSessionState
+{
+    PLAYTIME_SESSION_STOPPED = 0,
+
+    PLAYTIME_SESSION_RUNNING,
+
+    PLAYTIME_SESSION_PAUSED
+};
+
+
+//====================================================
+// SESSION RESULT
+//====================================================
+
+enum PlaytimeSessionResult
+{
+    PLAYTIME_RESULT_NONE = 0,
+
+    PLAYTIME_RESULT_COMPLETED,
+
+    PLAYTIME_RESULT_FAILED,
+
+    PLAYTIME_RESULT_ABORTED
+};
+
+
+//====================================================
+// GAME PLAYTIME RECORD
+//====================================================
+
+struct GamePlaytimeRecord
+{
+    char gameName[
+        PLAYTIME_GAME_NAME_LENGTH
+    ];
+
+
+    uint64_t totalPlaytimeMilliseconds;
+
+    uint32_t launchCount;
+
+    uint32_t sessionCount;
+
+    uint32_t completedSessionCount;
+
+    uint32_t failedSessionCount;
+
+    uint32_t abortedSessionCount;
+
+    uint32_t longestSessionMilliseconds;
+
+    uint32_t lastSessionMilliseconds;
+
+    bool valid;
+
+    bool modified;
+};
+
+
+//====================================================
+// ACTIVE SESSION
+//====================================================
+
+struct ActivePlaytimeSession
+{
+    int16_t gameIndex;
+
+    uint32_t startMilliseconds;
+
+    uint32_t pauseStartMilliseconds;
+
+    uint32_t totalPausedMilliseconds;
+
+    PlaytimeSessionState state;
+
+    bool active;
+};
+
+
+//====================================================
+// PLAYTIME MANAGER
+//====================================================
+
+class PlaytimeManager
+{
+public:
+
+    //================================================
+    // INITIALIZATION
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static bool isInitialized();
+
+
+    //================================================
+    // SESSION CONTROL
+    //================================================
+
+    static bool startSession(
+        const String& gameName
+    );
+
+
+    static bool stopSession(
+        PlaytimeSessionResult result =
+            PLAYTIME_RESULT_NONE
+    );
+
+
+    static bool pauseSession();
+
+    static bool resumeSession();
+
+    static bool cancelSession();
+
+
+    //================================================
+    // SESSION STATE
+    //================================================
+
+    static bool isSessionActive();
+
+    static bool isSessionRunning();
+
+    static bool isSessionPaused();
+
+
+    static PlaytimeSessionState
+    getSessionState();
+
+
+    //================================================
+    // CURRENT SESSION
+    //================================================
+
+    static String getCurrentGameName();
+
+
+    static uint32_t
+    getCurrentSessionMilliseconds();
+
+
+    static uint32_t
+    getCurrentSessionSeconds();
+
+
+    static uint32_t
+    getCurrentSessionMinutes();
+#ifndef PLAYTIME_MANAGER_H
+#define PLAYTIME_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// PLAYTIME MANAGER
+// 91_playtime_manager.h
+//====================================================
+
+
+//====================================================
+// CONFIGURATION
+//====================================================
+
+#define PLAYTIME_MAX_GAMES              64
+#define PLAYTIME_GAME_NAME_LENGTH       32
+#define PLAYTIME_INVALID_GAME_INDEX     (-1)
+
+
+//====================================================
+// SESSION STATE
+//====================================================
+
+enum PlaytimeSessionState
+{
+    PLAYTIME_SESSION_STOPPED = 0,
+
+    PLAYTIME_SESSION_RUNNING,
+
+    PLAYTIME_SESSION_PAUSED
+};
+
+
+//====================================================
+// SESSION RESULT
+//====================================================
+
+enum PlaytimeSessionResult
+{
+    PLAYTIME_RESULT_NONE = 0,
+
+    PLAYTIME_RESULT_COMPLETED,
+
+    PLAYTIME_RESULT_FAILED,
+
+    PLAYTIME_RESULT_ABORTED
+};
+
+
+//====================================================
+// GAME PLAYTIME RECORD
+//====================================================
+
+struct GamePlaytimeRecord
+{
+    char gameName[
+        PLAYTIME_GAME_NAME_LENGTH
+    ];
+
+
+    uint64_t totalPlaytimeMilliseconds;
+
+    uint32_t launchCount;
+
+    uint32_t sessionCount;
+
+    uint32_t completedSessionCount;
+
+    uint32_t failedSessionCount;
+
+    uint32_t abortedSessionCount;
+
+    uint32_t longestSessionMilliseconds;
+
+    uint32_t lastSessionMilliseconds;
+
+    bool valid;
+
+    bool modified;
+};
+
+
+//====================================================
+// ACTIVE SESSION
+//====================================================
+
+struct ActivePlaytimeSession
+{
+    int16_t gameIndex;
+
+    uint32_t startMilliseconds;
+
+    uint32_t pauseStartMilliseconds;
+
+    uint32_t totalPausedMilliseconds;
+
+    PlaytimeSessionState state;
+
+    bool active;
+};
+
+
+//====================================================
+// PLAYTIME MANAGER
+//====================================================
+
+class PlaytimeManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static void reset();
+
+    static bool initialized();
+
+
+    //================================================
+    // SESSION CONTROL
+    //================================================
+
+    static bool start(
+        const String& gameName
+    );
+
+
+    static bool stop(
+        PlaytimeSessionResult result =
+            PLAYTIME_RESULT_NONE
+    );
+
+
+    static bool pause();
+
+    static bool resume();
+
+    static bool cancel();
+
+
+    //================================================
+    // SESSION STATE
+    //================================================
+
+    static bool active();
+
+    static bool running();
+
+    static bool paused();
+
+
+    static PlaytimeSessionState state();
+
+
+    //================================================
+    // CURRENT SESSION
+    //================================================
+
+    static String currentGame();
+
+
+    static uint32_t currentMilliseconds();
+
+    static uint32_t currentSeconds();
+
+    static uint32_t currentMinutes();
+
+
+    //================================================
+    // GAME REGISTRATION
+    //================================================
+
+    static bool registerGame(
+        const String& gameName
+    );
+
+
+    static bool removeGame(
+        const String& gameName
+    );
+
+
+    static bool exists(
+        const String& gameName
+    );
+
+
+    //================================================
+    // GAME ACCESS
+    //================================================
+
+    static int16_t find(
+        const String& gameName
+    );
+
+
+    static uint16_t count();
+
+
+    static bool get(
+        uint16_t index,
+        GamePlaytimeRecord& record
+    );
+
+
+    static bool get(
+        const String& gameName,
+        GamePlaytimeRecord& record
+    );
+
+
+    static bool importRecord(
+        const GamePlaytimeRecord& record
+    );
+
+
+    static bool exportRecord(
+        uint16_t index,
+        GamePlaytimeRecord& record
+    );
+
+
+    //================================================
+    // GAME PLAYTIME
+    //================================================
+
+    static uint64_t totalMilliseconds(
+        const String& gameName
+    );
+
+
+    static uint32_t totalSeconds(
+        const String& gameName
+    );
+
+
+    static uint32_t totalMinutes(
+        const String& gameName
+    );
+
+
+    static uint32_t totalHours(
+        const String& gameName
+    );
+
+
+    //================================================
+    // GLOBAL PLAYTIME
+    //================================================
+
+    static uint64_t globalMilliseconds();
+
+    static uint32_t globalSeconds();
+
+    static uint32_t globalMinutes();
+
+    static uint32_t globalHours();
+
+
+    //================================================
+    // GAME STATISTICS
+    //================================================
+
+    static uint32_t launchCount(
+        const String& gameName
+    );
+
+
+    static uint32_t sessionCount(
+        const String& gameName
+    );
+
+
+    static uint32_t completedSessions(
+        const String& gameName
+    );
+
+
+    static uint32_t failedSessions(
+        const String& gameName
+    );
+
+
+    static uint32_t abortedSessions(
+        const String& gameName
+    );
+
+
+    static uint32_t longestSession(
+        const String& gameName
+    );
+
+
+    static uint32_t lastSession(
+        const String& gameName
+    );
+
+
+    //================================================
+    // GLOBAL STATISTICS
+    //================================================
+
+    static uint32_t globalLaunchCount();
+
+    static uint32_t globalSessionCount();
+
+    static uint32_t globalCompletedSessions();
+
+    static uint32_t globalFailedSessions();
+
+    static uint32_t globalAbortedSessions();
+
+    static uint32_t globalLongestSession();
+
+
+    //================================================
+    // MOST PLAYED
+    //================================================
+
+    static String mostPlayedGame();
+
+    static String mostLaunchedGame();
+
+
+    //================================================
+    // MODIFICATION STATE
+    //================================================
+
+    static bool modified();
+
+
+    static bool gameModified(
+        const String& gameName
+    );
+
+
+    static void clearModified();
+
+
+    static void clearGameModified(
+        const String& gameName
+    );
+
+
+    //================================================
+    // RESET
+    //================================================
+
+    static bool resetGame(
+        const String& gameName
+    );
+
+
+    static void resetAllGames();
+
+
+    //================================================
+    // VALIDATION
+    //================================================
+
+    static bool validGameName(
+        const String& gameName
+    );
+
+
+    static bool validate();
+
+
+    //================================================
+    // DEBUG
+    //================================================
+
+    static void printInfo();
+
+
+    static void printGame(
+        const String& gameName
+    );
+
+
+    static void printAll();
+
+
+private:
+
+    //================================================
+    // INTERNAL STATE
+    //================================================
+
+    static bool managerInitialized;
+
+    static bool dataModified;
+
+
+    static GamePlaytimeRecord records[
+        PLAYTIME_MAX_GAMES
+    ];
+
+
+    static uint16_t recordCount;
+
+
+    static ActivePlaytimeSession session;
+
+
+    //================================================
+    // INTERNAL HELPERS
+    //================================================
+
+    static void clearRecord(
+        GamePlaytimeRecord& record
+    );
+
+
+    static void clearSession();
+
+
+    static uint32_t calculateSessionDuration();
+
+
+    static bool finishSession(
+        PlaytimeSessionResult result,
+        bool saveSession
+    );
+
+
+    static void applySessionResult(
+        GamePlaytimeRecord& record,
+        PlaytimeSessionResult result
+    );
+
+
+    static bool copyGameName(
+        char* destination,
+        const String& source
+    );
+
+
+    static bool gameNamesEqual(
+        const char* storedName,
+        const String& gameName
+    );
+};
+
+
+#endif
+#include "91_playtime_manager.h"
+
+#include <string.h>
+
+
+//====================================================
+// ESP32 GAME STATION
+// PLAYTIME MANAGER
+// 92_playtime_manager.cpp
+//====================================================
+
+
+//====================================================
+// STATIC VARIABLE DEFINITIONS
+//====================================================
+
+bool PlaytimeManager::managerInitialized =
+    false;
+
+
+bool PlaytimeManager::dataModified =
+    false;
+
+
+GamePlaytimeRecord PlaytimeManager::records[
+    PLAYTIME_MAX_GAMES
+];
+
+
+uint16_t PlaytimeManager::recordCount =
+    0;
+
+
+ActivePlaytimeSession PlaytimeManager::session;
+
+
+//====================================================
+// SYSTEM
+//====================================================
+
+bool PlaytimeManager::begin()
+{
+    managerInitialized =
+        false;
+
+
+    dataModified =
+        false;
+
+
+    recordCount =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < PLAYTIME_MAX_GAMES;
+        i++)
+    {
+        clearRecord(
+            records[i]
+        );
+    }
+
+
+    clearSession();
+
+
+    managerInitialized =
+        true;
+
+
+    return true;
+}
+
+
+
+void PlaytimeManager::update()
+{
+    if(!managerInitialized)
+    {
+        return;
+    }
+
+
+    if(!session.active)
+    {
+        return;
+    }
+
+
+    calculateSessionDuration();
+}
+
+
+
+void PlaytimeManager::reset()
+{
+    if(!managerInitialized)
+    {
+        begin();
+
+        return;
+    }
+
+
+    clearSession();
+
+    resetAllGames();
+}
+
+
+
+bool PlaytimeManager::initialized()
+{
+    return managerInitialized;
+}
+
+
+//====================================================
+// SESSION CONTROL
+//====================================================
+
+bool PlaytimeManager::start(
+    const String& gameName
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(session.active)
+    {
+        return false;
+    }
+
+
+    if(!validGameName(
+        gameName
+    ))
+    {
+        return false;
+    }
+
+
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        if(!registerGame(
+            gameName
+        ))
+        {
+            return false;
+        }
+
+
+        gameIndex =
+            find(
+                gameName
+            );
+
+
+        if(gameIndex ==
+           PLAYTIME_INVALID_GAME_INDEX)
+        {
+            return false;
+        }
+    }
+
+
+    clearSession();
+
+
+    session.gameIndex =
+        gameIndex;
+
+
+    session.startMilliseconds =
+        millis();
+
+
+    session.pauseStartMilliseconds =
+        0;
+
+
+    session.totalPausedMilliseconds =
+        0;
+
+
+    session.state =
+        PLAYTIME_SESSION_RUNNING;
+
+
+    session.active =
+        true;
+
+
+    records[gameIndex].launchCount++;
+
+
+    records[gameIndex].modified =
+        true;
+
+
+    dataModified =
+        true;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::stop(
+    PlaytimeSessionResult result
+)
+{
+    return finishSession(
+        result,
+        true
+    );
+}
+
+
+
+bool PlaytimeManager::pause()
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(!session.active)
+    {
+        return false;
+    }
+
+
+    if(session.state ==
+       PLAYTIME_SESSION_PAUSED)
+    {
+        return true;
+    }
+
+
+    if(session.state !=
+       PLAYTIME_SESSION_RUNNING)
+    {
+        return false;
+    }
+
+
+    session.pauseStartMilliseconds =
+        millis();
+
+
+    session.state =
+        PLAYTIME_SESSION_PAUSED;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::resume()
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(!session.active)
+    {
+        return false;
+    }
+
+
+    if(session.state ==
+       PLAYTIME_SESSION_RUNNING)
+    {
+        return true;
+    }
+
+
+    if(session.state !=
+       PLAYTIME_SESSION_PAUSED)
+    {
+        return false;
+    }
+
+
+    uint32_t currentTime =
+        millis();
+
+
+    session.totalPausedMilliseconds +=
+        currentTime -
+        session.pauseStartMilliseconds;
+
+
+    session.pauseStartMilliseconds =
+        0;
+
+
+    session.state =
+        PLAYTIME_SESSION_RUNNING;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::cancel()
+{
+    return finishSession(
+        PLAYTIME_RESULT_NONE,
+        false
+    );
+}
+
+
+//====================================================
+// SESSION STATE
+//====================================================
+
+bool PlaytimeManager::active()
+{
+    return
+        managerInitialized &&
+        session.active;
+}
+
+
+
+bool PlaytimeManager::running()
+{
+    return
+        active() &&
+        session.state ==
+            PLAYTIME_SESSION_RUNNING;
+}
+
+
+
+bool PlaytimeManager::paused()
+{
+    return
+        active() &&
+        session.state ==
+            PLAYTIME_SESSION_PAUSED;
+}
+
+
+
+PlaytimeSessionState PlaytimeManager::state()
+{
+    if(!managerInitialized)
+    {
+        return PLAYTIME_SESSION_STOPPED;
+    }
+
+
+    return session.state;
+}
+
+
+//====================================================
+// CURRENT SESSION
+//====================================================
+
+String PlaytimeManager::currentGame()
+{
+    if(!active())
+    {
+        return String();
+    }
+
+
+    if(session.gameIndex < 0)
+    {
+        return String();
+    }
+
+
+    if(session.gameIndex >=
+       (int16_t)recordCount)
+    {
+        return String();
+    }
+
+
+    if(!records[
+        session.gameIndex
+    ].valid)
+    {
+        return String();
+    }
+
+
+    return String(
+        records[
+            session.gameIndex
+        ].gameName
+    );
+}
+
+
+
+uint32_t PlaytimeManager::currentMilliseconds()
+{
+    if(!active())
+    {
+        return 0;
+    }
+
+
+    return calculateSessionDuration();
+}
+
+
+
+uint32_t PlaytimeManager::currentSeconds()
+{
+    return
+        currentMilliseconds() /
+        1000UL;
+}
+
+
+
+uint32_t PlaytimeManager::currentMinutes()
+{
+    return
+        currentMilliseconds() /
+        60000UL;
+}
+//====================================================
+// GAME REGISTRATION
+//====================================================
+
+bool PlaytimeManager::registerGame(
+    const String& gameName
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(!validGameName(
+        gameName
+    ))
+    {
+        return false;
+    }
+
+
+    if(exists(
+        gameName
+    ))
+    {
+        return true;
+    }
+
+
+    if(recordCount >=
+       PLAYTIME_MAX_GAMES)
+    {
+        return false;
+    }
+
+
+    GamePlaytimeRecord& record =
+        records[
+            recordCount
+        ];
+
+
+    clearRecord(
+        record
+    );
+
+
+    if(!copyGameName(
+        record.gameName,
+        gameName
+    ))
+    {
+        clearRecord(
+            record
+        );
+
+
+        return false;
+    }
+
+
+    record.valid =
+        true;
+
+
+    record.modified =
+        true;
+
+
+    recordCount++;
+
+
+    dataModified =
+        true;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::removeGame(
+    const String& gameName
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return false;
+    }
+
+
+    if(
+        session.active &&
+        session.gameIndex ==
+            gameIndex
+    )
+    {
+        if(!cancel())
+        {
+            return false;
+        }
+    }
+
+
+    for(uint16_t i =
+            (uint16_t)gameIndex;
+        i + 1 < recordCount;
+        i++)
+    {
+        records[i] =
+            records[i + 1];
+    }
+
+
+    if(recordCount > 0)
+    {
+        recordCount--;
+
+
+        clearRecord(
+            records[
+                recordCount
+            ]
+        );
+    }
+
+
+    if(
+        session.active &&
+        session.gameIndex >
+            gameIndex
+    )
+    {
+        session.gameIndex--;
+    }
+
+
+    dataModified =
+        true;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::exists(
+    const String& gameName
+)
+{
+    return
+        find(
+            gameName
+        ) !=
+        PLAYTIME_INVALID_GAME_INDEX;
+}
+
+
+//====================================================
+// GAME ACCESS
+//====================================================
+
+int16_t PlaytimeManager::find(
+    const String& gameName
+)
+{
+    if(!managerInitialized)
+    {
+        return
+            PLAYTIME_INVALID_GAME_INDEX;
+    }
+
+
+    if(!validGameName(
+        gameName
+    ))
+    {
+        return
+            PLAYTIME_INVALID_GAME_INDEX;
+    }
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(
+            records[i].valid &&
+            gameNamesEqual(
+                records[i].gameName,
+                gameName
+            )
+        )
+        {
+            return
+                (int16_t)i;
+        }
+    }
+
+
+    return
+        PLAYTIME_INVALID_GAME_INDEX;
+}
+
+
+
+uint16_t PlaytimeManager::count()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    return recordCount;
+}
+
+
+
+bool PlaytimeManager::get(
+    uint16_t index,
+    GamePlaytimeRecord& record
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(index >=
+       recordCount)
+    {
+        return false;
+    }
+
+
+    if(!records[index].valid)
+    {
+        return false;
+    }
+
+
+    record =
+        records[index];
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::get(
+    const String& gameName,
+    GamePlaytimeRecord& record
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return false;
+    }
+
+
+    return get(
+        (uint16_t)gameIndex,
+        record
+    );
+}
+
+
+
+bool PlaytimeManager::importRecord(
+    const GamePlaytimeRecord& record
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(!record.valid)
+    {
+        return false;
+    }
+
+
+    char safeGameName[
+        PLAYTIME_GAME_NAME_LENGTH
+    ];
+
+
+    memcpy(
+        safeGameName,
+        record.gameName,
+        PLAYTIME_GAME_NAME_LENGTH
+    );
+
+
+    safeGameName[
+        PLAYTIME_GAME_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    String gameName =
+        String(
+            safeGameName
+        );
+
+
+    if(!validGameName(
+        gameName
+    ))
+    {
+        return false;
+    }
+
+
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        if(recordCount >=
+           PLAYTIME_MAX_GAMES)
+        {
+            return false;
+        }
+
+
+        gameIndex =
+            (int16_t)recordCount;
+
+
+        recordCount++;
+    }
+
+
+    records[gameIndex] =
+        record;
+
+
+    memcpy(
+        records[gameIndex].gameName,
+        safeGameName,
+        PLAYTIME_GAME_NAME_LENGTH
+    );
+
+
+    records[gameIndex].gameName[
+        PLAYTIME_GAME_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    records[gameIndex].valid =
+        true;
+
+
+    records[gameIndex].modified =
+        false;
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::exportRecord(
+    uint16_t index,
+    GamePlaytimeRecord& record
+)
+{
+    return get(
+        index,
+        record
+    );
+}
+
+
+//====================================================
+// GAME PLAYTIME
+//====================================================
+
+uint64_t PlaytimeManager::totalMilliseconds(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    uint64_t total =
+        records[gameIndex].
+            totalPlaytimeMilliseconds;
+
+
+    if(
+        session.active &&
+        session.gameIndex ==
+            gameIndex
+    )
+    {
+        total +=
+            calculateSessionDuration();
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::totalSeconds(
+    const String& gameName
+)
+{
+    return
+        (uint32_t)(
+            totalMilliseconds(
+                gameName
+            ) /
+            1000ULL
+        );
+}
+
+
+
+uint32_t PlaytimeManager::totalMinutes(
+    const String& gameName
+)
+{
+    return
+        (uint32_t)(
+            totalMilliseconds(
+                gameName
+            ) /
+            60000ULL
+        );
+}
+
+
+
+uint32_t PlaytimeManager::totalHours(
+    const String& gameName
+)
+{
+    return
+        (uint32_t)(
+            totalMilliseconds(
+                gameName
+            ) /
+            3600000ULL
+        );
+}
+
+
+//====================================================
+// GLOBAL PLAYTIME
+//====================================================
+
+uint64_t PlaytimeManager::globalMilliseconds()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint64_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    totalPlaytimeMilliseconds;
+        }
+    }
+
+
+    if(session.active)
+    {
+        total +=
+            calculateSessionDuration();
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalSeconds()
+{
+    return
+        (uint32_t)(
+            globalMilliseconds() /
+            1000ULL
+        );
+}
+
+
+
+uint32_t PlaytimeManager::globalMinutes()
+{
+    return
+        (uint32_t)(
+            globalMilliseconds() /
+            60000ULL
+        );
+}
+
+
+
+uint32_t PlaytimeManager::globalHours()
+{
+    return
+        (uint32_t)(
+            globalMilliseconds() /
+            3600000ULL
+        );
+}
+//====================================================
+// GAME STATISTICS
+//====================================================
+
+uint32_t PlaytimeManager::launchCount(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            launchCount;
+}
+
+
+
+uint32_t PlaytimeManager::sessionCount(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            sessionCount;
+}
+
+
+
+uint32_t PlaytimeManager::completedSessions(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            completedSessionCount;
+}
+
+
+
+uint32_t PlaytimeManager::failedSessions(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            failedSessionCount;
+}
+
+
+
+uint32_t PlaytimeManager::abortedSessions(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            abortedSessionCount;
+}
+
+
+
+uint32_t PlaytimeManager::longestSession(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            longestSessionMilliseconds;
+}
+
+
+
+uint32_t PlaytimeManager::lastSession(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return 0;
+    }
+
+
+    return
+        records[gameIndex].
+            lastSessionMilliseconds;
+}
+
+
+//====================================================
+// GLOBAL STATISTICS
+//====================================================
+
+uint32_t PlaytimeManager::globalLaunchCount()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    launchCount;
+        }
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalSessionCount()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    sessionCount;
+        }
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalCompletedSessions()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    completedSessionCount;
+        }
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalFailedSessions()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    failedSessionCount;
+        }
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalAbortedSessions()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t total =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            total +=
+                records[i].
+                    abortedSessionCount;
+        }
+    }
+
+
+    return total;
+}
+
+
+
+uint32_t PlaytimeManager::globalLongestSession()
+{
+    if(!managerInitialized)
+    {
+        return 0;
+    }
+
+
+    uint32_t longest =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(
+            records[i].valid &&
+            records[i].
+                longestSessionMilliseconds >
+                longest
+        )
+        {
+            longest =
+                records[i].
+                    longestSessionMilliseconds;
+        }
+    }
+
+
+    return longest;
+}
+
+
+//====================================================
+// MOST PLAYED
+//====================================================
+
+String PlaytimeManager::mostPlayedGame()
+{
+    if(!managerInitialized ||
+       recordCount == 0)
+    {
+        return String();
+    }
+
+
+    int16_t selectedIndex =
+        PLAYTIME_INVALID_GAME_INDEX;
+
+
+    uint64_t highestPlaytime =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(!records[i].valid)
+        {
+            continue;
+        }
+
+
+        uint64_t playtime =
+            records[i].
+                totalPlaytimeMilliseconds;
+
+
+        if(
+            session.active &&
+            session.gameIndex ==
+                (int16_t)i
+        )
+        {
+            playtime +=
+                calculateSessionDuration();
+        }
+
+
+        if(
+            selectedIndex ==
+                PLAYTIME_INVALID_GAME_INDEX ||
+            playtime >
+                highestPlaytime
+        )
+        {
+            selectedIndex =
+                (int16_t)i;
+
+
+            highestPlaytime =
+                playtime;
+        }
+    }
+
+
+    if(selectedIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return String();
+    }
+
+
+    return String(
+        records[selectedIndex].
+            gameName
+    );
+}
+
+
+
+String PlaytimeManager::mostLaunchedGame()
+{
+    if(!managerInitialized ||
+       recordCount == 0)
+    {
+        return String();
+    }
+
+
+    int16_t selectedIndex =
+        PLAYTIME_INVALID_GAME_INDEX;
+
+
+    uint32_t highestLaunchCount =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(!records[i].valid)
+        {
+            continue;
+        }
+
+
+        if(
+            selectedIndex ==
+                PLAYTIME_INVALID_GAME_INDEX ||
+            records[i].launchCount >
+                highestLaunchCount
+        )
+        {
+            selectedIndex =
+                (int16_t)i;
+
+
+            highestLaunchCount =
+                records[i].
+                    launchCount;
+        }
+    }
+
+
+    if(selectedIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return String();
+    }
+
+
+    return String(
+        records[selectedIndex].
+            gameName
+    );
+}
+
+
+//====================================================
+// MODIFICATION STATE
+//====================================================
+
+bool PlaytimeManager::modified()
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(dataModified)
+    {
+        return true;
+    }
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(
+            records[i].valid &&
+            records[i].modified
+        )
+        {
+            return true;
+        }
+    }
+
+
+    return false;
+}
+
+
+
+bool PlaytimeManager::gameModified(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return false;
+    }
+
+
+    return
+        records[gameIndex].
+            modified;
+}
+
+
+
+void PlaytimeManager::clearModified()
+{
+    if(!managerInitialized)
+    {
+        return;
+    }
+
+
+    dataModified =
+        false;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        records[i].modified =
+            false;
+    }
+}
+
+
+
+void PlaytimeManager::clearGameModified(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return;
+    }
+
+
+    records[gameIndex].modified =
+        false;
+
+
+    bool anyModified =
+        false;
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(
+            records[i].valid &&
+            records[i].modified
+        )
+        {
+            anyModified =
+                true;
+
+            break;
+        }
+    }
+
+
+    dataModified =
+        anyModified;
+}
+
+
+//====================================================
+// RESET
+//====================================================
+
+bool PlaytimeManager::resetGame(
+    const String& gameName
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        return false;
+    }
+
+
+    if(
+        session.active &&
+        session.gameIndex ==
+            gameIndex
+    )
+    {
+        if(!cancel())
+        {
+            return false;
+        }
+    }
+
+
+    char savedGameName[
+        PLAYTIME_GAME_NAME_LENGTH
+    ];
+
+
+    memcpy(
+        savedGameName,
+        records[gameIndex].gameName,
+        PLAYTIME_GAME_NAME_LENGTH
+    );
+
+
+    savedGameName[
+        PLAYTIME_GAME_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    clearRecord(
+        records[gameIndex]
+    );
+
+
+    memcpy(
+        records[gameIndex].gameName,
+        savedGameName,
+        PLAYTIME_GAME_NAME_LENGTH
+    );
+
+
+    records[gameIndex].gameName[
+        PLAYTIME_GAME_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    records[gameIndex].valid =
+        true;
+
+
+    records[gameIndex].modified =
+        true;
+
+
+    dataModified =
+        true;
+
+
+    return true;
+}
+
+
+
+void PlaytimeManager::resetAllGames()
+{
+    if(!managerInitialized)
+    {
+        return;
+    }
+
+
+    clearSession();
+
+
+    for(uint16_t i = 0;
+        i < PLAYTIME_MAX_GAMES;
+        i++)
+    {
+        clearRecord(
+            records[i]
+        );
+    }
+
+
+    recordCount =
+        0;
+
+
+    dataModified =
+        true;
+}
+
+
+//====================================================
+// VALIDATION
+//====================================================
+
+bool PlaytimeManager::validGameName(
+    const String& gameName
+)
+{
+    size_t length =
+        gameName.length();
+
+
+    if(length == 0)
+    {
+        return false;
+    }
+
+
+    if(length >=
+       PLAYTIME_GAME_NAME_LENGTH)
+    {
+        return false;
+    }
+
+
+    for(size_t i = 0;
+        i < length;
+        i++)
+    {
+        char character =
+            gameName.charAt(
+                i
+            );
+
+
+        if(
+            character < 32 ||
+            character == '/' ||
+            character == '\\'
+        )
+        {
+            return false;
+        }
+    }
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::validate()
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(recordCount >
+       PLAYTIME_MAX_GAMES)
+    {
+        return false;
+    }
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        if(!records[i].valid)
+        {
+            return false;
+        }
+
+
+        char safeGameName[
+            PLAYTIME_GAME_NAME_LENGTH
+        ];
+
+
+        memcpy(
+            safeGameName,
+            records[i].gameName,
+            PLAYTIME_GAME_NAME_LENGTH
+        );
+
+
+        safeGameName[
+            PLAYTIME_GAME_NAME_LENGTH - 1
+        ] = '\0';
+
+
+        String gameName =
+            String(
+                safeGameName
+            );
+
+
+        if(!validGameName(
+            gameName
+        ))
+        {
+            return false;
+        }
+
+
+        if(
+            records[i].
+                completedSessionCount >
+            records[i].
+                sessionCount
+        )
+        {
+            return false;
+        }
+
+
+        if(
+            records[i].
+                failedSessionCount >
+            records[i].
+                sessionCount
+        )
+        {
+            return false;
+        }
+
+
+        if(
+            records[i].
+                abortedSessionCount >
+            records[i].
+                sessionCount
+        )
+        {
+            return false;
+        }
+
+
+        uint64_t categorizedSessions =
+            (uint64_t)
+            records[i].
+                completedSessionCount +
+            records[i].
+                failedSessionCount +
+            records[i].
+                abortedSessionCount;
+
+
+        if(categorizedSessions >
+           records[i].sessionCount)
+        {
+            return false;
+        }
+
+
+        for(uint16_t j = i + 1;
+            j < recordCount;
+            j++)
+        {
+            if(
+                records[j].valid &&
+                strcmp(
+                    records[i].gameName,
+                    records[j].gameName
+                ) == 0
+            )
+            {
+                return false;
+            }
+        }
+    }
+
+
+    for(uint16_t i = recordCount;
+        i < PLAYTIME_MAX_GAMES;
+        i++)
+    {
+        if(records[i].valid)
+        {
+            return false;
+        }
+    }
+
+
+    if(session.active)
+    {
+        if(session.gameIndex < 0)
+        {
+            return false;
+        }
+
+
+        if(session.gameIndex >=
+           (int16_t)recordCount)
+        {
+            return false;
+        }
+
+
+        if(!records[
+            session.gameIndex
+        ].valid)
+        {
+            return false;
+        }
+
+
+        if(
+            session.state !=
+                PLAYTIME_SESSION_RUNNING &&
+            session.state !=
+                PLAYTIME_SESSION_PAUSED
+        )
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if(session.state !=
+           PLAYTIME_SESSION_STOPPED)
+        {
+            return false;
+        }
+    }
+
+
+    return true;
+}
+
+
+//====================================================
+// DEBUG
+//====================================================
+
+void PlaytimeManager::printInfo()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PLAYTIME MANAGER"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Initialized: "
+    );
+
+
+    Serial.println(
+        managerInitialized ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Registered Games: "
+    );
+
+
+    Serial.print(
+        recordCount
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        PLAYTIME_MAX_GAMES
+    );
+
+
+    Serial.print(
+        "Session Active: "
+    );
+
+
+    Serial.println(
+        session.active ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Session State: "
+    );
+
+
+    switch(session.state)
+    {
+        case PLAYTIME_SESSION_RUNNING:
+
+            Serial.println(
+                "RUNNING"
+            );
+
+            break;
+
+
+        case PLAYTIME_SESSION_PAUSED:
+
+            Serial.println(
+                "PAUSED"
+            );
+
+            break;
+
+
+        default:
+
+            Serial.println(
+                "STOPPED"
+            );
+
+            break;
+    }
+
+
+    Serial.print(
+        "Current Game: "
+    );
+
+
+    if(session.active)
+    {
+        Serial.println(
+            currentGame()
+        );
+    }
+    else
+    {
+        Serial.println(
+            "NONE"
+        );
+    }
+
+
+    Serial.print(
+        "Current Session Seconds: "
+    );
+
+
+    Serial.println(
+        currentSeconds()
+    );
+
+
+    Serial.print(
+        "Global Playtime Seconds: "
+    );
+
+
+    Serial.println(
+        globalSeconds()
+    );
+
+
+    Serial.print(
+        "Modified: "
+    );
+
+
+    Serial.println(
+        modified() ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Validation: "
+    );
+
+
+    Serial.println(
+        validate() ?
+        "VALID" :
+        "INVALID"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void PlaytimeManager::printGame(
+    const String& gameName
+)
+{
+    int16_t gameIndex =
+        find(
+            gameName
+        );
+
+
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "GAME PLAYTIME RECORD"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(gameIndex ==
+       PLAYTIME_INVALID_GAME_INDEX)
+    {
+        Serial.println(
+            "GAME NOT FOUND"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    const GamePlaytimeRecord& record =
+        records[gameIndex];
+
+
+    Serial.print(
+        "Game: "
+    );
+
+
+    Serial.println(
+        record.gameName
+    );
+
+
+    Serial.print(
+        "Playtime Seconds: "
+    );
+
+
+    Serial.println(
+        (uint32_t)(
+            record.
+                totalPlaytimeMilliseconds /
+            1000ULL
+        )
+    );
+
+
+    Serial.print(
+        "Launch Count: "
+    );
+
+
+    Serial.println(
+        record.launchCount
+    );
+
+
+    Serial.print(
+        "Session Count: "
+    );
+
+
+    Serial.println(
+        record.sessionCount
+    );
+
+
+    Serial.print(
+        "Completed Sessions: "
+    );
+
+
+    Serial.println(
+        record.completedSessionCount
+    );
+
+
+    Serial.print(
+        "Failed Sessions: "
+    );
+
+
+    Serial.println(
+        record.failedSessionCount
+    );
+
+
+    Serial.print(
+        "Aborted Sessions: "
+    );
+
+
+    Serial.println(
+        record.abortedSessionCount
+    );
+
+
+    Serial.print(
+        "Longest Session Milliseconds: "
+    );
+
+
+    Serial.println(
+        record.longestSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Last Session Milliseconds: "
+    );
+
+
+    Serial.println(
+        record.lastSessionMilliseconds
+    );
+
+
+    Serial.print(
+        "Modified: "
+    );
+
+
+    Serial.println(
+        record.modified ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void PlaytimeManager::printAll()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "ALL PLAYTIME RECORDS"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(!managerInitialized)
+    {
+        Serial.println(
+            "MANAGER NOT INITIALIZED"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    if(recordCount == 0)
+    {
+        Serial.println(
+            "NO REGISTERED GAMES"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    for(uint16_t i = 0;
+        i < recordCount;
+        i++)
+    {
+        Serial.print(
+            "["
+        );
+
+
+        Serial.print(
+            i
+        );
+
+
+        Serial.print(
+            "] "
+        );
+
+
+        Serial.print(
+            records[i].
+                gameName
+        );
+
+
+        Serial.print(
+            " | Playtime: "
+        );
+
+
+        Serial.print(
+            (uint32_t)(
+                records[i].
+                    totalPlaytimeMilliseconds /
+                1000ULL
+            )
+        );
+
+
+        Serial.print(
+            " sec | Launches: "
+        );
+
+
+        Serial.print(
+            records[i].
+                launchCount
+        );
+
+
+        Serial.print(
+            " | Sessions: "
+        );
+
+
+        Serial.println(
+            records[i].
+                sessionCount
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+//====================================================
+// INTERNAL HELPERS
+//====================================================
+
+void PlaytimeManager::clearRecord(
+    GamePlaytimeRecord& record
+)
+{
+    memset(
+        &record,
+        0,
+        sizeof(GamePlaytimeRecord)
+    );
+
+
+    record.gameName[0] =
+        '\0';
+
+
+    record.valid =
+        false;
+
+
+    record.modified =
+        false;
+}
+
+
+
+void PlaytimeManager::clearSession()
+{
+    session.gameIndex =
+        PLAYTIME_INVALID_GAME_INDEX;
+
+
+    session.startMilliseconds =
+        0;
+
+
+    session.pauseStartMilliseconds =
+        0;
+
+
+    session.totalPausedMilliseconds =
+        0;
+
+
+    session.state =
+        PLAYTIME_SESSION_STOPPED;
+
+
+    session.active =
+        false;
+}
+
+
+
+uint32_t PlaytimeManager::calculateSessionDuration()
+{
+    if(!session.active)
+    {
+        return 0;
+    }
+
+
+    uint32_t currentTime;
+
+
+    if(session.state ==
+       PLAYTIME_SESSION_PAUSED)
+    {
+        currentTime =
+            session.pauseStartMilliseconds;
+    }
+    else
+    {
+        currentTime =
+            millis();
+    }
+
+
+    uint32_t elapsedMilliseconds =
+        currentTime -
+        session.startMilliseconds;
+
+
+    if(elapsedMilliseconds <
+       session.totalPausedMilliseconds)
+    {
+        return 0;
+    }
+
+
+    return
+        elapsedMilliseconds -
+        session.totalPausedMilliseconds;
+}
+
+
+
+bool PlaytimeManager::finishSession(
+    PlaytimeSessionResult result,
+    bool saveSession
+)
+{
+    if(!managerInitialized)
+    {
+        return false;
+    }
+
+
+    if(!session.active)
+    {
+        return false;
+    }
+
+
+    if(session.gameIndex < 0 ||
+       session.gameIndex >=
+           (int16_t)recordCount)
+    {
+        clearSession();
+
+        return false;
+    }
+
+
+    GamePlaytimeRecord& record =
+        records[
+            session.gameIndex
+        ];
+
+
+    if(!record.valid)
+    {
+        clearSession();
+
+        return false;
+    }
+
+
+    uint32_t durationMilliseconds =
+        calculateSessionDuration();
+
+
+    if(saveSession)
+    {
+        record.totalPlaytimeMilliseconds +=
+            durationMilliseconds;
+
+
+        record.sessionCount++;
+
+
+        record.lastSessionMilliseconds =
+            durationMilliseconds;
+
+
+        if(durationMilliseconds >
+           record.longestSessionMilliseconds)
+        {
+            record.longestSessionMilliseconds =
+                durationMilliseconds;
+        }
+
+
+        applySessionResult(
+            record,
+            result
+        );
+
+
+        record.modified =
+            true;
+
+
+        dataModified =
+            true;
+    }
+
+
+    clearSession();
+
+
+    return true;
+}
+
+
+
+void PlaytimeManager::applySessionResult(
+    GamePlaytimeRecord& record,
+    PlaytimeSessionResult result
+)
+{
+    switch(result)
+    {
+        case PLAYTIME_RESULT_COMPLETED:
+
+            record.completedSessionCount++;
+
+            break;
+
+
+        case PLAYTIME_RESULT_FAILED:
+
+            record.failedSessionCount++;
+
+            break;
+
+
+        case PLAYTIME_RESULT_ABORTED:
+
+            record.abortedSessionCount++;
+
+            break;
+
+
+        default:
+
+            break;
+    }
+}
+
+
+
+bool PlaytimeManager::copyGameName(
+    char* destination,
+    const String& source
+)
+{
+    if(destination == nullptr)
+    {
+        return false;
+    }
+
+
+    if(!validGameName(
+        source
+    ))
+    {
+        destination[0] =
+            '\0';
+
+
+        return false;
+    }
+
+
+    source.toCharArray(
+        destination,
+        PLAYTIME_GAME_NAME_LENGTH
+    );
+
+
+    destination[
+        PLAYTIME_GAME_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    return true;
+}
+
+
+
+bool PlaytimeManager::gameNamesEqual(
+    const char* storedName,
+    const String& gameName
+)
+{
+    if(storedName == nullptr)
+    {
+        return false;
+    }
+
+
+    if(!validGameName(
+        gameName
+    ))
+    {
+        return false;
+    }
+
+
+    return gameName.equals(
+        storedName
+    );
+}
+#ifndef RTC_MANAGER_H
+#define RTC_MANAGER_H
+
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// RTC MANAGER
+// 93_rtc_manager.h
+//====================================================
+
+
+//====================================================
+// CONFIGURATION
+//====================================================
+
+#define RTC_UPDATE_INTERVAL             1000UL
+
+#define RTC_INVALID_UNIX_TIME           0UL
+
+#define RTC_MINIMUM_VALID_YEAR          2024
+
+#define RTC_MAXIMUM_VALID_YEAR          2099
+
+
+//====================================================
+// RTC STATUS
+//====================================================
+
+enum RTCManagerStatus
+{
+    RTC_STATUS_NOT_INITIALIZED = 0,
+
+    RTC_STATUS_READY,
+
+    RTC_STATUS_DEVICE_NOT_FOUND,
+
+    RTC_STATUS_LOST_POWER,
+
+    RTC_STATUS_INVALID_DATE_TIME,
+
+    RTC_STATUS_READ_ERROR,
+
+    RTC_STATUS_WRITE_ERROR
+};
+
+
+//====================================================
+// DATE AND TIME DATA
+//====================================================
+
+struct RTCDateTimeData
+{
+    uint16_t year;
+
+    uint8_t month;
+
+    uint8_t day;
+
+    uint8_t hour;
+
+    uint8_t minute;
+
+    uint8_t second;
+
+    uint8_t dayOfWeek;
+
+    uint32_t unixTime;
+
+    bool valid;
+};
+
+
+//====================================================
+// RTC MANAGER
+//====================================================
+
+class RTCManager
+{
+public:
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+
+    static void update();
+
+    static bool initialized();
+
+    static bool available();
+
+    static bool valid();
+
+    static RTCManagerStatus status();
+
+
+    //================================================
+    // DATE AND TIME ACCESS
+    //================================================
+
+    static RTCDateTimeData now();
+
+    static bool read(
+        RTCDateTimeData& dateTime
+    );
+
+
+    static uint16_t year();
+
+    static uint8_t month();
+
+    static uint8_t day();
+
+    static uint8_t hour();
+
+    static uint8_t minute();
+
+    static uint8_t second();
+
+    static uint8_t dayOfWeek();
+
+    static uint32_t unixTime();
+
+
+    //================================================
+    // DATE AND TIME SETTING
+    //================================================
+
+    static bool set(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static bool set(
+        uint16_t year,
+        uint8_t month,
+        uint8_t day,
+        uint8_t hour,
+        uint8_t minute,
+        uint8_t second
+    );
+
+
+    static bool setUnixTime(
+        uint32_t unixTime
+    );
+
+
+    static bool setCompileTime();
+
+
+    //================================================
+    // DATE VALIDATION
+    //================================================
+
+    static bool validDateTime(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static bool validDate(
+        uint16_t year,
+        uint8_t month,
+        uint8_t day
+    );
+
+
+    static bool validTime(
+        uint8_t hour,
+        uint8_t minute,
+        uint8_t second
+    );
+
+
+    static bool leapYear(
+        uint16_t year
+    );
+
+
+    static uint8_t daysInMonth(
+        uint16_t year,
+        uint8_t month
+    );
+
+
+    //================================================
+    // FORMATTING
+    //================================================
+
+    static String dateString();
+
+    static String timeString();
+
+    static String dateTimeString();
+
+
+    static String dateString(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static String timeString(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static String dateTimeString(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    //================================================
+    // DAY INFORMATION
+    //================================================
+
+    static const char* dayName(
+        uint8_t dayOfWeek
+    );
+
+
+    static const char* monthName(
+        uint8_t month
+    );
+
+
+    //================================================
+    // ELAPSED TIME
+    //================================================
+
+    static uint32_t elapsedSeconds(
+        uint32_t startUnixTime
+    );
+
+
+    static uint32_t elapsedMinutes(
+        uint32_t startUnixTime
+    );
+
+
+    static uint32_t elapsedHours(
+        uint32_t startUnixTime
+    );
+
+
+    static uint32_t elapsedDays(
+        uint32_t startUnixTime
+    );
+
+
+    //================================================
+    // RTC STATE
+    //================================================
+
+    static bool lostPower();
+
+    static bool clearLostPowerState();
+
+    static uint32_t lastUpdateMilliseconds();
+
+
+    //================================================
+    // DEBUG
+    //================================================
+
+    static void printInfo();
+
+    static void printCurrentDateTime();
+
+
+private:
+
+    //================================================
+    // INTERNAL STATE
+    //================================================
+
+    static bool managerInitialized;
+
+    static bool deviceAvailable;
+
+    static bool dateTimeValid;
+
+    static bool deviceLostPower;
+
+
+    static RTCManagerStatus managerStatus;
+
+
+    static RTCDateTimeData cachedDateTime;
+
+
+    static uint32_t lastUpdateTime;
+
+
+    //================================================
+    // INTERNAL HELPERS
+    //================================================
+
+    static void clearDateTime(
+        RTCDateTimeData& dateTime
+    );
+
+
+    static bool readHardware(
+        RTCDateTimeData& dateTime
+    );
+
+
+    static bool writeHardware(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static void updateCachedDateTime(
+        const RTCDateTimeData& dateTime
+    );
+
+
+    static uint8_t calculateDayOfWeek(
+        uint16_t year,
+        uint8_t month,
+        uint8_t day
+    );
+
+
+    static bool safeFormat(
+        char* destination,
+        size_t destinationSize,
+        const char* format,
+        const RTCDateTimeData& dateTime
+    );
+};
+
+
+#endif
+#include "93_rtc_manager.h"
+
+#include <Wire.h>
+#include <RTClib.h>
+#include <stdio.h>
+#include <string.h>
+
+
+//====================================================
+// ESP32 GAME STATION
+// RTC MANAGER
+// 94_rtc_manager.cpp
+//====================================================
+
+
+//====================================================
+// RTC DEVICE SELECTION
+//====================================================
+//
+// Varsayılan cihaz: DS3231
+//
+// DS1307 kullanılıyorsa derleme ayarlarına şunu ekle:
+//
+// -DRTC_USE_DS1307
+//
+//====================================================
+
+#if defined(RTC_USE_DS1307)
+
+static RTC_DS1307 rtcDevice;
+
+#else
+
+static RTC_DS3231 rtcDevice;
+
+#endif
+
+
+//====================================================
+// STATIC VARIABLE DEFINITIONS
+//====================================================
+
+bool RTCManager::managerInitialized =
+    false;
+
+
+bool RTCManager::deviceAvailable =
+    false;
+
+
+bool RTCManager::dateTimeValid =
+    false;
+
+
+bool RTCManager::deviceLostPower =
+    false;
+
+
+RTCManagerStatus RTCManager::managerStatus =
+    RTC_STATUS_NOT_INITIALIZED;
+
+
+RTCDateTimeData RTCManager::cachedDateTime;
+
+
+uint32_t RTCManager::lastUpdateTime =
+    0;
+
+
+//====================================================
+// SYSTEM
+//====================================================
+
+bool RTCManager::begin()
+{
+    managerInitialized =
+        false;
+
+
+    deviceAvailable =
+        false;
+
+
+    dateTimeValid =
+        false;
+
+
+    deviceLostPower =
+        false;
+
+
+    managerStatus =
+        RTC_STATUS_NOT_INITIALIZED;
+
+
+    lastUpdateTime =
+        0;
+
+
+    clearDateTime(
+        cachedDateTime
+    );
+
+
+    Wire.begin();
+
+
+    if(!rtcDevice.begin())
+    {
+        managerStatus =
+            RTC_STATUS_DEVICE_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    deviceAvailable =
+        true;
+
+
+#if defined(RTC_USE_DS1307)
+
+    deviceLostPower =
+        !rtcDevice.isrunning();
+
+#else
+
+    deviceLostPower =
+        rtcDevice.lostPower();
+
+#endif
+
+
+    RTCDateTimeData initialDateTime;
+
+
+    clearDateTime(
+        initialDateTime
+    );
+
+
+    if(!readHardware(
+        initialDateTime
+    ))
+    {
+        managerStatus =
+            RTC_STATUS_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    updateCachedDateTime(
+        initialDateTime
+    );
+
+
+    dateTimeValid =
+        validDateTime(
+            cachedDateTime
+        );
+
+
+    if(!dateTimeValid)
+    {
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        managerInitialized =
+            true;
+
+
+        lastUpdateTime =
+            millis();
+
+
+        return false;
+    }
+
+
+    managerInitialized =
+        true;
+
+
+    lastUpdateTime =
+        millis();
+
+
+    if(deviceLostPower)
+    {
+        managerStatus =
+            RTC_STATUS_LOST_POWER;
+    }
+    else
+    {
+        managerStatus =
+            RTC_STATUS_READY;
+    }
+
+
+    return true;
+}
+
+
+
+void RTCManager::update()
+{
+    if(!managerInitialized ||
+       !deviceAvailable)
+    {
+        return;
+    }
+
+
+    uint32_t currentTime =
+        millis();
+
+
+    if(
+        currentTime -
+        lastUpdateTime <
+        RTC_UPDATE_INTERVAL
+    )
+    {
+        return;
+    }
+
+
+    lastUpdateTime =
+        currentTime;
+
+
+    RTCDateTimeData currentDateTime;
+
+
+    clearDateTime(
+        currentDateTime
+    );
+
+
+    if(!readHardware(
+        currentDateTime
+    ))
+    {
+        dateTimeValid =
+            false;
+
+
+        managerStatus =
+            RTC_STATUS_READ_ERROR;
+
+
+        return;
+    }
+
+
+    updateCachedDateTime(
+        currentDateTime
+    );
+
+
+    dateTimeValid =
+        validDateTime(
+            cachedDateTime
+        );
+
+
+    if(!dateTimeValid)
+    {
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        return;
+    }
+
+
+#if defined(RTC_USE_DS1307)
+
+    deviceLostPower =
+        !rtcDevice.isrunning();
+
+#else
+
+    deviceLostPower =
+        rtcDevice.lostPower();
+
+#endif
+
+
+    if(deviceLostPower)
+    {
+        managerStatus =
+            RTC_STATUS_LOST_POWER;
+    }
+    else
+    {
+        managerStatus =
+            RTC_STATUS_READY;
+    }
+}
+
+
+
+bool RTCManager::initialized()
+{
+    return managerInitialized;
+}
+
+
+
+bool RTCManager::available()
+{
+    return
+        managerInitialized &&
+        deviceAvailable;
+}
+
+
+
+bool RTCManager::valid()
+{
+    return
+        managerInitialized &&
+        deviceAvailable &&
+        dateTimeValid;
+}
+
+
+
+RTCManagerStatus RTCManager::status()
+{
+    return managerStatus;
+}
+
+
+//====================================================
+// DATE AND TIME ACCESS
+//====================================================
+
+RTCDateTimeData RTCManager::now()
+{
+    RTCDateTimeData dateTime;
+
+
+    clearDateTime(
+        dateTime
+    );
+
+
+    if(!read(
+        dateTime
+    ))
+    {
+        return dateTime;
+    }
+
+
+    return dateTime;
+}
+
+
+
+bool RTCManager::read(
+    RTCDateTimeData& dateTime
+)
+{
+    clearDateTime(
+        dateTime
+    );
+
+
+    if(!managerInitialized ||
+       !deviceAvailable)
+    {
+        return false;
+    }
+
+
+    RTCDateTimeData currentDateTime;
+
+
+    clearDateTime(
+        currentDateTime
+    );
+
+
+    if(!readHardware(
+        currentDateTime
+    ))
+    {
+        dateTimeValid =
+            false;
+
+
+        managerStatus =
+            RTC_STATUS_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!validDateTime(
+        currentDateTime
+    ))
+    {
+        dateTimeValid =
+            false;
+
+
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        return false;
+    }
+
+
+    updateCachedDateTime(
+        currentDateTime
+    );
+
+
+    dateTime =
+        cachedDateTime;
+
+
+    dateTimeValid =
+        true;
+
+
+    if(deviceLostPower)
+    {
+        managerStatus =
+            RTC_STATUS_LOST_POWER;
+    }
+    else
+    {
+        managerStatus =
+            RTC_STATUS_READY;
+    }
+
+
+    return true;
+}
+
+
+
+uint16_t RTCManager::year()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.year;
+}
+
+
+
+uint8_t RTCManager::month()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.month;
+}
+
+
+
+uint8_t RTCManager::day()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.day;
+}
+
+
+
+uint8_t RTCManager::hour()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.hour;
+}
+
+
+
+uint8_t RTCManager::minute()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.minute;
+}
+
+
+
+uint8_t RTCManager::second()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.second;
+}
+
+
+
+uint8_t RTCManager::dayOfWeek()
+{
+    if(!valid())
+    {
+        return 0;
+    }
+
+
+    return cachedDateTime.dayOfWeek;
+}
+
+
+
+uint32_t RTCManager::unixTime()
+{
+    if(!valid())
+    {
+        return RTC_INVALID_UNIX_TIME;
+    }
+
+
+    return cachedDateTime.unixTime;
+}
+//====================================================
+// DATE AND TIME SETTING
+//====================================================
+
+bool RTCManager::set(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!managerInitialized ||
+       !deviceAvailable)
+    {
+        return false;
+    }
+
+
+    if(!validDateTime(
+        dateTime
+    ))
+    {
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        return false;
+    }
+
+
+    if(!writeHardware(
+        dateTime
+    ))
+    {
+        managerStatus =
+            RTC_STATUS_WRITE_ERROR;
+
+
+        return false;
+    }
+
+
+    RTCDateTimeData confirmedDateTime;
+
+
+    clearDateTime(
+        confirmedDateTime
+    );
+
+
+    if(!readHardware(
+        confirmedDateTime
+    ))
+    {
+        dateTimeValid =
+            false;
+
+
+        managerStatus =
+            RTC_STATUS_READ_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!validDateTime(
+        confirmedDateTime
+    ))
+    {
+        dateTimeValid =
+            false;
+
+
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        return false;
+    }
+
+
+    updateCachedDateTime(
+        confirmedDateTime
+    );
+
+
+    dateTimeValid =
+        true;
+
+
+    deviceLostPower =
+        false;
+
+
+    managerStatus =
+        RTC_STATUS_READY;
+
+
+    lastUpdateTime =
+        millis();
+
+
+    return true;
+}
+
+
+
+bool RTCManager::set(
+    uint16_t yearValue,
+    uint8_t monthValue,
+    uint8_t dayValue,
+    uint8_t hourValue,
+    uint8_t minuteValue,
+    uint8_t secondValue
+)
+{
+    RTCDateTimeData dateTime;
+
+
+    clearDateTime(
+        dateTime
+    );
+
+
+    dateTime.year =
+        yearValue;
+
+
+    dateTime.month =
+        monthValue;
+
+
+    dateTime.day =
+        dayValue;
+
+
+    dateTime.hour =
+        hourValue;
+
+
+    dateTime.minute =
+        minuteValue;
+
+
+    dateTime.second =
+        secondValue;
+
+
+    dateTime.dayOfWeek =
+        calculateDayOfWeek(
+            yearValue,
+            monthValue,
+            dayValue
+        );
+
+
+    dateTime.valid =
+        true;
+
+
+    return set(
+        dateTime
+    );
+}
+
+
+
+bool RTCManager::setUnixTime(
+    uint32_t unixTimeValue
+)
+{
+    if(unixTimeValue ==
+       RTC_INVALID_UNIX_TIME)
+    {
+        managerStatus =
+            RTC_STATUS_INVALID_DATE_TIME;
+
+
+        return false;
+    }
+
+
+    DateTime dateTime(
+        unixTimeValue
+    );
+
+
+    return set(
+        dateTime.year(),
+        dateTime.month(),
+        dateTime.day(),
+        dateTime.hour(),
+        dateTime.minute(),
+        dateTime.second()
+    );
+}
+
+
+
+bool RTCManager::setCompileTime()
+{
+    if(!managerInitialized ||
+       !deviceAvailable)
+    {
+        return false;
+    }
+
+
+    DateTime compileDateTime(
+        F(__DATE__),
+        F(__TIME__)
+    );
+
+
+    return set(
+        compileDateTime.year(),
+        compileDateTime.month(),
+        compileDateTime.day(),
+        compileDateTime.hour(),
+        compileDateTime.minute(),
+        compileDateTime.second()
+    );
+}
+
+
+//====================================================
+// DATE VALIDATION
+//====================================================
+
+bool RTCManager::validDateTime(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!dateTime.valid)
+    {
+        return false;
+    }
+
+
+    if(!validDate(
+        dateTime.year,
+        dateTime.month,
+        dateTime.day
+    ))
+    {
+        return false;
+    }
+
+
+    if(!validTime(
+        dateTime.hour,
+        dateTime.minute,
+        dateTime.second
+    ))
+    {
+        return false;
+    }
+
+
+    if(dateTime.dayOfWeek > 6)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool RTCManager::validDate(
+    uint16_t yearValue,
+    uint8_t monthValue,
+    uint8_t dayValue
+)
+{
+    if(yearValue <
+           RTC_MINIMUM_VALID_YEAR ||
+       yearValue >
+           RTC_MAXIMUM_VALID_YEAR)
+    {
+        return false;
+    }
+
+
+    if(monthValue < 1 ||
+       monthValue > 12)
+    {
+        return false;
+    }
+
+
+    uint8_t maximumDay =
+        daysInMonth(
+            yearValue,
+            monthValue
+        );
+
+
+    if(maximumDay == 0)
+    {
+        return false;
+    }
+
+
+    if(dayValue < 1 ||
+       dayValue > maximumDay)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool RTCManager::validTime(
+    uint8_t hourValue,
+    uint8_t minuteValue,
+    uint8_t secondValue
+)
+{
+    if(hourValue > 23)
+    {
+        return false;
+    }
+
+
+    if(minuteValue > 59)
+    {
+        return false;
+    }
+
+
+    if(secondValue > 59)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool RTCManager::leapYear(
+    uint16_t yearValue
+)
+{
+    if(yearValue % 400 == 0)
+    {
+        return true;
+    }
+
+
+    if(yearValue % 100 == 0)
+    {
+        return false;
+    }
+
+
+    return
+        yearValue % 4 == 0;
+}
+
+
+
+uint8_t RTCManager::daysInMonth(
+    uint16_t yearValue,
+    uint8_t monthValue
+)
+{
+    static const uint8_t monthDays[12] =
+    {
+        31,
+        28,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31
+    };
+
+
+    if(monthValue < 1 ||
+       monthValue > 12)
+    {
+        return 0;
+    }
+
+
+    if(monthValue == 2 &&
+       leapYear(
+           yearValue
+       ))
+    {
+        return 29;
+    }
+
+
+    return monthDays[
+        monthValue - 1
+    ];
+}
+
+
+//====================================================
+// FORMATTING
+//====================================================
+
+String RTCManager::dateString()
+{
+    if(!valid())
+    {
+        return String();
+    }
+
+
+    return dateString(
+        cachedDateTime
+    );
+}
+
+
+
+String RTCManager::timeString()
+{
+    if(!valid())
+    {
+        return String();
+    }
+
+
+    return timeString(
+        cachedDateTime
+    );
+}
+
+
+
+String RTCManager::dateTimeString()
+{
+    if(!valid())
+    {
+        return String();
+    }
+
+
+    return dateTimeString(
+        cachedDateTime
+    );
+}
+
+
+
+String RTCManager::dateString(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!validDateTime(
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    char buffer[16];
+
+
+    if(!safeFormat(
+        buffer,
+        sizeof(buffer),
+        "%04u-%02u-%02u",
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    return String(
+        buffer
+    );
+}
+
+
+
+String RTCManager::timeString(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!validDateTime(
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    char buffer[16];
+
+
+    if(!safeFormat(
+        buffer,
+        sizeof(buffer),
+        "%02u:%02u:%02u",
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    return String(
+        buffer
+    );
+}
+
+
+
+String RTCManager::dateTimeString(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!validDateTime(
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    char buffer[32];
+
+
+    if(!safeFormat(
+        buffer,
+        sizeof(buffer),
+        "%04u-%02u-%02u %02u:%02u:%02u",
+        dateTime
+    ))
+    {
+        return String();
+    }
+
+
+    return String(
+        buffer
+    );
+}
+
+
+//====================================================
+// DAY INFORMATION
+//====================================================
+
+const char* RTCManager::dayName(
+    uint8_t dayOfWeekValue
+)
+{
+    static const char* dayNames[7] =
+    {
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday"
+    };
+
+
+    if(dayOfWeekValue > 6)
+    {
+        return "Unknown";
+    }
+
+
+    return dayNames[
+        dayOfWeekValue
+    ];
+}
+
+
+
+const char* RTCManager::monthName(
+    uint8_t monthValue
+)
+{
+    static const char* monthNames[12] =
+    {
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December"
+    };
+
+
+    if(monthValue < 1 ||
+       monthValue > 12)
+    {
+        return "Unknown";
+    }
+
+
+    return monthNames[
+        monthValue - 1
+    ];
+}
+//====================================================
+// ELAPSED TIME
+//====================================================
+
+uint32_t RTCManager::elapsedSeconds(
+    uint32_t startUnixTime
+)
+{
+    uint32_t currentUnixTime =
+        unixTime();
+
+
+    if(currentUnixTime ==
+           RTC_INVALID_UNIX_TIME ||
+       startUnixTime ==
+           RTC_INVALID_UNIX_TIME)
+    {
+        return 0;
+    }
+
+
+    if(currentUnixTime <
+       startUnixTime)
+    {
+        return 0;
+    }
+
+
+    return
+        currentUnixTime -
+        startUnixTime;
+}
+
+
+
+uint32_t RTCManager::elapsedMinutes(
+    uint32_t startUnixTime
+)
+{
+    return
+        elapsedSeconds(
+            startUnixTime
+        ) /
+        60UL;
+}
+
+
+
+uint32_t RTCManager::elapsedHours(
+    uint32_t startUnixTime
+)
+{
+    return
+        elapsedSeconds(
+            startUnixTime
+        ) /
+        3600UL;
+}
+
+
+
+uint32_t RTCManager::elapsedDays(
+    uint32_t startUnixTime
+)
+{
+    return
+        elapsedSeconds(
+            startUnixTime
+        ) /
+        86400UL;
+}
+
+
+//====================================================
+// RTC STATE
+//====================================================
+
+bool RTCManager::lostPower()
+{
+    return
+        managerInitialized &&
+        deviceAvailable &&
+        deviceLostPower;
+}
+
+
+
+bool RTCManager::clearLostPowerState()
+{
+    if(!managerInitialized ||
+       !deviceAvailable ||
+       !dateTimeValid)
+    {
+        return false;
+    }
+
+
+    DateTime currentDateTime(
+        cachedDateTime.year,
+        cachedDateTime.month,
+        cachedDateTime.day,
+        cachedDateTime.hour,
+        cachedDateTime.minute,
+        cachedDateTime.second
+    );
+
+
+    rtcDevice.adjust(
+        currentDateTime
+    );
+
+
+#if defined(RTC_USE_DS1307)
+
+    deviceLostPower =
+        !rtcDevice.isrunning();
+
+#else
+
+    deviceLostPower =
+        rtcDevice.lostPower();
+
+#endif
+
+
+    if(deviceLostPower)
+    {
+        managerStatus =
+            RTC_STATUS_LOST_POWER;
+
+
+        return false;
+    }
+
+
+    managerStatus =
+        RTC_STATUS_READY;
+
+
+    lastUpdateTime =
+        millis();
+
+
+    return true;
+}
+
+
+
+uint32_t RTCManager::lastUpdateMilliseconds()
+{
+    return lastUpdateTime;
+}
+
+
+//====================================================
+// DEBUG
+//====================================================
+
+void RTCManager::printInfo()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "RTC MANAGER"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Initialized: "
+    );
+
+
+    Serial.println(
+        managerInitialized ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Device Available: "
+    );
+
+
+    Serial.println(
+        deviceAvailable ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Date Time Valid: "
+    );
+
+
+    Serial.println(
+        dateTimeValid ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Lost Power: "
+    );
+
+
+    Serial.println(
+        deviceLostPower ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    switch(managerStatus)
+    {
+        case RTC_STATUS_NOT_INITIALIZED:
+
+            Serial.println(
+                "NOT INITIALIZED"
+            );
+
+            break;
+
+
+        case RTC_STATUS_READY:
+
+            Serial.println(
+                "READY"
+            );
+
+            break;
+
+
+        case RTC_STATUS_DEVICE_NOT_FOUND:
+
+            Serial.println(
+                "DEVICE NOT FOUND"
+            );
+
+            break;
+
+
+        case RTC_STATUS_LOST_POWER:
+
+            Serial.println(
+                "LOST POWER"
+            );
+
+            break;
+
+
+        case RTC_STATUS_INVALID_DATE_TIME:
+
+            Serial.println(
+                "INVALID DATE TIME"
+            );
+
+            break;
+
+
+        case RTC_STATUS_READ_ERROR:
+
+            Serial.println(
+                "READ ERROR"
+            );
+
+            break;
+
+
+        case RTC_STATUS_WRITE_ERROR:
+
+            Serial.println(
+                "WRITE ERROR"
+            );
+
+            break;
+
+
+        default:
+
+            Serial.println(
+                "UNKNOWN"
+            );
+
+            break;
+    }
+
+
+    Serial.print(
+        "Last Update Milliseconds: "
+    );
+
+
+    Serial.println(
+        lastUpdateTime
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void RTCManager::printCurrentDateTime()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "CURRENT RTC DATE TIME"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(!valid())
+    {
+        Serial.println(
+            "DATE TIME UNAVAILABLE"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    Serial.print(
+        "Date: "
+    );
+
+
+    Serial.println(
+        dateString()
+    );
+
+
+    Serial.print(
+        "Time: "
+    );
+
+
+    Serial.println(
+        timeString()
+    );
+
+
+    Serial.print(
+        "Date Time: "
+    );
+
+
+    Serial.println(
+        dateTimeString()
+    );
+
+
+    Serial.print(
+        "Day: "
+    );
+
+
+    Serial.println(
+        dayName(
+            cachedDateTime.dayOfWeek
+        )
+    );
+
+
+    Serial.print(
+        "Month: "
+    );
+
+
+    Serial.println(
+        monthName(
+            cachedDateTime.month
+        )
+    );
+
+
+    Serial.print(
+        "Unix Time: "
+    );
+
+
+    Serial.println(
+        cachedDateTime.unixTime
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+//====================================================
+// INTERNAL HELPERS
+//====================================================
+
+void RTCManager::clearDateTime(
+    RTCDateTimeData& dateTime
+)
+{
+    memset(
+        &dateTime,
+        0,
+        sizeof(RTCDateTimeData)
+    );
+
+
+    dateTime.year =
+        0;
+
+
+    dateTime.month =
+        0;
+
+
+    dateTime.day =
+        0;
+
+
+    dateTime.hour =
+        0;
+
+
+    dateTime.minute =
+        0;
+
+
+    dateTime.second =
+        0;
+
+
+    dateTime.dayOfWeek =
+        0;
+
+
+    dateTime.unixTime =
+        RTC_INVALID_UNIX_TIME;
+
+
+    dateTime.valid =
+        false;
+}
+
+
+
+bool RTCManager::readHardware(
+    RTCDateTimeData& dateTime
+)
+{
+    clearDateTime(
+        dateTime
+    );
+
+
+    if(!deviceAvailable)
+    {
+        return false;
+    }
+
+
+    DateTime hardwareDateTime =
+        rtcDevice.now();
+
+
+    dateTime.year =
+        hardwareDateTime.year();
+
+
+    dateTime.month =
+        hardwareDateTime.month();
+
+
+    dateTime.day =
+        hardwareDateTime.day();
+
+
+    dateTime.hour =
+        hardwareDateTime.hour();
+
+
+    dateTime.minute =
+        hardwareDateTime.minute();
+
+
+    dateTime.second =
+        hardwareDateTime.second();
+
+
+    dateTime.dayOfWeek =
+        hardwareDateTime.dayOfTheWeek();
+
+
+    dateTime.unixTime =
+        hardwareDateTime.unixtime();
+
+
+    dateTime.valid =
+        true;
+
+
+    return true;
+}
+
+
+
+bool RTCManager::writeHardware(
+    const RTCDateTimeData& dateTime
+)
+{
+    if(!deviceAvailable)
+    {
+        return false;
+    }
+
+
+    if(!validDateTime(
+        dateTime
+    ))
+    {
+        return false;
+    }
+
+
+    DateTime hardwareDateTime(
+        dateTime.year,
+        dateTime.month,
+        dateTime.day,
+        dateTime.hour,
+        dateTime.minute,
+        dateTime.second
+    );
+
+
+    rtcDevice.adjust(
+        hardwareDateTime
+    );
+
+
+    return true;
+}
+
+
+
+void RTCManager::updateCachedDateTime(
+    const RTCDateTimeData& dateTime
+)
+{
+    cachedDateTime =
+        dateTime;
+
+
+    cachedDateTime.dayOfWeek =
+        calculateDayOfWeek(
+            cachedDateTime.year,
+            cachedDateTime.month,
+            cachedDateTime.day
+        );
+
+
+    cachedDateTime.valid =
+        validDate(
+            cachedDateTime.year,
+            cachedDateTime.month,
+            cachedDateTime.day
+        ) &&
+        validTime(
+            cachedDateTime.hour,
+            cachedDateTime.minute,
+            cachedDateTime.second
+        ) &&
+        cachedDateTime.unixTime !=
+            RTC_INVALID_UNIX_TIME;
+}
+
+
+
+uint8_t RTCManager::calculateDayOfWeek(
+    uint16_t yearValue,
+    uint8_t monthValue,
+    uint8_t dayValue
+)
+{
+    if(!validDate(
+        yearValue,
+        monthValue,
+        dayValue
+    ))
+    {
+        return 0;
+    }
+
+
+    static const uint8_t monthOffsets[12] =
+    {
+        0,
+        3,
+        2,
+        5,
+        0,
+        3,
+        5,
+        1,
+        4,
+        6,
+        2,
+        4
+    };
+
+
+    uint16_t adjustedYear =
+        yearValue;
+
+
+    if(monthValue < 3)
+    {
+        adjustedYear--;
+    }
+
+
+    uint32_t dayOfWeekValue =
+        (
+            adjustedYear +
+            adjustedYear / 4UL -
+            adjustedYear / 100UL +
+            adjustedYear / 400UL +
+            monthOffsets[
+                monthValue - 1
+            ] +
+            dayValue
+        ) %
+        7UL;
+
+
+    return
+        (uint8_t)dayOfWeekValue;
+}
+
+
+
+bool RTCManager::safeFormat(
+    char* destination,
+    size_t destinationSize,
+    const char* format,
+    const RTCDateTimeData& dateTime
+)
+{
+    if(destination == nullptr ||
+       destinationSize == 0 ||
+       format == nullptr)
+    {
+        return false;
+    }
+
+
+    destination[0] =
+        '\0';
+
+
+    int result =
+        snprintf(
+            destination,
+            destinationSize,
+            format,
+            (unsigned int)dateTime.year,
+            (unsigned int)dateTime.month,
+            (unsigned int)dateTime.day,
+            (unsigned int)dateTime.hour,
+            (unsigned int)dateTime.minute,
+            (unsigned int)dateTime.second
+        );
+
+
+    if(result < 0)
+    {
+        destination[0] =
+            '\0';
+
+
+        return false;
+    }
+
+
+    if((size_t)result >=
+       destinationSize)
+    {
+        destination[
+            destinationSize - 1
+        ] = '\0';
+
+
+        return false;
+    }
+
+
+    return true;
+}

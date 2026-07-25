@@ -25279,5 +25279,5683 @@ void printSelectedProfileInformation();
 
 
 #endif
+#include "96_profile_selector.h"
+
+#include <string.h>
+
+
+//==================================================
+// ESP32 GAME STATION
+// PROFILE SELECTOR MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Entries ----------------
+
+static ProfileSelectorEntry selectorEntries[
+    PROFILE_STORAGE_MAX_PROFILES
+];
+
+
+//---------------- Internal Selection ----------------
+
+static uint8_t selectorEntryCount =
+    0;
+
+
+static uint8_t selectedProfileIndex =
+    PROFILE_SELECTOR_INVALID_INDEX;
+
+
+//---------------- Internal State ----------------
+
+static bool profileSelectorReady =
+    false;
+
+
+static ProfileSelectorStatus profileSelectorStatus =
+    PROFILE_SELECTOR_NOT_INITIALIZED;
+
+
+static uint32_t lastSelectorRefreshTime =
+    0;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearSelectorEntry(
+    ProfileSelectorEntry& entry
+)
+{
+    memset(
+        &entry,
+        0,
+        sizeof(ProfileSelectorEntry)
+    );
+
+
+    entry.profileID =
+        PROFILE_INVALID_ID;
+
+
+    entry.playerName[0] =
+        '\0';
+
+
+    entry.selected =
+        false;
+
+
+    entry.valid =
+        false;
+}
+
+
+
+static void clearSelectorEntries()
+{
+    selectorEntryCount =
+        0;
+
+
+    selectedProfileIndex =
+        PROFILE_SELECTOR_INVALID_INDEX;
+
+
+    for(uint8_t i = 0;
+        i < PROFILE_STORAGE_MAX_PROFILES;
+        i++)
+    {
+        clearSelectorEntry(
+            selectorEntries[i]
+        );
+    }
+}
+
+
+
+static void updateSelectedFlags()
+{
+    for(uint8_t i = 0;
+        i < selectorEntryCount;
+        i++)
+    {
+        selectorEntries[i].selected =
+            i == selectedProfileIndex;
+    }
+}
+
+
+
+static void copyIndexEntryToSelector(
+    ProfileSelectorEntry& destination,
+    const ProfileIndexEntry& source
+)
+{
+    clearSelectorEntry(
+        destination
+    );
+
+
+    destination.profileID =
+        source.profileID;
+
+
+    strncpy(
+        destination.playerName,
+        source.playerName,
+        PROFILE_SELECTOR_NAME_LENGTH - 1
+    );
+
+
+    destination.playerName[
+        PROFILE_SELECTOR_NAME_LENGTH - 1
+    ] = '\0';
+
+
+    destination.createdUnix =
+        source.createdUnix;
+
+
+    destination.lastLoginUnix =
+        source.lastLoginUnix;
+
+
+    destination.lastSavedUnix =
+        source.lastSavedUnix;
+
+
+    destination.totalPlaytimeMilliseconds =
+        source.totalPlaytimeMilliseconds;
+
+
+    destination.loginCount =
+        source.loginCount;
+
+
+    destination.selected =
+        false;
+
+
+    destination.valid =
+        source.valid;
+}
+
+
+
+static bool isValidSelectorIndex(
+    uint8_t index
+)
+{
+    if(index >= selectorEntryCount)
+    {
+        return false;
+    }
+
+
+    if(!selectorEntries[index].valid)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+static void preserveSelectionAfterRefresh(
+    uint16_t previousProfileID
+)
+{
+    selectedProfileIndex =
+        PROFILE_SELECTOR_INVALID_INDEX;
+
+
+    if(previousProfileID ==
+       PROFILE_INVALID_ID)
+    {
+        updateSelectedFlags();
+
+        return;
+    }
+
+
+    int8_t index =
+        findProfileSelectorIndexByID(
+            previousProfileID
+        );
+
+
+    if(index >= 0)
+    {
+        selectedProfileIndex =
+            (uint8_t)index;
+    }
+
+
+    updateSelectedFlags();
+}
+
+
+
+//---------------- Initialization ----------------
+
+bool initProfileSelector()
+{
+    clearSelectorEntries();
+
+
+    profileSelectorReady =
+        false;
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_NOT_INITIALIZED;
+
+
+    lastSelectorRefreshTime =
+        millis();
+
+
+    if(!isProfileStorageReady())
+    {
+        if(!initProfileStorage())
+        {
+            profileSelectorStatus =
+                PROFILE_SELECTOR_STORAGE_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    profileSelectorReady =
+        true;
+
+
+    if(selectorEntryCount == 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NO_PROFILES;
+    }
+    else
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_READY;
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Selector Update ----------------
+
+void updateProfileSelector()
+{
+    if(!profileSelectorReady)
+    {
+        return;
+    }
+
+
+    uint32_t currentTime =
+        millis();
+
+
+    if(currentTime -
+       lastSelectorRefreshTime <
+       PROFILE_SELECTOR_REFRESH_INTERVAL)
+    {
+        return;
+    }
+
+
+    lastSelectorRefreshTime =
+        currentTime;
+
+
+    uint8_t storedProfileCount =
+        getStoredProfileCount();
+
+
+    if(storedProfileCount !=
+       selectorEntryCount)
+    {
+        refreshProfileSelector();
+    }
+}
+
+
+
+bool refreshProfileSelector()
+{
+    uint16_t previousProfileID =
+        getSelectedProfileID();
+
+
+    clearSelectorEntries();
+
+
+    if(!isProfileStorageReady())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_STORAGE_ERROR;
+
+
+        return false;
+    }
+
+
+    uint8_t storedProfileCount =
+        getStoredProfileCount();
+
+
+    if(storedProfileCount >
+       PROFILE_STORAGE_MAX_PROFILES)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_STORAGE_ERROR;
+
+
+        return false;
+    }
+
+
+    for(uint8_t i = 0;
+        i < storedProfileCount;
+        i++)
+    {
+        const ProfileIndexEntry* indexEntry =
+            getProfileIndexEntry(
+                i
+            );
+
+
+        if(indexEntry == nullptr)
+        {
+            continue;
+        }
+
+
+        if(!indexEntry->valid)
+        {
+            continue;
+        }
+
+
+        if(selectorEntryCount >=
+           PROFILE_STORAGE_MAX_PROFILES)
+        {
+            break;
+        }
+
+
+        copyIndexEntryToSelector(
+            selectorEntries[
+                selectorEntryCount
+            ],
+            *indexEntry
+        );
+
+
+        selectorEntryCount++;
+    }
+
+
+    preserveSelectionAfterRefresh(
+        previousProfileID
+    );
+
+
+    if(selectedProfileIndex ==
+       PROFILE_SELECTOR_INVALID_INDEX &&
+       selectorEntryCount > 0)
+    {
+        selectedProfileIndex =
+            0;
+
+
+        updateSelectedFlags();
+    }
+
+
+    profileSelectorReady =
+        true;
+
+
+    if(selectorEntryCount == 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NO_PROFILES;
+    }
+    else
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_READY;
+    }
+
+
+    lastSelectorRefreshTime =
+        millis();
+
+
+    return true;
+}
+
+
+
+//---------------- Selector State ----------------
+
+bool isProfileSelectorReady()
+{
+    return profileSelectorReady;
+}
+
+
+
+ProfileSelectorStatus getProfileSelectorStatus()
+{
+    return profileSelectorStatus;
+}
+
+
+
+//---------------- Entry Information ----------------
+
+uint8_t getProfileSelectorCount()
+{
+    return selectorEntryCount;
+}
+
+
+
+const ProfileSelectorEntry* getProfileSelectorEntry(
+    uint8_t index
+)
+{
+    if(!isValidSelectorIndex(
+        index
+    ))
+    {
+        return nullptr;
+    }
+
+
+    return &selectorEntries[index];
+}
+
+
+
+const ProfileSelectorEntry* getSelectedProfileEntry()
+{
+    if(!hasSelectedProfile())
+    {
+        return nullptr;
+    }
+
+
+    return &selectorEntries[
+        selectedProfileIndex
+    ];
+}
+
+
+
+//---------------- Selection ----------------
+
+bool selectProfileByIndex(
+    uint8_t index
+)
+{
+    if(!profileSelectorReady)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NOT_INITIALIZED;
+
+
+        return false;
+    }
+
+
+    if(!isValidSelectorIndex(
+        index
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_INDEX;
+
+
+        return false;
+    }
+
+
+    selectedProfileIndex =
+        index;
+
+
+    updateSelectedFlags();
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_READY;
+
+
+    return true;
+}
+
+
+
+bool selectProfileByID(
+    uint16_t profileID
+)
+{
+    int8_t index =
+        findProfileSelectorIndexByID(
+            profileID
+        );
+
+
+    if(index < 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    return selectProfileByIndex(
+        (uint8_t)index
+    );
+}
+
+
+
+bool selectNextProfile()
+{
+    if(selectorEntryCount == 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NO_PROFILES;
+
+
+        return false;
+    }
+
+
+    if(selectedProfileIndex ==
+       PROFILE_SELECTOR_INVALID_INDEX)
+    {
+        return selectProfileByIndex(
+            0
+        );
+    }
+
+
+    uint8_t nextIndex =
+        selectedProfileIndex + 1;
+
+
+    if(nextIndex >=
+       selectorEntryCount)
+    {
+        nextIndex =
+            0;
+    }
+
+
+    return selectProfileByIndex(
+        nextIndex
+    );
+}
+
+
+
+bool selectPreviousProfile()
+{
+    if(selectorEntryCount == 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NO_PROFILES;
+
+
+        return false;
+    }
+
+
+    if(selectedProfileIndex ==
+       PROFILE_SELECTOR_INVALID_INDEX)
+    {
+        return selectProfileByIndex(
+            selectorEntryCount - 1
+        );
+    }
+
+
+    uint8_t previousIndex;
+
+
+    if(selectedProfileIndex == 0)
+    {
+        previousIndex =
+            selectorEntryCount - 1;
+    }
+    else
+    {
+        previousIndex =
+            selectedProfileIndex - 1;
+    }
+
+
+    return selectProfileByIndex(
+        previousIndex
+    );
+}
+
+
+
+bool clearProfileSelection()
+{
+    selectedProfileIndex =
+        PROFILE_SELECTOR_INVALID_INDEX;
+
+
+    updateSelectedFlags();
+
+
+    if(selectorEntryCount == 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_NO_PROFILES;
+    }
+    else
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_READY;
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Selected Profile ----------------
+
+bool hasSelectedProfile()
+{
+    return isValidSelectorIndex(
+        selectedProfileIndex
+    );
+}
+
+
+
+uint8_t getSelectedProfileIndex()
+{
+    return selectedProfileIndex;
+}
+
+
+
+uint16_t getSelectedProfileID()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return PROFILE_INVALID_ID;
+    }
+
+
+    return entry->profileID;
+}
+
+
+
+const char* getSelectedProfileName()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return "";
+    }
+
+
+    return entry->playerName;
+}
+
+
+
+//---------------- Profile Activation ----------------
+
+bool activateSelectedProfile()
+{
+    if(!hasSelectedProfile())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    uint16_t profileID =
+        getSelectedProfileID();
+
+
+    if(!loadPlayerProfile(
+        profileID
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_LOAD_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!isPlayerProfileActive())
+    {
+        if(!activatePlayerProfile())
+        {
+            profileSelectorStatus =
+                PROFILE_SELECTOR_LOAD_ERROR;
+
+
+            return false;
+        }
+    }
+
+
+    if(!saveActiveProfile())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_STORAGE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    selectProfileByID(
+        profileID
+    );
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_READY;
+
+
+    return true;
+}
+
+
+
+bool activateProfileByIndex(
+    uint8_t index
+)
+{
+    if(!selectProfileByIndex(
+        index
+    ))
+    {
+        return false;
+    }
+
+
+    return activateSelectedProfile();
+}
+
+
+
+bool activateProfileByID(
+    uint16_t profileID
+)
+{
+    if(!selectProfileByID(
+        profileID
+    ))
+    {
+        return false;
+    }
+
+
+    return activateSelectedProfile();
+}
+
+
+
+//---------------- Profile Creation ----------------
+
+bool createAndSelectProfile(
+    uint16_t profileID,
+    const char* playerName
+)
+{
+    if(!createStoredProfile(
+        profileID,
+        playerName
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_CREATE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    if(!selectProfileByID(
+        profileID
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_CREATE_ERROR;
+
+
+        return false;
+    }
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_READY;
+
+
+    return true;
+}
+
+
+
+bool createAndActivateProfile(
+    uint16_t profileID,
+    const char* playerName
+)
+{
+    if(!createAndSelectProfile(
+        profileID,
+        playerName
+    ))
+    {
+        return false;
+    }
+
+
+    return activateSelectedProfile();
+}
+
+
+
+//---------------- Profile Deletion ----------------
+
+bool deleteSelectedProfile()
+{
+    if(!hasSelectedProfile())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    return deleteProfileByID(
+        getSelectedProfileID()
+    );
+}
+
+
+
+bool deleteProfileByIndex(
+    uint8_t index
+)
+{
+    if(!isValidSelectorIndex(
+        index
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_INDEX;
+
+
+        return false;
+    }
+
+
+    return deleteProfileByID(
+        selectorEntries[index].profileID
+    );
+}
+
+
+
+bool deleteProfileByID(
+    uint16_t profileID
+)
+{
+    int8_t index =
+        findProfileSelectorIndexByID(
+            profileID
+        );
+
+
+    if(index < 0)
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    if(!deleteStoredProfile(
+        profileID
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_DELETE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    if(selectorEntryCount > 0)
+    {
+        uint8_t nextIndex =
+            (uint8_t)index;
+
+
+        if(nextIndex >=
+           selectorEntryCount)
+        {
+            nextIndex =
+                selectorEntryCount - 1;
+        }
+
+
+        selectProfileByIndex(
+            nextIndex
+        );
+    }
+    else
+    {
+        clearProfileSelection();
+    }
+
+
+    profileSelectorStatus =
+        selectorEntryCount > 0 ?
+        PROFILE_SELECTOR_READY :
+        PROFILE_SELECTOR_NO_PROFILES;
+
+
+    return true;
+}
+
+
+
+//---------------- Profile Detection ----------------
+
+bool profileSelectorContainsID(
+    uint16_t profileID
+)
+{
+    return
+        findProfileSelectorIndexByID(
+            profileID
+        ) >= 0;
+}
+
+
+
+bool profileSelectorContainsName(
+    const char* playerName
+)
+{
+    return
+        findProfileSelectorIndexByName(
+            playerName
+        ) >= 0;
+}
+
+
+
+//---------------- Profile Search ----------------
+
+int8_t findProfileSelectorIndexByID(
+    uint16_t profileID
+)
+{
+    if(profileID ==
+       PROFILE_INVALID_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < selectorEntryCount;
+        i++)
+    {
+        if(selectorEntries[i].valid &&
+           selectorEntries[i].profileID == profileID)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+int8_t findProfileSelectorIndexByName(
+    const char* playerName
+)
+{
+    if(playerName == nullptr)
+    {
+        return -1;
+    }
+
+
+    if(playerName[0] ==
+       '\0')
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < selectorEntryCount;
+        i++)
+    {
+        if(!selectorEntries[i].valid)
+        {
+            continue;
+        }
+
+
+        if(strcmp(
+            selectorEntries[i].playerName,
+            playerName
+        ) == 0)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+//---------------- Active Profile Synchronization ----------------
+
+bool synchronizeSelectedProfile()
+{
+    if(!isPlayerProfileInitialized())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    uint16_t activeProfileID =
+        getPlayerProfileID();
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    if(!selectProfileByID(
+        activeProfileID
+    ))
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_READY;
+
+
+    return true;
+}
+
+
+
+bool selectActiveProfile()
+{
+    if(!isPlayerProfileInitialized())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    return selectProfileByID(
+        getPlayerProfileID()
+    );
+}
+
+
+
+bool saveAndRefreshActiveProfile()
+{
+    if(!isPlayerProfileInitialized())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_INVALID_PROFILE;
+
+
+        return false;
+    }
+
+
+    uint16_t profileID =
+        getPlayerProfileID();
+
+
+    if(!saveActiveProfile())
+    {
+        profileSelectorStatus =
+            PROFILE_SELECTOR_STORAGE_ERROR;
+
+
+        return false;
+    }
+
+
+    if(!refreshProfileSelector())
+    {
+        return false;
+    }
+
+
+    selectProfileByID(
+        profileID
+    );
+
+
+    profileSelectorStatus =
+        PROFILE_SELECTOR_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Navigation Information ----------------
+
+bool canSelectNextProfile()
+{
+    return selectorEntryCount > 1;
+}
+
+
+
+bool canSelectPreviousProfile()
+{
+    return selectorEntryCount > 1;
+}
+
+
+
+//---------------- Time Information ----------------
+
+uint32_t getSelectedProfilePlaytimeMilliseconds()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->totalPlaytimeMilliseconds;
+}
+
+
+
+uint32_t getSelectedProfilePlaytimeSeconds()
+{
+    return
+        getSelectedProfilePlaytimeMilliseconds() /
+        1000UL;
+}
+
+
+
+uint32_t getSelectedProfilePlaytimeMinutes()
+{
+    return
+        getSelectedProfilePlaytimeMilliseconds() /
+        60000UL;
+}
+
+
+
+uint32_t getSelectedProfilePlaytimeHours()
+{
+    return
+        getSelectedProfilePlaytimeMilliseconds() /
+        3600000UL;
+}
+
+
+
+uint32_t getSelectedProfileCreatedUnix()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->createdUnix;
+}
+
+
+
+uint32_t getSelectedProfileLastLoginUnix()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->lastLoginUnix;
+}
+
+
+
+uint32_t getSelectedProfileLastSavedUnix()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->lastSavedUnix;
+}
+
+
+
+uint32_t getSelectedProfileLoginCount()
+{
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        return 0;
+    }
+
+
+    return entry->loginCount;
+}
+
+
+
+//---------------- Validation ----------------
+
+bool validateProfileSelectorEntry(
+    const ProfileSelectorEntry& entry
+)
+{
+    if(!entry.valid)
+    {
+        return false;
+    }
+
+
+    if(entry.profileID ==
+       PROFILE_INVALID_ID)
+    {
+        return false;
+    }
+
+
+    if(entry.playerName[0] ==
+       '\0')
+    {
+        return false;
+    }
+
+
+    size_t nameLength =
+        strnlen(
+            entry.playerName,
+            PROFILE_SELECTOR_NAME_LENGTH
+        );
+
+
+    if(nameLength == 0 ||
+       nameLength >= PROFILE_SELECTOR_NAME_LENGTH)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validateProfileSelector()
+{
+    if(selectorEntryCount >
+       PROFILE_STORAGE_MAX_PROFILES)
+    {
+        return false;
+    }
+
+
+    uint8_t selectedCount =
+        0;
+
+
+    for(uint8_t i = 0;
+        i < selectorEntryCount;
+        i++)
+    {
+        if(!validateProfileSelectorEntry(
+            selectorEntries[i]
+        ))
+        {
+            return false;
+        }
+
+
+        if(selectorEntries[i].selected)
+        {
+            selectedCount++;
+        }
+
+
+        for(uint8_t j = i + 1;
+            j < selectorEntryCount;
+            j++)
+        {
+            if(selectorEntries[i].profileID ==
+               selectorEntries[j].profileID)
+            {
+                return false;
+            }
+
+
+            if(strcmp(
+                selectorEntries[i].playerName,
+                selectorEntries[j].playerName
+            ) == 0)
+            {
+                return false;
+            }
+        }
+    }
+
+
+    if(selectedProfileIndex ==
+       PROFILE_SELECTOR_INVALID_INDEX)
+    {
+        return selectedCount == 0;
+    }
+
+
+    if(!isValidSelectorIndex(
+        selectedProfileIndex
+    ))
+    {
+        return false;
+    }
+
+
+    if(selectedCount != 1)
+    {
+        return false;
+    }
+
+
+    return
+        selectorEntries[
+            selectedProfileIndex
+        ].selected;
+}
+
+
+
+//---------------- Debug ----------------
+
+void printProfileSelectorInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE SELECTOR"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Ready: "
+    );
+
+
+    Serial.println(
+        profileSelectorReady ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    Serial.println(
+        (uint8_t)profileSelectorStatus
+    );
+
+
+    Serial.print(
+        "Entry Count: "
+    );
+
+
+    Serial.println(
+        selectorEntryCount
+    );
+
+
+    Serial.print(
+        "Selected Index: "
+    );
+
+
+    if(selectedProfileIndex ==
+       PROFILE_SELECTOR_INVALID_INDEX)
+    {
+        Serial.println(
+            "NONE"
+        );
+    }
+    else
+    {
+        Serial.println(
+            selectedProfileIndex
+        );
+    }
+
+
+    Serial.print(
+        "Selected ID: "
+    );
+
+
+    if(hasSelectedProfile())
+    {
+        Serial.println(
+            getSelectedProfileID()
+        );
+    }
+    else
+    {
+        Serial.println(
+            "NONE"
+        );
+    }
+
+
+    Serial.print(
+        "Validation: "
+    );
+
+
+    Serial.println(
+        validateProfileSelector() ?
+        "VALID" :
+        "INVALID"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printProfileSelectorEntries()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "PROFILE SELECTOR ENTRIES"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(selectorEntryCount == 0)
+    {
+        Serial.println(
+            "NO PROFILES"
+        );
+    }
+
+
+    for(uint8_t i = 0;
+        i < selectorEntryCount;
+        i++)
+    {
+        Serial.print(
+            "["
+        );
+
+
+        Serial.print(
+            i
+        );
+
+
+        Serial.print(
+            "] "
+        );
+
+
+        if(selectorEntries[i].selected)
+        {
+            Serial.print(
+                "> "
+            );
+        }
+        else
+        {
+            Serial.print(
+                "  "
+            );
+        }
+
+
+        Serial.print(
+            "ID: "
+        );
+
+
+        Serial.print(
+            selectorEntries[i].profileID
+        );
+
+
+        Serial.print(
+            " Name: "
+        );
+
+
+        Serial.print(
+            selectorEntries[i].playerName
+        );
+
+
+        Serial.print(
+            " Playtime: "
+        );
+
+
+        Serial.print(
+            selectorEntries[i].
+                totalPlaytimeMilliseconds /
+            1000UL
+        );
+
+
+        Serial.print(
+            " sec Logins: "
+        );
+
+
+        Serial.println(
+            selectorEntries[i].loginCount
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printSelectedProfileInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "SELECTED PROFILE"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    const ProfileSelectorEntry* entry =
+        getSelectedProfileEntry();
+
+
+    if(entry == nullptr)
+    {
+        Serial.println(
+            "NO PROFILE SELECTED"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    Serial.print(
+        "Index: "
+    );
+
+
+    Serial.println(
+        selectedProfileIndex
+    );
+
+
+    Serial.print(
+        "Profile ID: "
+    );
+
+
+    Serial.println(
+        entry->profileID
+    );
+
+
+    Serial.print(
+        "Player Name: "
+    );
+
+
+    Serial.println(
+        entry->playerName
+    );
+
+
+    Serial.print(
+        "Created Unix: "
+    );
+
+
+    Serial.println(
+        entry->createdUnix
+    );
+
+
+    Serial.print(
+        "Last Login Unix: "
+    );
+
+
+    Serial.println(
+        entry->lastLoginUnix
+    );
+
+
+    Serial.print(
+        "Last Saved Unix: "
+    );
+
+
+    Serial.println(
+        entry->lastSavedUnix
+    );
+
+
+    Serial.print(
+        "Playtime Seconds: "
+    );
+
+
+    Serial.println(
+        entry->totalPlaytimeMilliseconds /
+        1000UL
+    );
+
+
+    Serial.print(
+        "Login Count: "
+    );
+
+
+    Serial.println(
+        entry->loginCount
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+#ifndef ACHIEVEMENT_MANAGER_H
+#define ACHIEVEMENT_MANAGER_H
+
+//==================================================
+// ESP32 GAME STATION
+// ACHIEVEMENT MANAGER
+//==================================================
+
+#include <Arduino.h>
+
+
+//---------------- Achievement Configuration ----------------
+
+#define ACHIEVEMENT_INVALID_ID              0xFFFF
+
+#define ACHIEVEMENT_NAME_LENGTH             32
+
+#define ACHIEVEMENT_DESCRIPTION_LENGTH      96
+
+#define ACHIEVEMENT_MAX_COUNT               128
+
+#define ACHIEVEMENT_MAX_TRACKERS            32
+
+#define ACHIEVEMENT_PROGRESS_COMPLETE       100
+
+#define ACHIEVEMENT_NOTIFICATION_DURATION   5000UL
+
+
+//---------------- Achievement Category ----------------
+
+enum AchievementCategory
+{
+    ACHIEVEMENT_CATEGORY_GENERAL = 0,
+    ACHIEVEMENT_CATEGORY_PLAYTIME,
+    ACHIEVEMENT_CATEGORY_GAMEPLAY,
+    ACHIEVEMENT_CATEGORY_PROGRESS,
+    ACHIEVEMENT_CATEGORY_COLLECTION,
+    ACHIEVEMENT_CATEGORY_CHALLENGE,
+    ACHIEVEMENT_CATEGORY_MULTIPLAYER,
+    ACHIEVEMENT_CATEGORY_SECRET,
+    ACHIEVEMENT_CATEGORY_SYSTEM
+};
+
+
+//---------------- Achievement Rarity ----------------
+
+enum AchievementRarity
+{
+    ACHIEVEMENT_RARITY_COMMON = 0,
+    ACHIEVEMENT_RARITY_UNCOMMON,
+    ACHIEVEMENT_RARITY_RARE,
+    ACHIEVEMENT_RARITY_EPIC,
+    ACHIEVEMENT_RARITY_LEGENDARY
+};
+
+
+//---------------- Achievement Status ----------------
+
+enum AchievementManagerStatus
+{
+    ACHIEVEMENT_STATUS_NOT_INITIALIZED = 0,
+    ACHIEVEMENT_STATUS_READY,
+    ACHIEVEMENT_STATUS_FULL,
+    ACHIEVEMENT_STATUS_INVALID_ID,
+    ACHIEVEMENT_STATUS_INVALID_NAME,
+    ACHIEVEMENT_STATUS_NOT_FOUND,
+    ACHIEVEMENT_STATUS_ALREADY_EXISTS,
+    ACHIEVEMENT_STATUS_ALREADY_UNLOCKED,
+    ACHIEVEMENT_STATUS_LOCKED,
+    ACHIEVEMENT_STATUS_TRACKER_FULL,
+    ACHIEVEMENT_STATUS_ERROR
+};
+
+
+//---------------- Achievement Definition ----------------
+
+struct AchievementDefinition
+{
+    uint16_t achievementID;
+
+    uint16_t gameID;
+
+    char name[
+        ACHIEVEMENT_NAME_LENGTH
+    ];
+
+    char description[
+        ACHIEVEMENT_DESCRIPTION_LENGTH
+    ];
+
+    AchievementCategory category;
+
+    AchievementRarity rarity;
+
+    uint32_t targetValue;
+
+    uint16_t scoreValue;
+
+    bool hidden;
+
+    bool enabled;
+
+    bool valid;
+};
+
+
+//---------------- Achievement Progress ----------------
+
+struct AchievementProgress
+{
+    uint16_t achievementID;
+
+    uint32_t currentValue;
+
+    uint8_t progressPercent;
+
+    uint32_t unlockedUnix;
+
+    bool unlocked;
+
+    bool notificationPending;
+
+    bool modified;
+
+    bool valid;
+};
+
+
+//---------------- Achievement Record ----------------
+
+struct AchievementRecord
+{
+    AchievementDefinition definition;
+
+    AchievementProgress progress;
+};
+
+
+//---------------- Achievement Tracker ----------------
+
+struct AchievementTracker
+{
+    uint16_t trackerID;
+
+    uint16_t achievementID;
+
+    uint32_t currentValue;
+
+    uint32_t targetValue;
+
+    bool active;
+
+    bool valid;
+};
+
+
+//---------------- Achievement Notification ----------------
+
+struct AchievementNotification
+{
+    uint16_t achievementID;
+
+    uint32_t startTime;
+
+    uint32_t duration;
+
+    bool active;
+};
+
+
+//---------------- Initialization ----------------
+
+void initAchievementManager();
+
+
+//---------------- Manager State ----------------
+
+bool isAchievementManagerReady();
+
+AchievementManagerStatus getAchievementManagerStatus();
+
+
+//---------------- Achievement Registration ----------------
+
+bool registerAchievement(
+    uint16_t achievementID,
+    uint16_t gameID,
+    const char* name,
+    const char* description,
+    AchievementCategory category,
+    AchievementRarity rarity,
+    uint32_t targetValue,
+    uint16_t scoreValue,
+    bool hidden
+);
+
+
+bool unregisterAchievement(
+    uint16_t achievementID
+);
+
+
+void clearAchievements();
+
+
+//---------------- Achievement Access ----------------
+
+uint16_t getAchievementCount();
+
+const AchievementRecord* getAchievementRecord(
+    uint16_t index
+);
+
+AchievementRecord* getMutableAchievementRecord(
+    uint16_t index
+);
+
+const AchievementRecord* findAchievement(
+    uint16_t achievementID
+);
+
+AchievementRecord* findMutableAchievement(
+    uint16_t achievementID
+);
+
+
+//---------------- Achievement Detection ----------------
+
+bool achievementExists(
+    uint16_t achievementID
+);
+
+bool isAchievementUnlocked(
+    uint16_t achievementID
+);
+
+bool isAchievementHidden(
+    uint16_t achievementID
+);
+
+bool isAchievementEnabled(
+    uint16_t achievementID
+);
+
+
+//---------------- Achievement Enable State ----------------
+
+bool setAchievementEnabled(
+    uint16_t achievementID,
+    bool enabled
+);
+
+
+//---------------- Achievement Progress ----------------
+
+bool setAchievementProgress(
+    uint16_t achievementID,
+    uint32_t currentValue
+);
+
+
+bool addAchievementProgress(
+    uint16_t achievementID,
+    uint32_t value
+);
+
+
+bool incrementAchievementProgress(
+    uint16_t achievementID
+);
+
+
+bool resetAchievementProgress(
+    uint16_t achievementID
+);
+
+
+uint32_t getAchievementCurrentValue(
+    uint16_t achievementID
+);
+
+
+uint32_t getAchievementTargetValue(
+    uint16_t achievementID
+);
+
+
+uint8_t getAchievementProgressPercent(
+    uint16_t achievementID
+);
+
+
+//---------------- Achievement Unlock ----------------
+
+bool unlockAchievement(
+    uint16_t achievementID
+);
+
+
+bool lockAchievement(
+    uint16_t achievementID
+);
+
+
+bool checkAchievementUnlock(
+    uint16_t achievementID
+);
+
+
+uint32_t getAchievementUnlockedUnix(
+    uint16_t achievementID
+);
+
+
+//---------------- Achievement Statistics ----------------
+
+uint16_t getUnlockedAchievementCount();
+
+uint16_t getLockedAchievementCount();
+
+uint16_t getAchievementCountByGame(
+    uint16_t gameID
+);
+
+uint16_t getUnlockedAchievementCountByGame(
+    uint16_t gameID
+);
+
+uint16_t getAchievementCountByCategory(
+    AchievementCategory category
+);
+
+uint16_t getUnlockedAchievementCountByCategory(
+    AchievementCategory category
+);
+
+uint32_t getTotalAchievementScore();
+
+uint32_t getMaximumAchievementScore();
+
+uint8_t getTotalAchievementCompletionPercent();
+
+
+//---------------- Achievement Trackers ----------------
+
+bool createAchievementTracker(
+    uint16_t trackerID,
+    uint16_t achievementID
+);
+
+
+bool removeAchievementTracker(
+    uint16_t trackerID
+);
+
+
+bool updateAchievementTracker(
+    uint16_t trackerID,
+    uint32_t currentValue
+);
+
+
+bool incrementAchievementTracker(
+    uint16_t trackerID,
+    uint32_t value
+);
+
+
+bool resetAchievementTracker(
+    uint16_t trackerID
+);
+
+
+bool activateAchievementTracker(
+    uint16_t trackerID
+);
+
+
+bool deactivateAchievementTracker(
+    uint16_t trackerID
+);
+
+
+uint8_t getAchievementTrackerCount();
+
+
+const AchievementTracker* getAchievementTracker(
+    uint8_t index
+);
+
+
+const AchievementTracker* findAchievementTracker(
+    uint16_t trackerID
+);
+
+
+//---------------- Notifications ----------------
+
+void updateAchievementNotifications();
+
+bool startAchievementNotification(
+    uint16_t achievementID
+);
+
+void stopAchievementNotification();
+
+bool hasActiveAchievementNotification();
+
+const AchievementNotification&
+getAchievementNotification();
+
+const AchievementRecord*
+getNotificationAchievement();
+
+bool hasPendingAchievementNotification();
+
+uint16_t getNextPendingAchievementNotification();
+
+void clearAchievementNotificationPending(
+    uint16_t achievementID
+);
+
+
+//---------------- Modification State ----------------
+
+bool isAchievementModified(
+    uint16_t achievementID
+);
+
+void markAchievementModified(
+    uint16_t achievementID
+);
+
+void clearAchievementModified(
+    uint16_t achievementID
+);
+
+void clearAllAchievementModifiedFlags();
+
+
+//---------------- Validation ----------------
+
+bool validateAchievementDefinition(
+    const AchievementDefinition& definition
+);
+
+bool validateAchievementProgress(
+    const AchievementProgress& progress
+);
+
+bool validateAchievementRecord(
+    const AchievementRecord& record
+);
+
+bool validateAchievementManager();
+
+
+//---------------- Name Helpers ----------------
+
+const char* getAchievementCategoryName(
+    AchievementCategory category
+);
+
+const char* getAchievementRarityName(
+    AchievementRarity rarity
+);
+
+
+//---------------- Debug ----------------
+
+void printAchievementManagerInformation();
+
+void printAchievementInformation(
+    uint16_t achievementID
+);
+
+void printAllAchievements();
+
+void printAchievementTrackers();
+
+
+
+#endif
+#include "97_achievement_manager.h"
+
+#include <string.h>
+
+#include "92_rtc_manager.h"
+#include "94_profile_manager.h"
+
+
+//==================================================
+// ESP32 GAME STATION
+// ACHIEVEMENT MANAGER IMPLEMENTATION
+//==================================================
+
+
+//---------------- Internal Achievements ----------------
+
+static AchievementRecord achievementRecords[
+    ACHIEVEMENT_MAX_COUNT
+];
+
+
+static uint16_t achievementCount =
+    0;
+
+
+//---------------- Internal Trackers ----------------
+
+static AchievementTracker achievementTrackers[
+    ACHIEVEMENT_MAX_TRACKERS
+];
+
+
+static uint8_t achievementTrackerCount =
+    0;
+
+
+//---------------- Internal Notification ----------------
+
+static AchievementNotification achievementNotification;
+
+
+//---------------- Internal State ----------------
+
+static bool achievementManagerReady =
+    false;
+
+
+static AchievementManagerStatus achievementManagerStatus =
+    ACHIEVEMENT_STATUS_NOT_INITIALIZED;
+
+
+//---------------- Internal Functions ----------------
+
+static void clearAchievementDefinition(
+    AchievementDefinition& definition
+)
+{
+    memset(
+        &definition,
+        0,
+        sizeof(AchievementDefinition)
+    );
+
+
+    definition.achievementID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    definition.gameID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    definition.name[0] =
+        '\0';
+
+
+    definition.description[0] =
+        '\0';
+
+
+    definition.category =
+        ACHIEVEMENT_CATEGORY_GENERAL;
+
+
+    definition.rarity =
+        ACHIEVEMENT_RARITY_COMMON;
+
+
+    definition.targetValue =
+        1;
+
+
+    definition.scoreValue =
+        0;
+
+
+    definition.hidden =
+        false;
+
+
+    definition.enabled =
+        false;
+
+
+    definition.valid =
+        false;
+}
+
+
+
+static void clearAchievementProgressData(
+    AchievementProgress& progress
+)
+{
+    memset(
+        &progress,
+        0,
+        sizeof(AchievementProgress)
+    );
+
+
+    progress.achievementID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    progress.currentValue =
+        0;
+
+
+    progress.progressPercent =
+        0;
+
+
+    progress.unlockedUnix =
+        0;
+
+
+    progress.unlocked =
+        false;
+
+
+    progress.notificationPending =
+        false;
+
+
+    progress.modified =
+        false;
+
+
+    progress.valid =
+        false;
+}
+
+
+
+static void clearAchievementRecordData(
+    AchievementRecord& record
+)
+{
+    clearAchievementDefinition(
+        record.definition
+    );
+
+
+    clearAchievementProgressData(
+        record.progress
+    );
+}
+
+
+
+static void clearAchievementTrackerData(
+    AchievementTracker& tracker
+)
+{
+    memset(
+        &tracker,
+        0,
+        sizeof(AchievementTracker)
+    );
+
+
+    tracker.trackerID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    tracker.achievementID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    tracker.currentValue =
+        0;
+
+
+    tracker.targetValue =
+        0;
+
+
+    tracker.active =
+        false;
+
+
+    tracker.valid =
+        false;
+}
+
+
+
+static void clearAchievementNotificationData()
+{
+    achievementNotification.achievementID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    achievementNotification.startTime =
+        0;
+
+
+    achievementNotification.duration =
+        ACHIEVEMENT_NOTIFICATION_DURATION;
+
+
+    achievementNotification.active =
+        false;
+}
+
+
+
+static int16_t findAchievementIndex(
+    uint16_t achievementID
+)
+{
+    if(achievementID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               definition.achievementID ==
+               achievementID)
+        {
+            return (int16_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static int8_t findAchievementTrackerIndex(
+    uint16_t trackerID
+)
+{
+    if(trackerID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        return -1;
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(achievementTrackers[i].valid &&
+           achievementTrackers[i].trackerID ==
+           trackerID)
+        {
+            return (int8_t)i;
+        }
+    }
+
+
+    return -1;
+}
+
+
+
+static uint32_t getAchievementUnixTime()
+{
+    if(!isRTCInitialized())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCAvailable())
+    {
+        return 0;
+    }
+
+
+    if(!isRTCDateTimeValid())
+    {
+        return 0;
+    }
+
+
+    return getRTCUnixTime();
+}
+
+
+
+static uint8_t calculateProgressPercent(
+    uint32_t currentValue,
+    uint32_t targetValue
+)
+{
+    if(targetValue == 0)
+    {
+        return ACHIEVEMENT_PROGRESS_COMPLETE;
+    }
+
+
+    if(currentValue >=
+       targetValue)
+    {
+        return ACHIEVEMENT_PROGRESS_COMPLETE;
+    }
+
+
+    uint64_t calculation =
+        (uint64_t)currentValue *
+        ACHIEVEMENT_PROGRESS_COMPLETE;
+
+
+    calculation /=
+        targetValue;
+
+
+    if(calculation >
+       ACHIEVEMENT_PROGRESS_COMPLETE)
+    {
+        calculation =
+            ACHIEVEMENT_PROGRESS_COMPLETE;
+    }
+
+
+    return (uint8_t)calculation;
+}
+
+
+
+static bool copyAchievementText(
+    char* destination,
+    size_t destinationLength,
+    const char* source
+)
+{
+    if(destination == nullptr ||
+       destinationLength == 0 ||
+       source == nullptr)
+    {
+        return false;
+    }
+
+
+    size_t sourceLength =
+        strlen(
+            source
+        );
+
+
+    if(sourceLength == 0 ||
+       sourceLength >= destinationLength)
+    {
+        return false;
+    }
+
+
+    strncpy(
+        destination,
+        source,
+        destinationLength - 1
+    );
+
+
+    destination[
+        destinationLength - 1
+    ] = '\0';
+
+
+    return true;
+}
+
+
+
+static void synchronizeTrackerWithAchievement(
+    AchievementTracker& tracker
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            tracker.achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return;
+    }
+
+
+    tracker.currentValue =
+        record->progress.currentValue;
+
+
+    tracker.targetValue =
+        record->definition.targetValue;
+}
+
+
+
+//---------------- Initialization ----------------
+
+void initAchievementManager()
+{
+    achievementCount =
+        0;
+
+
+    achievementTrackerCount =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < ACHIEVEMENT_MAX_COUNT;
+        i++)
+    {
+        clearAchievementRecordData(
+            achievementRecords[i]
+        );
+    }
+
+
+    for(uint8_t i = 0;
+        i < ACHIEVEMENT_MAX_TRACKERS;
+        i++)
+    {
+        clearAchievementTrackerData(
+            achievementTrackers[i]
+        );
+    }
+
+
+    clearAchievementNotificationData();
+
+
+    achievementManagerReady =
+        true;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+}
+
+
+
+//---------------- Manager State ----------------
+
+bool isAchievementManagerReady()
+{
+    return achievementManagerReady;
+}
+
+
+
+AchievementManagerStatus getAchievementManagerStatus()
+{
+    return achievementManagerStatus;
+}
+
+
+
+//---------------- Achievement Registration ----------------
+
+bool registerAchievement(
+    uint16_t achievementID,
+    uint16_t gameID,
+    const char* name,
+    const char* description,
+    AchievementCategory category,
+    AchievementRarity rarity,
+    uint32_t targetValue,
+    uint16_t scoreValue,
+    bool hidden
+)
+{
+    if(!achievementManagerReady)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_INITIALIZED;
+
+
+        return false;
+    }
+
+
+    if(achievementID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_INVALID_ID;
+
+
+        return false;
+    }
+
+
+    if(achievementExists(
+        achievementID
+    ))
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_EXISTS;
+
+
+        return false;
+    }
+
+
+    if(achievementCount >=
+       ACHIEVEMENT_MAX_COUNT)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_FULL;
+
+
+        return false;
+    }
+
+
+    if(name == nullptr ||
+       name[0] == '\0')
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_INVALID_NAME;
+
+
+        return false;
+    }
+
+
+    AchievementRecord& record =
+        achievementRecords[
+            achievementCount
+        ];
+
+
+    clearAchievementRecordData(
+        record
+    );
+
+
+    record.definition.achievementID =
+        achievementID;
+
+
+    record.definition.gameID =
+        gameID;
+
+
+    if(!copyAchievementText(
+        record.definition.name,
+        sizeof(record.definition.name),
+        name
+    ))
+    {
+        clearAchievementRecordData(
+            record
+        );
+
+
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_INVALID_NAME;
+
+
+        return false;
+    }
+
+
+    if(description != nullptr &&
+       description[0] != '\0')
+    {
+        strncpy(
+            record.definition.description,
+            description,
+            ACHIEVEMENT_DESCRIPTION_LENGTH - 1
+        );
+
+
+        record.definition.description[
+            ACHIEVEMENT_DESCRIPTION_LENGTH - 1
+        ] = '\0';
+    }
+
+
+    record.definition.category =
+        category;
+
+
+    record.definition.rarity =
+        rarity;
+
+
+    record.definition.targetValue =
+        targetValue == 0 ?
+        1 :
+        targetValue;
+
+
+    record.definition.scoreValue =
+        scoreValue;
+
+
+    record.definition.hidden =
+        hidden;
+
+
+    record.definition.enabled =
+        true;
+
+
+    record.definition.valid =
+        true;
+
+
+    record.progress.achievementID =
+        achievementID;
+
+
+    record.progress.currentValue =
+        0;
+
+
+    record.progress.progressPercent =
+        0;
+
+
+    record.progress.unlockedUnix =
+        0;
+
+
+    record.progress.unlocked =
+        false;
+
+
+    record.progress.notificationPending =
+        false;
+
+
+    record.progress.modified =
+        true;
+
+
+    record.progress.valid =
+        true;
+
+
+    achievementCount++;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool unregisterAchievement(
+    uint16_t achievementID
+)
+{
+    int16_t index =
+        findAchievementIndex(
+            achievementID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    for(uint16_t i = index;
+        i + 1 < achievementCount;
+        i++)
+    {
+        achievementRecords[i] =
+            achievementRecords[i + 1];
+    }
+
+
+    if(achievementCount > 0)
+    {
+        achievementCount--;
+
+
+        clearAchievementRecordData(
+            achievementRecords[
+                achievementCount
+            ]
+        );
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;)
+    {
+        if(achievementTrackers[i].
+               achievementID ==
+           achievementID)
+        {
+            removeAchievementTracker(
+                achievementTrackers[i].
+                    trackerID
+            );
+        }
+        else
+        {
+            i++;
+        }
+    }
+
+
+    if(achievementNotification.active &&
+       achievementNotification.achievementID ==
+       achievementID)
+    {
+        stopAchievementNotification();
+    }
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+void clearAchievements()
+{
+    for(uint16_t i = 0;
+        i < ACHIEVEMENT_MAX_COUNT;
+        i++)
+    {
+        clearAchievementRecordData(
+            achievementRecords[i]
+        );
+    }
+
+
+    achievementCount =
+        0;
+
+
+    for(uint8_t i = 0;
+        i < ACHIEVEMENT_MAX_TRACKERS;
+        i++)
+    {
+        clearAchievementTrackerData(
+            achievementTrackers[i]
+        );
+    }
+
+
+    achievementTrackerCount =
+        0;
+
+
+    clearAchievementNotificationData();
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+}
+
+
+
+//---------------- Achievement Access ----------------
+
+uint16_t getAchievementCount()
+{
+    return achievementCount;
+}
+
+
+
+const AchievementRecord* getAchievementRecord(
+    uint16_t index
+)
+{
+    if(index >=
+       achievementCount)
+    {
+        return nullptr;
+    }
+
+
+    if(!achievementRecords[index].
+            definition.valid)
+    {
+        return nullptr;
+    }
+
+
+    return &achievementRecords[index];
+}
+
+
+
+AchievementRecord* getMutableAchievementRecord(
+    uint16_t index
+)
+{
+    if(index >=
+       achievementCount)
+    {
+        return nullptr;
+    }
+
+
+    if(!achievementRecords[index].
+            definition.valid)
+    {
+        return nullptr;
+    }
+
+
+    achievementRecords[index].
+        progress.modified =
+        true;
+
+
+    return &achievementRecords[index];
+}
+
+
+
+const AchievementRecord* findAchievement(
+    uint16_t achievementID
+)
+{
+    int16_t index =
+        findAchievementIndex(
+            achievementID
+        );
+
+
+    if(index < 0)
+    {
+        return nullptr;
+    }
+
+
+    return &achievementRecords[index];
+}
+
+
+
+AchievementRecord* findMutableAchievement(
+    uint16_t achievementID
+)
+{
+    int16_t index =
+        findAchievementIndex(
+            achievementID
+        );
+
+
+    if(index < 0)
+    {
+        return nullptr;
+    }
+
+
+    achievementRecords[index].
+        progress.modified =
+        true;
+
+
+    return &achievementRecords[index];
+}
+
+
+
+//---------------- Achievement Detection ----------------
+
+bool achievementExists(
+    uint16_t achievementID
+)
+{
+    return
+        findAchievementIndex(
+            achievementID
+        ) >= 0;
+}
+
+
+
+bool isAchievementUnlocked(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return false;
+    }
+
+
+    return record->progress.unlocked;
+}
+
+
+
+bool isAchievementHidden(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return false;
+    }
+
+
+    return record->definition.hidden;
+}
+
+
+
+bool isAchievementEnabled(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return false;
+    }
+
+
+    return record->definition.enabled;
+}
+
+
+
+//---------------- Achievement Enable State ----------------
+
+bool setAchievementEnabled(
+    uint16_t achievementID,
+    bool enabled
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    record->definition.enabled =
+        enabled;
+
+
+    record->progress.modified =
+        true;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+//---------------- Achievement Progress ----------------
+
+bool setAchievementProgress(
+    uint16_t achievementID,
+    uint32_t currentValue
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(!record->definition.enabled)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_LOCKED;
+
+
+        return false;
+    }
+
+
+    if(record->progress.unlocked)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_UNLOCKED;
+
+
+        return true;
+    }
+
+
+    if(currentValue >
+       record->definition.targetValue)
+    {
+        currentValue =
+            record->definition.targetValue;
+    }
+
+
+    record->progress.currentValue =
+        currentValue;
+
+
+    record->progress.progressPercent =
+        calculateProgressPercent(
+            record->progress.currentValue,
+            record->definition.targetValue
+        );
+
+
+    record->progress.modified =
+        true;
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(achievementTrackers[i].valid &&
+           achievementTrackers[i].
+               achievementID ==
+               achievementID)
+        {
+            synchronizeTrackerWithAchievement(
+                achievementTrackers[i]
+            );
+        }
+    }
+
+
+    checkAchievementUnlock(
+        achievementID
+    );
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool addAchievementProgress(
+    uint16_t achievementID,
+    uint32_t value
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    uint64_t newValue =
+        (uint64_t)record->
+            progress.currentValue +
+        value;
+
+
+    if(newValue >
+       record->definition.targetValue)
+    {
+        newValue =
+            record->definition.targetValue;
+    }
+
+
+    return setAchievementProgress(
+        achievementID,
+        (uint32_t)newValue
+    );
+}
+
+
+
+bool incrementAchievementProgress(
+    uint16_t achievementID
+)
+{
+    return addAchievementProgress(
+        achievementID,
+        1
+    );
+}
+
+
+
+bool resetAchievementProgress(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(record->progress.unlocked)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_UNLOCKED;
+
+
+        return false;
+    }
+
+
+    record->progress.currentValue =
+        0;
+
+
+    record->progress.progressPercent =
+        0;
+
+
+    record->progress.modified =
+        true;
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(achievementTrackers[i].valid &&
+           achievementTrackers[i].
+               achievementID ==
+               achievementID)
+        {
+            synchronizeTrackerWithAchievement(
+                achievementTrackers[i]
+            );
+        }
+    }
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+uint32_t getAchievementCurrentValue(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return record->progress.currentValue;
+}
+
+
+
+uint32_t getAchievementTargetValue(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return record->definition.targetValue;
+}
+
+
+
+uint8_t getAchievementProgressPercent(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return record->progress.progressPercent;
+}
+
+
+
+//---------------- Achievement Unlock ----------------
+
+bool unlockAchievement(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(!record->definition.enabled)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_LOCKED;
+
+
+        return false;
+    }
+
+
+    if(record->progress.unlocked)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_UNLOCKED;
+
+
+        return true;
+    }
+
+
+    record->progress.currentValue =
+        record->definition.targetValue;
+
+
+    record->progress.progressPercent =
+        ACHIEVEMENT_PROGRESS_COMPLETE;
+
+
+    record->progress.unlockedUnix =
+        getAchievementUnixTime();
+
+
+    record->progress.unlocked =
+        true;
+
+
+    record->progress.notificationPending =
+        true;
+
+
+    record->progress.modified =
+        true;
+
+
+    if(isPlayerProfileInitialized())
+    {
+        incrementProfileAchievementCount();
+    }
+
+
+    if(!achievementNotification.active)
+    {
+        startAchievementNotification(
+            achievementID
+        );
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(achievementTrackers[i].valid &&
+           achievementTrackers[i].
+               achievementID ==
+               achievementID)
+        {
+            synchronizeTrackerWithAchievement(
+                achievementTrackers[i]
+            );
+
+
+            achievementTrackers[i].active =
+                false;
+        }
+    }
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool lockAchievement(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    bool wasUnlocked =
+        record->progress.unlocked;
+
+
+    record->progress.currentValue =
+        0;
+
+
+    record->progress.progressPercent =
+        0;
+
+
+    record->progress.unlockedUnix =
+        0;
+
+
+    record->progress.unlocked =
+        false;
+
+
+    record->progress.notificationPending =
+        false;
+
+
+    record->progress.modified =
+        true;
+
+
+    if(wasUnlocked &&
+       isPlayerProfileInitialized())
+    {
+        uint16_t achievementTotal =
+            getProfileAchievementCount();
+
+
+        if(achievementTotal > 0)
+        {
+            setProfileAchievementCount(
+                achievementTotal - 1
+            );
+        }
+    }
+
+
+    if(achievementNotification.active &&
+       achievementNotification.achievementID ==
+       achievementID)
+    {
+        stopAchievementNotification();
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(achievementTrackers[i].valid &&
+           achievementTrackers[i].
+               achievementID ==
+               achievementID)
+        {
+            synchronizeTrackerWithAchievement(
+                achievementTrackers[i]
+            );
+        }
+    }
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool checkAchievementUnlock(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(record->progress.unlocked)
+    {
+        return true;
+    }
+
+
+    if(record->progress.currentValue >=
+       record->definition.targetValue)
+    {
+        return unlockAchievement(
+            achievementID
+        );
+    }
+
+
+    return false;
+}
+
+
+
+uint32_t getAchievementUnlockedUnix(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return 0;
+    }
+
+
+    return record->progress.unlockedUnix;
+}
+
+
+
+//---------------- Achievement Statistics ----------------
+
+uint16_t getUnlockedAchievementCount()
+{
+    uint16_t count =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               progress.unlocked)
+        {
+            count++;
+        }
+    }
+
+
+    return count;
+}
+
+
+
+uint16_t getLockedAchievementCount()
+{
+    return
+        achievementCount -
+        getUnlockedAchievementCount();
+}
+
+
+
+uint16_t getAchievementCountByGame(
+    uint16_t gameID
+)
+{
+    uint16_t count =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               definition.gameID ==
+               gameID)
+        {
+            count++;
+        }
+    }
+
+
+    return count;
+}
+
+
+
+uint16_t getUnlockedAchievementCountByGame(
+    uint16_t gameID
+)
+{
+    uint16_t count =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               definition.gameID ==
+               gameID &&
+           achievementRecords[i].
+               progress.unlocked)
+        {
+            count++;
+        }
+    }
+
+
+    return count;
+}
+
+
+
+uint16_t getAchievementCountByCategory(
+    AchievementCategory category
+)
+{
+    uint16_t count =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               definition.category ==
+               category)
+        {
+            count++;
+        }
+    }
+
+
+    return count;
+}
+
+
+
+uint16_t getUnlockedAchievementCountByCategory(
+    AchievementCategory category
+)
+{
+    uint16_t count =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               definition.category ==
+               category &&
+           achievementRecords[i].
+               progress.unlocked)
+        {
+            count++;
+        }
+    }
+
+
+    return count;
+}
+
+
+
+uint32_t getTotalAchievementScore()
+{
+    uint32_t score =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid &&
+           achievementRecords[i].
+               progress.unlocked)
+        {
+            score +=
+                achievementRecords[i].
+                    definition.scoreValue;
+        }
+    }
+
+
+    return score;
+}
+
+
+
+uint32_t getMaximumAchievementScore()
+{
+    uint32_t score =
+        0;
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               definition.valid)
+        {
+            score +=
+                achievementRecords[i].
+                    definition.scoreValue;
+        }
+    }
+
+
+    return score;
+}
+
+
+
+uint8_t getTotalAchievementCompletionPercent()
+{
+    if(achievementCount == 0)
+    {
+        return 0;
+    }
+
+
+    uint32_t unlocked =
+        getUnlockedAchievementCount();
+
+
+    uint32_t calculation =
+        unlocked *
+        ACHIEVEMENT_PROGRESS_COMPLETE;
+
+
+    calculation /=
+        achievementCount;
+
+
+    return (uint8_t)calculation;
+}
+
+
+
+//---------------- Achievement Trackers ----------------
+
+bool createAchievementTracker(
+    uint16_t trackerID,
+    uint16_t achievementID
+)
+{
+    if(trackerID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_INVALID_ID;
+
+
+        return false;
+    }
+
+
+    if(findAchievementTracker(
+        trackerID
+    ) != nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_EXISTS;
+
+
+        return false;
+    }
+
+
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(achievementTrackerCount >=
+       ACHIEVEMENT_MAX_TRACKERS)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_TRACKER_FULL;
+
+
+        return false;
+    }
+
+
+    AchievementTracker& tracker =
+        achievementTrackers[
+            achievementTrackerCount
+        ];
+
+
+    clearAchievementTrackerData(
+        tracker
+    );
+
+
+    tracker.trackerID =
+        trackerID;
+
+
+    tracker.achievementID =
+        achievementID;
+
+
+    tracker.currentValue =
+        record->progress.currentValue;
+
+
+    tracker.targetValue =
+        record->definition.targetValue;
+
+
+    tracker.active =
+        !record->progress.unlocked;
+
+
+    tracker.valid =
+        true;
+
+
+    achievementTrackerCount++;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool removeAchievementTracker(
+    uint16_t trackerID
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    for(uint8_t i = index;
+        i + 1 < achievementTrackerCount;
+        i++)
+    {
+        achievementTrackers[i] =
+            achievementTrackers[i + 1];
+    }
+
+
+    if(achievementTrackerCount > 0)
+    {
+        achievementTrackerCount--;
+
+
+        clearAchievementTrackerData(
+            achievementTrackers[
+                achievementTrackerCount
+            ]
+        );
+    }
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool updateAchievementTracker(
+    uint16_t trackerID,
+    uint32_t currentValue
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    AchievementTracker& tracker =
+        achievementTrackers[index];
+
+
+    if(!tracker.active)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_LOCKED;
+
+
+        return false;
+    }
+
+
+    bool result =
+        setAchievementProgress(
+            tracker.achievementID,
+            currentValue
+        );
+
+
+    if(result)
+    {
+        synchronizeTrackerWithAchievement(
+            tracker
+        );
+    }
+
+
+    return result;
+}
+
+
+
+bool incrementAchievementTracker(
+    uint16_t trackerID,
+    uint32_t value
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    AchievementTracker& tracker =
+        achievementTrackers[index];
+
+
+    if(!tracker.active)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_LOCKED;
+
+
+        return false;
+    }
+
+
+    uint64_t newValue =
+        (uint64_t)tracker.currentValue +
+        value;
+
+
+    if(newValue >
+       tracker.targetValue)
+    {
+        newValue =
+            tracker.targetValue;
+    }
+
+
+    return updateAchievementTracker(
+        trackerID,
+        (uint32_t)newValue
+    );
+}
+
+
+
+bool resetAchievementTracker(
+    uint16_t trackerID
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    AchievementTracker& tracker =
+        achievementTrackers[index];
+
+
+    bool result =
+        resetAchievementProgress(
+            tracker.achievementID
+        );
+
+
+    if(result)
+    {
+        synchronizeTrackerWithAchievement(
+            tracker
+        );
+    }
+
+
+    return result;
+}
+
+
+
+bool activateAchievementTracker(
+    uint16_t trackerID
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(isAchievementUnlocked(
+        achievementTrackers[index].
+            achievementID
+    ))
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_ALREADY_UNLOCKED;
+
+
+        return false;
+    }
+
+
+    achievementTrackers[index].active =
+        true;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+bool deactivateAchievementTracker(
+    uint16_t trackerID
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    achievementTrackers[index].active =
+        false;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+uint8_t getAchievementTrackerCount()
+{
+    return achievementTrackerCount;
+}
+
+
+
+const AchievementTracker* getAchievementTracker(
+    uint8_t index
+)
+{
+    if(index >=
+       achievementTrackerCount)
+    {
+        return nullptr;
+    }
+
+
+    if(!achievementTrackers[index].valid)
+    {
+        return nullptr;
+    }
+
+
+    return &achievementTrackers[index];
+}
+
+
+
+const AchievementTracker* findAchievementTracker(
+    uint16_t trackerID
+)
+{
+    int8_t index =
+        findAchievementTrackerIndex(
+            trackerID
+        );
+
+
+    if(index < 0)
+    {
+        return nullptr;
+    }
+
+
+    return &achievementTrackers[index];
+}
+
+
+
+//---------------- Notifications ----------------
+
+void updateAchievementNotifications()
+{
+    if(!achievementNotification.active)
+    {
+        uint16_t pendingAchievementID =
+            getNextPendingAchievementNotification();
+
+
+        if(pendingAchievementID !=
+           ACHIEVEMENT_INVALID_ID)
+        {
+            startAchievementNotification(
+                pendingAchievementID
+            );
+        }
+
+
+        return;
+    }
+
+
+    uint32_t currentTime =
+        millis();
+
+
+    if(currentTime -
+       achievementNotification.startTime >=
+       achievementNotification.duration)
+    {
+        uint16_t completedAchievementID =
+            achievementNotification.
+                achievementID;
+
+
+        stopAchievementNotification();
+
+
+        clearAchievementNotificationPending(
+            completedAchievementID
+        );
+    }
+}
+
+
+
+bool startAchievementNotification(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_NOT_FOUND;
+
+
+        return false;
+    }
+
+
+    if(!record->progress.unlocked)
+    {
+        achievementManagerStatus =
+            ACHIEVEMENT_STATUS_LOCKED;
+
+
+        return false;
+    }
+
+
+    achievementNotification.achievementID =
+        achievementID;
+
+
+    achievementNotification.startTime =
+        millis();
+
+
+    achievementNotification.duration =
+        ACHIEVEMENT_NOTIFICATION_DURATION;
+
+
+    achievementNotification.active =
+        true;
+
+
+    achievementManagerStatus =
+        ACHIEVEMENT_STATUS_READY;
+
+
+    return true;
+}
+
+
+
+void stopAchievementNotification()
+{
+    achievementNotification.achievementID =
+        ACHIEVEMENT_INVALID_ID;
+
+
+    achievementNotification.startTime =
+        0;
+
+
+    achievementNotification.active =
+        false;
+}
+
+
+
+bool hasActiveAchievementNotification()
+{
+    return achievementNotification.active;
+}
+
+
+
+const AchievementNotification&
+getAchievementNotification()
+{
+    return achievementNotification;
+}
+
+
+
+const AchievementRecord*
+getNotificationAchievement()
+{
+    if(!achievementNotification.active)
+    {
+        return nullptr;
+    }
+
+
+    return findAchievement(
+        achievementNotification.
+            achievementID
+    );
+}
+
+
+
+bool hasPendingAchievementNotification()
+{
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               progress.valid &&
+           achievementRecords[i].
+               progress.notificationPending)
+        {
+            return true;
+        }
+    }
+
+
+    return false;
+}
+
+
+
+uint16_t getNextPendingAchievementNotification()
+{
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(achievementRecords[i].
+               progress.valid &&
+           achievementRecords[i].
+               progress.notificationPending)
+        {
+            return
+                achievementRecords[i].
+                    definition.achievementID;
+        }
+    }
+
+
+    return ACHIEVEMENT_INVALID_ID;
+}
+
+
+
+void clearAchievementNotificationPending(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return;
+    }
+
+
+    record->progress.notificationPending =
+        false;
+
+
+    record->progress.modified =
+        true;
+}
+
+
+
+//---------------- Modification State ----------------
+
+bool isAchievementModified(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return false;
+    }
+
+
+    return record->progress.modified;
+}
+
+
+
+void markAchievementModified(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return;
+    }
+
+
+    record->progress.modified =
+        true;
+}
+
+
+
+void clearAchievementModified(
+    uint16_t achievementID
+)
+{
+    AchievementRecord* record =
+        findMutableAchievement(
+            achievementID
+        );
+
+
+    if(record == nullptr)
+    {
+        return;
+    }
+
+
+    record->progress.modified =
+        false;
+}
+
+
+
+void clearAllAchievementModifiedFlags()
+{
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        achievementRecords[i].
+            progress.modified =
+            false;
+    }
+}
+
+
+
+//---------------- Validation ----------------
+
+bool validateAchievementDefinition(
+    const AchievementDefinition& definition
+)
+{
+    if(!definition.valid)
+    {
+        return false;
+    }
+
+
+    if(definition.achievementID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        return false;
+    }
+
+
+    if(definition.name[0] ==
+       '\0')
+    {
+        return false;
+    }
+
+
+    size_t nameLength =
+        strnlen(
+            definition.name,
+            ACHIEVEMENT_NAME_LENGTH
+        );
+
+
+    if(nameLength == 0 ||
+       nameLength >=
+       ACHIEVEMENT_NAME_LENGTH)
+    {
+        return false;
+    }
+
+
+    if(definition.targetValue == 0)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validateAchievementProgress(
+    const AchievementProgress& progress
+)
+{
+    if(!progress.valid)
+    {
+        return false;
+    }
+
+
+    if(progress.achievementID ==
+       ACHIEVEMENT_INVALID_ID)
+    {
+        return false;
+    }
+
+
+    if(progress.progressPercent >
+       ACHIEVEMENT_PROGRESS_COMPLETE)
+    {
+        return false;
+    }
+
+
+    if(progress.unlocked &&
+       progress.progressPercent !=
+       ACHIEVEMENT_PROGRESS_COMPLETE)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validateAchievementRecord(
+    const AchievementRecord& record
+)
+{
+    if(!validateAchievementDefinition(
+        record.definition
+    ))
+    {
+        return false;
+    }
+
+
+    if(!validateAchievementProgress(
+        record.progress
+    ))
+    {
+        return false;
+    }
+
+
+    if(record.definition.achievementID !=
+       record.progress.achievementID)
+    {
+        return false;
+    }
+
+
+    if(record.progress.currentValue >
+       record.definition.targetValue)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+bool validateAchievementManager()
+{
+    if(achievementCount >
+       ACHIEVEMENT_MAX_COUNT)
+    {
+        return false;
+    }
+
+
+    if(achievementTrackerCount >
+       ACHIEVEMENT_MAX_TRACKERS)
+    {
+        return false;
+    }
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        if(!validateAchievementRecord(
+            achievementRecords[i]
+        ))
+        {
+            return false;
+        }
+
+
+        for(uint16_t j = i + 1;
+            j < achievementCount;
+            j++)
+        {
+            if(achievementRecords[i].
+                   definition.achievementID ==
+               achievementRecords[j].
+                   definition.achievementID)
+            {
+                return false;
+            }
+        }
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        if(!achievementTrackers[i].valid)
+        {
+            return false;
+        }
+
+
+        if(achievementTrackers[i].trackerID ==
+           ACHIEVEMENT_INVALID_ID)
+        {
+            return false;
+        }
+
+
+        if(!achievementExists(
+            achievementTrackers[i].
+                achievementID
+        ))
+        {
+            return false;
+        }
+
+
+        for(uint8_t j = i + 1;
+            j < achievementTrackerCount;
+            j++)
+        {
+            if(achievementTrackers[i].trackerID ==
+               achievementTrackers[j].trackerID)
+            {
+                return false;
+            }
+        }
+    }
+
+
+    return true;
+}
+
+
+
+//---------------- Name Helpers ----------------
+
+const char* getAchievementCategoryName(
+    AchievementCategory category
+)
+{
+    switch(category)
+    {
+        case ACHIEVEMENT_CATEGORY_GENERAL:
+            return "GENERAL";
+
+        case ACHIEVEMENT_CATEGORY_PLAYTIME:
+            return "PLAYTIME";
+
+        case ACHIEVEMENT_CATEGORY_GAMEPLAY:
+            return "GAMEPLAY";
+
+        case ACHIEVEMENT_CATEGORY_PROGRESS:
+            return "PROGRESS";
+
+        case ACHIEVEMENT_CATEGORY_COLLECTION:
+            return "COLLECTION";
+
+        case ACHIEVEMENT_CATEGORY_CHALLENGE:
+            return "CHALLENGE";
+
+        case ACHIEVEMENT_CATEGORY_MULTIPLAYER:
+            return "MULTIPLAYER";
+
+        case ACHIEVEMENT_CATEGORY_SECRET:
+            return "SECRET";
+
+        case ACHIEVEMENT_CATEGORY_SYSTEM:
+            return "SYSTEM";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+
+
+const char* getAchievementRarityName(
+    AchievementRarity rarity
+)
+{
+    switch(rarity)
+    {
+        case ACHIEVEMENT_RARITY_COMMON:
+            return "COMMON";
+
+        case ACHIEVEMENT_RARITY_UNCOMMON:
+            return "UNCOMMON";
+
+        case ACHIEVEMENT_RARITY_RARE:
+            return "RARE";
+
+        case ACHIEVEMENT_RARITY_EPIC:
+            return "EPIC";
+
+        case ACHIEVEMENT_RARITY_LEGENDARY:
+            return "LEGENDARY";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+
+
+//---------------- Debug ----------------
+
+void printAchievementManagerInformation()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "ACHIEVEMENT MANAGER"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.print(
+        "Ready: "
+    );
+
+
+    Serial.println(
+        achievementManagerReady ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Status: "
+    );
+
+
+    Serial.println(
+        (uint8_t)achievementManagerStatus
+    );
+
+
+    Serial.print(
+        "Achievements: "
+    );
+
+
+    Serial.print(
+        achievementCount
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        ACHIEVEMENT_MAX_COUNT
+    );
+
+
+    Serial.print(
+        "Unlocked: "
+    );
+
+
+    Serial.println(
+        getUnlockedAchievementCount()
+    );
+
+
+    Serial.print(
+        "Locked: "
+    );
+
+
+    Serial.println(
+        getLockedAchievementCount()
+    );
+
+
+    Serial.print(
+        "Completion: "
+    );
+
+
+    Serial.print(
+        getTotalAchievementCompletionPercent()
+    );
+
+
+    Serial.println(
+        "%"
+    );
+
+
+    Serial.print(
+        "Score: "
+    );
+
+
+    Serial.print(
+        getTotalAchievementScore()
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        getMaximumAchievementScore()
+    );
+
+
+    Serial.print(
+        "Trackers: "
+    );
+
+
+    Serial.print(
+        achievementTrackerCount
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        ACHIEVEMENT_MAX_TRACKERS
+    );
+
+
+    Serial.print(
+        "Validation: "
+    );
+
+
+    Serial.println(
+        validateAchievementManager() ?
+        "VALID" :
+        "INVALID"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printAchievementInformation(
+    uint16_t achievementID
+)
+{
+    const AchievementRecord* record =
+        findAchievement(
+            achievementID
+        );
+
+
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "ACHIEVEMENT INFORMATION"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(record == nullptr)
+    {
+        Serial.println(
+            "ACHIEVEMENT NOT FOUND"
+        );
+
+
+        Serial.println(
+            "================================"
+        );
+
+
+        return;
+    }
+
+
+    Serial.print(
+        "ID: "
+    );
+
+
+    Serial.println(
+        record->definition.achievementID
+    );
+
+
+    Serial.print(
+        "Game ID: "
+    );
+
+
+    Serial.println(
+        record->definition.gameID
+    );
+
+
+    Serial.print(
+        "Name: "
+    );
+
+
+    Serial.println(
+        record->definition.name
+    );
+
+
+    Serial.print(
+        "Description: "
+    );
+
+
+    Serial.println(
+        record->definition.description
+    );
+
+
+    Serial.print(
+        "Category: "
+    );
+
+
+    Serial.println(
+        getAchievementCategoryName(
+            record->definition.category
+        )
+    );
+
+
+    Serial.print(
+        "Rarity: "
+    );
+
+
+    Serial.println(
+        getAchievementRarityName(
+            record->definition.rarity
+        )
+    );
+
+
+    Serial.print(
+        "Progress: "
+    );
+
+
+    Serial.print(
+        record->progress.currentValue
+    );
+
+
+    Serial.print(
+        "/"
+    );
+
+
+    Serial.println(
+        record->definition.targetValue
+    );
+
+
+    Serial.print(
+        "Percent: "
+    );
+
+
+    Serial.print(
+        record->progress.progressPercent
+    );
+
+
+    Serial.println(
+        "%"
+    );
+
+
+    Serial.print(
+        "Unlocked: "
+    );
+
+
+    Serial.println(
+        record->progress.unlocked ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Unlocked Unix: "
+    );
+
+
+    Serial.println(
+        record->progress.unlockedUnix
+    );
+
+
+    Serial.print(
+        "Hidden: "
+    );
+
+
+    Serial.println(
+        record->definition.hidden ?
+        "YES" :
+        "NO"
+    );
+
+
+    Serial.print(
+        "Score: "
+    );
+
+
+    Serial.println(
+        record->definition.scoreValue
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printAllAchievements()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "ALL ACHIEVEMENTS"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(achievementCount == 0)
+    {
+        Serial.println(
+            "NO ACHIEVEMENTS"
+        );
+    }
+
+
+    for(uint16_t i = 0;
+        i < achievementCount;
+        i++)
+    {
+        const AchievementRecord& record =
+            achievementRecords[i];
+
+
+        Serial.print(
+            "["
+        );
+
+
+        Serial.print(
+            i
+        );
+
+
+        Serial.print(
+            "] ID: "
+        );
+
+
+        Serial.print(
+            record.definition.achievementID
+        );
+
+
+        Serial.print(
+            " Name: "
+        );
+
+
+        Serial.print(
+            record.definition.name
+        );
+
+
+        Serial.print(
+            " Progress: "
+        );
+
+
+        Serial.print(
+            record.progress.progressPercent
+        );
+
+
+        Serial.print(
+            "% Status: "
+        );
+
+
+        Serial.println(
+            record.progress.unlocked ?
+            "UNLOCKED" :
+            "LOCKED"
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
+
+
+
+void printAchievementTrackers()
+{
+    Serial.println();
+
+    Serial.println(
+        "================================"
+    );
+
+
+    Serial.println(
+        "ACHIEVEMENT TRACKERS"
+    );
+
+
+    Serial.println(
+        "================================"
+    );
+
+
+    if(achievementTrackerCount == 0)
+    {
+        Serial.println(
+            "NO TRACKERS"
+        );
+    }
+
+
+    for(uint8_t i = 0;
+        i < achievementTrackerCount;
+        i++)
+    {
+        Serial.print(
+            "["
+        );
+
+
+        Serial.print(
+            i
+        );
+
+
+        Serial.print(
+            "] Tracker ID: "
+        );
+
+
+        Serial.print(
+            achievementTrackers[i].
+                trackerID
+        );
+
+
+        Serial.print(
+            " Achievement ID: "
+        );
+
+
+        Serial.print(
+            achievementTrackers[i].
+                achievementID
+        );
+
+
+        Serial.print(
+            " Progress: "
+        );
+
+
+        Serial.print(
+            achievementTrackers[i].
+                currentValue
+        );
+
+
+        Serial.print(
+            "/"
+        );
+
+
+        Serial.print(
+            achievementTrackers[i].
+                targetValue
+        );
+
+
+        Serial.print(
+            " Active: "
+        );
+
+
+        Serial.println(
+            achievementTrackers[i].active ?
+            "YES" :
+            "NO"
+        );
+    }
+
+
+    Serial.println(
+        "================================"
+    );
+}
 
 

@@ -1,1 +1,3972 @@
+#ifndef EGS_LOGGER_H
+#define EGS_LOGGER_H
 
+#include <Arduino.h>
+
+//====================================================
+// ESP32 GAME STATION
+// LOGGER DEFINITIONS
+// 101_logger.h
+//====================================================
+
+enum LogLevel : uint8_t
+{
+    LOG_LEVEL_DEBUG = 0,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_CRITICAL
+};
+
+enum LogSource : uint8_t
+{
+    LOG_SOURCE_SYSTEM = 0,
+    LOG_SOURCE_HARDWARE,
+    LOG_SOURCE_STORAGE,
+    LOG_SOURCE_DISPLAY,
+    LOG_SOURCE_INPUT,
+    LOG_SOURCE_AUDIO,
+    LOG_SOURCE_NETWORK,
+    LOG_SOURCE_GAME,
+    LOG_SOURCE_EMULATOR,
+    LOG_SOURCE_APPLICATION,
+    LOG_SOURCE_UNKNOWN
+};
+
+enum LogOutput : uint8_t
+{
+    LOG_OUTPUT_NONE   = 0,
+    LOG_OUTPUT_SERIAL = 1 << 0,
+    LOG_OUTPUT_MEMORY = 1 << 1,
+    LOG_OUTPUT_FILE   = 1 << 2
+};
+
+struct LogEntry
+{
+    LogLevel level;
+    LogSource source;
+    uint32_t timestamp;
+    String tag;
+    String message;
+    bool valid;
+};
+
+class Logger
+{
+public:
+    static constexpr uint16_t MAX_MEMORY_ENTRIES = 128;
+    static constexpr uint16_t MAX_TAG_LENGTH = 24;
+    static constexpr uint16_t MAX_MESSAGE_LENGTH = 192;
+
+    static constexpr uint32_t MAX_FILE_SIZE =
+        256UL * 1024UL;
+
+    static constexpr uint32_t AUTO_FLUSH_DELAY =
+        2000UL;
+
+    //================================================
+    // SYSTEM
+    //================================================
+
+    static bool begin();
+    static void update();
+    static bool ready();
+    static void reset();
+
+    //================================================
+    // OUTPUT CONTROL
+    //================================================
+
+    static void setOutputs(uint8_t outputsValue);
+    static uint8_t outputs();
+
+    static bool outputEnabled(LogOutput output);
+    static void enableOutput(LogOutput output);
+    static void disableOutput(LogOutput output);
+
+    //================================================
+    // LEVEL CONTROL
+    //================================================
+
+    static void setMinimumLevel(LogLevel level);
+    static LogLevel minimumLevel();
+
+    //================================================
+    // LOG WRITING
+    //================================================
+
+    static bool write(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    static bool debug(
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    static bool info(
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    static bool warning(
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    static bool error(
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    static bool critical(
+        LogSource source,
+        const String& tag,
+        const String& message);
+
+    //================================================
+    // FORMATTED VALUES
+    //================================================
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        int32_t value);
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        uint32_t value);
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        int64_t value);
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        uint64_t value);
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        float value,
+        uint8_t decimalPlaces = 2);
+
+    static bool writeValue(
+        LogLevel level,
+        LogSource source,
+        const String& tag,
+        const String& name,
+        bool value);
+
+    //================================================
+    // MEMORY LOG ACCESS
+    //================================================
+
+    static uint16_t count();
+    static LogEntry get(uint16_t index);
+    static LogEntry latest();
+
+    static uint16_t countByLevel(LogLevel level);
+    static uint16_t countBySource(LogSource source);
+
+    static void clearMemory();
+
+    //================================================
+    // FILE LOG
+    //================================================
+
+    static bool flush();
+    static bool clearFile();
+    static bool fileExists();
+
+    static String filePath();
+    static bool hasPendingFileWrites();
+
+    //================================================
+    // TEXT HELPERS
+    //================================================
+
+    static const char* levelText(LogLevel level);
+    static const char* sourceText(LogSource source);
+
+    static String format(const LogEntry& entry);
+
+private:
+    static LogEntry entries[MAX_MEMORY_ENTRIES];
+
+    static uint16_t firstIndex;
+    static uint16_t entryCount;
+
+    static bool initialized;
+    static uint8_t enabledOutputs;
+    static LogLevel currentMinimumLevel;
+
+    static uint16_t pendingFileCount;
+    static uint32_t lastFileChangeTime;
+
+    static const char* FILE_NAME;
+    static const char* BACKUP_FILE_NAME;
+
+    //================================================
+    // VALIDATION
+    //================================================
+
+    static bool validLevel(LogLevel level);
+    static bool validSource(LogSource source);
+
+    static bool validTag(const String& tag);
+    static bool validMessage(const String& message);
+
+    static LogEntry emptyEntry();
+
+    //================================================
+    // MEMORY HELPERS
+    //================================================
+
+    static uint16_t physicalIndex(uint16_t logicalIndex);
+    static bool storeInMemory(const LogEntry& entry);
+
+    //================================================
+    // OUTPUT HELPERS
+    //================================================
+
+    static bool writeToSerial(const LogEntry& entry);
+    static bool writePendingToFile();
+    static bool rotateFileIfNeeded();
+
+    //================================================
+    // VALUE HELPERS
+    //================================================
+
+    static String signed64ToString(int64_t value);
+    static String unsigned64ToString(uint64_t value);
+
+    //================================================
+    // INTERNAL STATE
+    //================================================
+
+    static void markFilePending();
+    static void clearState();
+};
+
+#endif
+#include "101_logger.h"
+#include "storage_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// LOGGER IMPLEMENTATION
+// 102_logger.cpp
+//====================================================
+
+LogEntry Logger::entries[Logger::MAX_MEMORY_ENTRIES] = {};
+
+uint16_t Logger::firstIndex = 0;
+uint16_t Logger::entryCount = 0;
+
+bool Logger::initialized = false;
+
+uint8_t Logger::enabledOutputs =
+    static_cast<uint8_t>(LOG_OUTPUT_SERIAL) |
+    static_cast<uint8_t>(LOG_OUTPUT_MEMORY);
+
+LogLevel Logger::currentMinimumLevel =
+    LOG_LEVEL_DEBUG;
+
+uint16_t Logger::pendingFileCount = 0;
+uint32_t Logger::lastFileChangeTime = 0;
+
+const char* Logger::FILE_NAME =
+    "/CONFIG/system.log";
+
+const char* Logger::BACKUP_FILE_NAME =
+    "/CONFIG/system_previous.log";
+
+//====================================================
+// SYSTEM
+//====================================================
+
+bool Logger::begin()
+{
+    if (initialized)
+    {
+        return true;
+    }
+
+    clearState();
+
+    initialized = true;
+    return true;
+}
+
+void Logger::update()
+{
+    if (!initialized)
+    {
+        return;
+    }
+
+    if (pendingFileCount == 0)
+    {
+        return;
+    }
+
+    if (!outputEnabled(LOG_OUTPUT_FILE))
+    {
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    if (now - lastFileChangeTime < AUTO_FLUSH_DELAY)
+    {
+        return;
+    }
+
+    writePendingToFile();
+}
+
+bool Logger::ready()
+{
+    return initialized;
+}
+
+void Logger::reset()
+{
+    clearState();
+}
+
+//====================================================
+// OUTPUT CONTROL
+//====================================================
+
+void Logger::setOutputs(uint8_t outputsValue)
+{
+    const uint8_t validMask =
+        static_cast<uint8_t>(LOG_OUTPUT_SERIAL) |
+        static_cast<uint8_t>(LOG_OUTPUT_MEMORY) |
+        static_cast<uint8_t>(LOG_OUTPUT_FILE);
+
+    enabledOutputs = outputsValue & validMask;
+}
+
+uint8_t Logger::outputs()
+{
+    return enabledOutputs;
+}
+
+bool Logger::outputEnabled(LogOutput output)
+{
+    const uint8_t value =
+        static_cast<uint8_t>(output);
+
+    if (value ==
+        static_cast<uint8_t>(LOG_OUTPUT_NONE))
+    {
+        return false;
+    }
+
+    return (enabledOutputs & value) != 0;
+}
+
+void Logger::enableOutput(LogOutput output)
+{
+    const uint8_t value =
+        static_cast<uint8_t>(output);
+
+    if (value ==
+        static_cast<uint8_t>(LOG_OUTPUT_NONE))
+    {
+        return;
+    }
+
+    enabledOutputs |= value;
+}
+
+void Logger::disableOutput(LogOutput output)
+{
+    const uint8_t value =
+        static_cast<uint8_t>(output);
+
+    if (value ==
+        static_cast<uint8_t>(LOG_OUTPUT_NONE))
+    {
+        return;
+    }
+
+    enabledOutputs &=
+        static_cast<uint8_t>(~value);
+}
+
+//====================================================
+// LEVEL CONTROL
+//====================================================
+
+void Logger::setMinimumLevel(LogLevel level)
+{
+    if (validLevel(level))
+    {
+        currentMinimumLevel = level;
+    }
+}
+
+LogLevel Logger::minimumLevel()
+{
+    return currentMinimumLevel;
+}
+
+//====================================================
+// LOG WRITING
+//====================================================
+
+bool Logger::write(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    if (!initialized && !begin())
+    {
+        return false;
+    }
+
+    if (!validLevel(level) ||
+        !validSource(source))
+    {
+        return false;
+    }
+
+    if (static_cast<uint8_t>(level) <
+        static_cast<uint8_t>(currentMinimumLevel))
+    {
+        return false;
+    }
+
+    String safeTag = tag;
+    String safeMessage = message;
+
+    if (safeTag.length() > MAX_TAG_LENGTH)
+    {
+        safeTag =
+            safeTag.substring(0, MAX_TAG_LENGTH);
+    }
+
+    if (safeMessage.length() > MAX_MESSAGE_LENGTH)
+    {
+        safeMessage =
+            safeMessage.substring(
+                0,
+                MAX_MESSAGE_LENGTH);
+    }
+
+    if (!validTag(safeTag) ||
+        !validMessage(safeMessage))
+    {
+        return false;
+    }
+
+    LogEntry entry;
+
+    entry.level = level;
+    entry.source = source;
+    entry.timestamp = millis();
+    entry.tag = safeTag;
+    entry.message = safeMessage;
+    entry.valid = true;
+
+    bool attemptedOutput = false;
+    bool successfulOutput = false;
+
+    if (outputEnabled(LOG_OUTPUT_SERIAL))
+    {
+        attemptedOutput = true;
+
+        successfulOutput =
+            writeToSerial(entry) ||
+            successfulOutput;
+    }
+
+    const bool needsMemory =
+        outputEnabled(LOG_OUTPUT_MEMORY) ||
+        outputEnabled(LOG_OUTPUT_FILE);
+
+    if (needsMemory)
+    {
+        attemptedOutput = true;
+
+        if (storeInMemory(entry))
+        {
+            successfulOutput = true;
+
+            if (outputEnabled(LOG_OUTPUT_FILE))
+            {
+                markFilePending();
+            }
+        }
+    }
+
+    return attemptedOutput &&
+           successfulOutput;
+}
+
+bool Logger::debug(
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    return write(
+        LOG_LEVEL_DEBUG,
+        source,
+        tag,
+        message);
+}
+
+bool Logger::info(
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    return write(
+        LOG_LEVEL_INFO,
+        source,
+        tag,
+        message);
+}
+
+bool Logger::warning(
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    return write(
+        LOG_LEVEL_WARNING,
+        source,
+        tag,
+        message);
+}
+
+bool Logger::error(
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    return write(
+        LOG_LEVEL_ERROR,
+        source,
+        tag,
+        message);
+}
+
+bool Logger::critical(
+    LogSource source,
+    const String& tag,
+    const String& message)
+{
+    return write(
+        LOG_LEVEL_CRITICAL,
+        source,
+        tag,
+        message);
+}
+
+//====================================================
+// FORMATTED VALUES
+//====================================================
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    int32_t value)
+{
+    String text;
+
+    text.reserve(name.length() + 16);
+
+    text = name;
+    text += "=";
+    text += String(
+        static_cast<long>(value));
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    uint32_t value)
+{
+    String text;
+
+    text.reserve(name.length() + 16);
+
+    text = name;
+    text += "=";
+    text += String(
+        static_cast<unsigned long>(value));
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    int64_t value)
+{
+    String text;
+
+    text.reserve(name.length() + 24);
+
+    text = name;
+    text += "=";
+    text += signed64ToString(value);
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    uint64_t value)
+{
+    String text;
+
+    text.reserve(name.length() + 24);
+
+    text = name;
+    text += "=";
+    text += unsigned64ToString(value);
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    float value,
+    uint8_t decimalPlaces)
+{
+    String text;
+
+    text.reserve(name.length() + 24);
+
+    text = name;
+    text += "=";
+    text += String(
+        value,
+        decimalPlaces);
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+
+bool Logger::writeValue(
+    LogLevel level,
+    LogSource source,
+    const String& tag,
+    const String& name,
+    bool value)
+{
+    String text;
+
+    text.reserve(name.length() + 8);
+
+    text = name;
+    text += "=";
+    text += value ? "true" : "false";
+
+    return write(
+        level,
+        source,
+        tag,
+        text);
+}
+//====================================================
+// MEMORY LOG ACCESS
+//====================================================
+
+uint16_t Logger::count()
+{
+    return entryCount;
+}
+
+LogEntry Logger::get(uint16_t index)
+{
+    if (index >= entryCount)
+    {
+        return emptyEntry();
+    }
+
+    return entries[physicalIndex(index)];
+}
+
+LogEntry Logger::latest()
+{
+    if (entryCount == 0)
+    {
+        return emptyEntry();
+    }
+
+    return get(entryCount - 1);
+}
+
+uint16_t Logger::countByLevel(LogLevel level)
+{
+    if (!validLevel(level))
+    {
+        return 0;
+    }
+
+    uint16_t result = 0;
+
+    for (uint16_t i = 0;
+         i < entryCount;
+         ++i)
+    {
+        const LogEntry& entry =
+            entries[physicalIndex(i)];
+
+        if (entry.valid &&
+            entry.level == level)
+        {
+            ++result;
+        }
+    }
+
+    return result;
+}
+
+uint16_t Logger::countBySource(LogSource source)
+{
+    if (!validSource(source))
+    {
+        return 0;
+    }
+
+    uint16_t result = 0;
+
+    for (uint16_t i = 0;
+         i < entryCount;
+         ++i)
+    {
+        const LogEntry& entry =
+            entries[physicalIndex(i)];
+
+        if (entry.valid &&
+            entry.source == source)
+        {
+            ++result;
+        }
+    }
+
+    return result;
+}
+
+void Logger::clearMemory()
+{
+    for (uint16_t i = 0;
+         i < MAX_MEMORY_ENTRIES;
+         ++i)
+    {
+        entries[i] = emptyEntry();
+    }
+
+    firstIndex = 0;
+    entryCount = 0;
+
+    pendingFileCount = 0;
+    lastFileChangeTime = 0;
+}
+
+//====================================================
+// FILE LOG
+//====================================================
+
+bool Logger::flush()
+{
+    if (!initialized)
+    {
+        return false;
+    }
+
+    if (pendingFileCount == 0)
+    {
+        return true;
+    }
+
+    return writePendingToFile();
+}
+
+bool Logger::clearFile()
+{
+    if (!initialized ||
+        !StorageManager::ready())
+    {
+        return false;
+    }
+
+    bool result = true;
+
+    if (StorageManager::exists(FILE_NAME))
+    {
+        result =
+            StorageManager::deleteFile(FILE_NAME) &&
+            result;
+    }
+
+    if (StorageManager::exists(
+            BACKUP_FILE_NAME))
+    {
+        result =
+            StorageManager::deleteFile(
+                BACKUP_FILE_NAME) &&
+            result;
+    }
+
+    pendingFileCount = 0;
+    lastFileChangeTime = 0;
+
+    return result;
+}
+
+bool Logger::fileExists()
+{
+    return initialized &&
+           StorageManager::ready() &&
+           StorageManager::exists(FILE_NAME);
+}
+
+String Logger::filePath()
+{
+    return String(FILE_NAME);
+}
+
+bool Logger::hasPendingFileWrites()
+{
+    return pendingFileCount > 0;
+}
+
+//====================================================
+// TEXT HELPERS
+//====================================================
+
+const char* Logger::levelText(LogLevel level)
+{
+    switch (level)
+    {
+        case LOG_LEVEL_DEBUG:
+            return "DEBUG";
+
+        case LOG_LEVEL_INFO:
+            return "INFO";
+
+        case LOG_LEVEL_WARNING:
+            return "WARNING";
+
+        case LOG_LEVEL_ERROR:
+            return "ERROR";
+
+        case LOG_LEVEL_CRITICAL:
+            return "CRITICAL";
+
+        default:
+            return "INVALID";
+    }
+}
+
+const char* Logger::sourceText(LogSource source)
+{
+    switch (source)
+    {
+        case LOG_SOURCE_SYSTEM:
+            return "SYSTEM";
+
+        case LOG_SOURCE_HARDWARE:
+            return "HARDWARE";
+
+        case LOG_SOURCE_STORAGE:
+            return "STORAGE";
+
+        case LOG_SOURCE_DISPLAY:
+            return "DISPLAY";
+
+        case LOG_SOURCE_INPUT:
+            return "INPUT";
+
+        case LOG_SOURCE_AUDIO:
+            return "AUDIO";
+
+        case LOG_SOURCE_NETWORK:
+            return "NETWORK";
+
+        case LOG_SOURCE_GAME:
+            return "GAME";
+
+        case LOG_SOURCE_EMULATOR:
+            return "EMULATOR";
+
+        case LOG_SOURCE_APPLICATION:
+            return "APPLICATION";
+
+        case LOG_SOURCE_UNKNOWN:
+            return "UNKNOWN";
+
+        default:
+            return "INVALID";
+    }
+}
+
+String Logger::format(const LogEntry& entry)
+{
+    if (!entry.valid ||
+        !validLevel(entry.level) ||
+        !validSource(entry.source))
+    {
+        return String();
+    }
+
+    String text;
+
+    text.reserve(
+        entry.tag.length() +
+        entry.message.length() +
+        64);
+
+    text += "[";
+    text += String(
+        static_cast<unsigned long>(
+            entry.timestamp));
+
+    text += "][";
+    text += levelText(entry.level);
+
+    text += "][";
+    text += sourceText(entry.source);
+
+    text += "][";
+    text += entry.tag;
+
+    text += "] ";
+    text += entry.message;
+
+    return text;
+}
+
+//====================================================
+// VALIDATION
+//====================================================
+
+bool Logger::validLevel(LogLevel level)
+{
+    return level >= LOG_LEVEL_DEBUG &&
+           level <= LOG_LEVEL_CRITICAL;
+}
+
+bool Logger::validSource(LogSource source)
+{
+    return source >= LOG_SOURCE_SYSTEM &&
+           source <= LOG_SOURCE_UNKNOWN;
+}
+
+bool Logger::validTag(const String& tag)
+{
+    return tag.length() > 0 &&
+           tag.length() <= MAX_TAG_LENGTH;
+}
+
+bool Logger::validMessage(const String& message)
+{
+    return message.length() > 0 &&
+           message.length() <= MAX_MESSAGE_LENGTH;
+}
+
+LogEntry Logger::emptyEntry()
+{
+    LogEntry entry;
+
+    entry.level = LOG_LEVEL_DEBUG;
+    entry.source = LOG_SOURCE_UNKNOWN;
+    entry.timestamp = 0;
+
+    entry.tag = String();
+    entry.message = String();
+
+    entry.valid = false;
+
+    return entry;
+}
+
+//====================================================
+// MEMORY HELPERS
+//====================================================
+
+uint16_t Logger::physicalIndex(
+    uint16_t logicalIndex)
+{
+    return static_cast<uint16_t>(
+        (firstIndex + logicalIndex) %
+        MAX_MEMORY_ENTRIES);
+}
+
+bool Logger::storeInMemory(
+    const LogEntry& entry)
+{
+    if (!entry.valid)
+    {
+        return false;
+    }
+
+    if (entryCount < MAX_MEMORY_ENTRIES)
+    {
+        entries[physicalIndex(entryCount)] =
+            entry;
+
+        ++entryCount;
+        return true;
+    }
+
+    entries[firstIndex] = entry;
+
+    firstIndex =
+        static_cast<uint16_t>(
+            (firstIndex + 1) %
+            MAX_MEMORY_ENTRIES);
+
+    return true;
+}
+//====================================================
+// OUTPUT HELPERS
+//====================================================
+
+bool Logger::writeToSerial(
+    const LogEntry& entry)
+{
+    const String text = format(entry);
+
+    if (text.length() == 0)
+    {
+        return false;
+    }
+
+    return Serial.println(text) > 0;
+}
+
+bool Logger::writePendingToFile()
+{
+    if (pendingFileCount == 0)
+    {
+        return true;
+    }
+
+    if (!StorageManager::ready())
+    {
+        return false;
+    }
+
+    if (!StorageManager::createDirectory(
+            StorageManager::configPath()))
+    {
+        return false;
+    }
+
+    if (!rotateFileIfNeeded())
+    {
+        return false;
+    }
+
+    File file =
+        StorageManager::openFile(
+            FILE_NAME,
+            FILE_APPEND);
+
+    if (!file)
+    {
+        return false;
+    }
+
+    uint16_t availablePending =
+        pendingFileCount;
+
+    if (availablePending > entryCount)
+    {
+        availablePending = entryCount;
+    }
+
+    const uint16_t firstPendingLogicalIndex =
+        entryCount - availablePending;
+
+    uint16_t writtenCount = 0;
+    bool writeSucceeded = true;
+
+    for (uint16_t i = 0;
+         i < availablePending;
+         ++i)
+    {
+        const LogEntry& entry =
+            entries[
+                physicalIndex(
+                    firstPendingLogicalIndex +
+                    i)];
+
+        const String line = format(entry);
+
+        if (line.length() == 0)
+        {
+            writeSucceeded = false;
+            break;
+        }
+
+        const size_t textBytes =
+            file.print(line);
+
+        const size_t newlineBytes =
+            file.write('\n');
+
+        if (textBytes != line.length() ||
+            newlineBytes != 1)
+        {
+            writeSucceeded = false;
+            break;
+        }
+
+        ++writtenCount;
+    }
+
+    file.flush();
+
+    if (file.getWriteError())
+    {
+        writeSucceeded = false;
+    }
+
+    StorageManager::closeFile(file);
+
+    if (writtenCount >= pendingFileCount)
+    {
+        pendingFileCount = 0;
+    }
+    else
+    {
+        pendingFileCount -= writtenCount;
+    }
+
+    lastFileChangeTime =
+        pendingFileCount == 0
+            ? 0
+            : millis();
+
+    return writeSucceeded &&
+           writtenCount == availablePending;
+}
+
+bool Logger::rotateFileIfNeeded()
+{
+    if (!StorageManager::ready())
+    {
+        return false;
+    }
+
+    if (!StorageManager::exists(FILE_NAME))
+    {
+        return true;
+    }
+
+    File file =
+        StorageManager::openFile(
+            FILE_NAME,
+            FILE_READ);
+
+    if (!file)
+    {
+        return false;
+    }
+
+    const uint32_t fileSize =
+        static_cast<uint32_t>(
+            file.size());
+
+    StorageManager::closeFile(file);
+
+    if (fileSize < MAX_FILE_SIZE)
+    {
+        return true;
+    }
+
+    if (StorageManager::exists(
+            BACKUP_FILE_NAME) &&
+        !StorageManager::deleteFile(
+            BACKUP_FILE_NAME))
+    {
+        return false;
+    }
+
+    return StorageManager::renameFile(
+        FILE_NAME,
+        BACKUP_FILE_NAME);
+}
+
+//====================================================
+// VALUE HELPERS
+//====================================================
+
+String Logger::signed64ToString(
+    int64_t value)
+{
+    if (value >= 0)
+    {
+        return unsigned64ToString(
+            static_cast<uint64_t>(value));
+    }
+
+    const uint64_t magnitude =
+        static_cast<uint64_t>(
+            -(value + 1)) +
+        1ULL;
+
+    String result = "-";
+
+    result +=
+        unsigned64ToString(magnitude);
+
+    return result;
+}
+
+String Logger::unsigned64ToString(
+    uint64_t value)
+{
+    char buffer[21];
+
+    uint8_t position =
+        sizeof(buffer) - 1;
+
+    buffer[position] = '\0';
+
+    do
+    {
+        const uint8_t digit =
+            static_cast<uint8_t>(
+                value % 10ULL);
+
+        --position;
+
+        buffer[position] =
+            static_cast<char>(
+                '0' + digit);
+
+        value /= 10ULL;
+    }
+    while (value > 0 &&
+           position > 0);
+
+    return String(&buffer[position]);
+}
+
+//====================================================
+// CHANGE TRACKING
+//====================================================
+
+void Logger::markFilePending()
+{
+    if (pendingFileCount < entryCount)
+    {
+        ++pendingFileCount;
+    }
+
+    if (pendingFileCount >
+        MAX_MEMORY_ENTRIES)
+    {
+        pendingFileCount =
+            MAX_MEMORY_ENTRIES;
+    }
+
+    lastFileChangeTime = millis();
+}
+
+//====================================================
+// MEMORY RESET
+//====================================================
+
+void Logger::clearState()
+{
+    for (uint16_t i = 0;
+         i < MAX_MEMORY_ENTRIES;
+         ++i)
+    {
+        entries[i] = emptyEntry();
+    }
+
+    firstIndex = 0;
+    entryCount = 0;
+
+    pendingFileCount = 0;
+    lastFileChangeTime = 0;
+
+    enabledOutputs =
+        static_cast<uint8_t>(
+            LOG_OUTPUT_SERIAL) |
+        static_cast<uint8_t>(
+            LOG_OUTPUT_MEMORY);
+
+    currentMinimumLevel =
+        LOG_LEVEL_DEBUG;
+}
+#ifndef EGS_BOARD_PINS_H
+#define EGS_BOARD_PINS_H
+
+#include <Arduino.h>
+#include <stddef.h>
+#include <stdint.h>
+
+//====================================================
+// ESP32 GAME STATION
+// ESP32-S3 DEVKITC-1 N16R8 PIN MAP
+// 103_board_pins.h
+//====================================================
+//
+// Notes:
+// - GPIO26..GPIO37 are deliberately not used. They can be
+//   occupied by the module's flash/Octal PSRAM interface.
+// - GPIO0, GPIO3, GPIO45 and GPIO46 are strapping pins and
+//   are deliberately not used.
+// - GPIO19/20 are left free for native USB.
+// - GPIO43/44 are left free for UART0 diagnostics.
+// - The phone keypad matrix is intentionally not defined
+//   here. It will be added after its matrix is finalized.
+//
+// External hardware expectations:
+// - Buttons connect the assigned GPIO to GND when pressed.
+// - Haptic output drives a MOSFET/transistor, never the
+//   vibration motor directly.
+// - TFT reset is tied to the board reset/3.3 V as required.
+// - Touch IRQ is not required; touch is polled over SPI.
+//====================================================
+
+namespace BoardPins
+{
+    using Pin = int8_t;
+
+    inline constexpr Pin NOT_CONNECTED = -1;
+
+    //================================================
+    // RESERVED INTERFACES
+    //================================================
+
+    inline constexpr Pin USB_D_MINUS_PIN = 19;
+    inline constexpr Pin USB_D_PLUS_PIN  = 20;
+
+    inline constexpr Pin UART0_TX_PIN = 43;
+    inline constexpr Pin UART0_RX_PIN = 44;
+
+    //================================================
+    // SHARED SPI BUS
+    // ILI9341 + XPT2046 + TFT MICROSD
+    //================================================
+
+    inline constexpr Pin SPI_MOSI_PIN = 11;
+    inline constexpr Pin SPI_SCLK_PIN = 12;
+    inline constexpr Pin SPI_MISO_PIN = 13;
+
+    inline constexpr Pin TFT_CS_PIN        = 10;
+    inline constexpr Pin TFT_DC_PIN        = 9;
+    inline constexpr Pin TFT_RESET_PIN     = NOT_CONNECTED;
+    inline constexpr Pin TFT_BACKLIGHT_PIN = 8;
+
+    inline constexpr Pin TOUCH_CS_PIN  = 7;
+    inline constexpr Pin TOUCH_IRQ_PIN = NOT_CONNECTED;
+
+    inline constexpr Pin SD_CS_PIN = 6;
+
+    //================================================
+    // I2S AUDIO BUS
+    // MAX98357A + PCM5102A
+    //================================================
+
+    inline constexpr Pin I2S_BCLK_PIN = 39;
+    inline constexpr Pin I2S_WS_PIN   = 40;
+    inline constexpr Pin I2S_DATA_OUT_PIN = 41;
+
+    // Speaker muting is expected to be handled by the
+    // switched headphone jack or external hardware.
+    inline constexpr Pin SPEAKER_AMP_ENABLE_PIN =
+        NOT_CONNECTED;
+
+    inline constexpr Pin HEADPHONE_AMP_ENABLE_PIN =
+        NOT_CONNECTED;
+
+    inline constexpr Pin HEADPHONE_DETECT_PIN = 48;
+
+    //================================================
+    // I2C BUS
+    // DS3231 RTC
+    //================================================
+
+    inline constexpr Pin I2C_SCL_PIN = 42;
+    inline constexpr Pin I2C_SDA_PIN = 47;
+
+    //================================================
+    // DIRECT GAME CONTROLS
+    // ACTIVE LOW, INTERNAL PULL-UP
+    //================================================
+
+    inline constexpr Pin BUTTON_UP_PIN    = 1;
+    inline constexpr Pin BUTTON_DOWN_PIN  = 2;
+    inline constexpr Pin BUTTON_LEFT_PIN  = 14;
+    inline constexpr Pin BUTTON_RIGHT_PIN = 15;
+
+    inline constexpr Pin BUTTON_A_PIN = 16;
+    inline constexpr Pin BUTTON_B_PIN = 17;
+
+    inline constexpr Pin BUTTON_MENU_PIN = 18;
+    inline constexpr Pin BUTTON_BACK_PIN = 21;
+
+    inline constexpr Pin DIRECT_BUTTON_PINS[] =
+    {
+        BUTTON_UP_PIN,
+        BUTTON_DOWN_PIN,
+        BUTTON_LEFT_PIN,
+        BUTTON_RIGHT_PIN,
+        BUTTON_A_PIN,
+        BUTTON_B_PIN,
+        BUTTON_MENU_PIN,
+        BUTTON_BACK_PIN
+    };
+
+    inline constexpr size_t DIRECT_BUTTON_COUNT =
+        sizeof(DIRECT_BUTTON_PINS) /
+        sizeof(DIRECT_BUTTON_PINS[0]);
+
+    //================================================
+    // POWER, BATTERY AND HAPTIC
+    //================================================
+
+    inline constexpr Pin BATTERY_ADC_PIN = 4;
+
+    // Drives the gate/base of the haptic driver circuit.
+    inline constexpr Pin HAPTIC_PWM_PIN = 5;
+
+    inline constexpr Pin BOOST_ENABLE_PIN = 38;
+
+    //================================================
+    // OPTIONAL / CURRENTLY UNUSED
+    //================================================
+
+    inline constexpr Pin PIEZO_BUZZER_PIN =
+        NOT_CONNECTED;
+
+    inline constexpr Pin CHARGE_STATUS_PIN =
+        NOT_CONNECTED;
+
+    // Board revisions may place the onboard RGB LED on
+    // GPIO38 or GPIO48. The project does not use it.
+    inline constexpr Pin ONBOARD_RGB_LED_PIN =
+        NOT_CONNECTED;
+
+    //================================================
+    // VALIDATION HELPERS
+    //================================================
+
+    constexpr bool isPhysicalEsp32S3Gpio(Pin pin)
+    {
+        return
+            (pin >= 0 && pin <= 21) ||
+            (pin >= 26 && pin <= 48);
+    }
+
+    constexpr bool isStrappingPin(Pin pin)
+    {
+        return
+            pin == 0 ||
+            pin == 3 ||
+            pin == 45 ||
+            pin == 46;
+    }
+
+    constexpr bool isMemoryBusPin(Pin pin)
+    {
+        return pin >= 26 && pin <= 37;
+    }
+
+    constexpr bool isNativeUsbPin(Pin pin)
+    {
+        return
+            pin == USB_D_MINUS_PIN ||
+            pin == USB_D_PLUS_PIN;
+    }
+
+    constexpr bool isUart0Pin(Pin pin)
+    {
+        return
+            pin == UART0_TX_PIN ||
+            pin == UART0_RX_PIN;
+    }
+
+    constexpr bool isSafeProjectPin(Pin pin)
+    {
+        return
+            isPhysicalEsp32S3Gpio(pin) &&
+            !isStrappingPin(pin) &&
+            !isMemoryBusPin(pin) &&
+            !isNativeUsbPin(pin) &&
+            !isUart0Pin(pin);
+    }
+    template <size_t N>
+    constexpr bool allPinsSafe(const Pin (&pins)[N])
+    {
+        for (size_t i = 0; i < N; ++i)
+        {
+            if (!isSafeProjectPin(pins[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    template <size_t N>
+    constexpr bool allPinsUnique(const Pin (&pins)[N])
+    {
+        for (size_t i = 0; i < N; ++i)
+        {
+            for (size_t j = i + 1; j < N; ++j)
+            {
+                if (pins[i] == pins[j])
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    inline constexpr Pin ASSIGNED_PROJECT_PINS[] =
+    {
+        SPI_MOSI_PIN,
+        SPI_SCLK_PIN,
+        SPI_MISO_PIN,
+        TFT_CS_PIN,
+        TFT_DC_PIN,
+        TFT_BACKLIGHT_PIN,
+        TOUCH_CS_PIN,
+        SD_CS_PIN,
+        I2S_BCLK_PIN,
+        I2S_WS_PIN,
+        I2S_DATA_OUT_PIN,
+        HEADPHONE_DETECT_PIN,
+        I2C_SCL_PIN,
+        I2C_SDA_PIN,
+        BUTTON_UP_PIN,
+        BUTTON_DOWN_PIN,
+        BUTTON_LEFT_PIN,
+        BUTTON_RIGHT_PIN,
+        BUTTON_A_PIN,
+        BUTTON_B_PIN,
+        BUTTON_MENU_PIN,
+        BUTTON_BACK_PIN,
+        BATTERY_ADC_PIN,
+        HAPTIC_PWM_PIN,
+        BOOST_ENABLE_PIN
+    };
+
+    inline constexpr size_t ASSIGNED_PROJECT_PIN_COUNT =
+        sizeof(ASSIGNED_PROJECT_PINS) /
+        sizeof(ASSIGNED_PROJECT_PINS[0]);
+
+    static_assert(
+        allPinsSafe(ASSIGNED_PROJECT_PINS),
+        "103_board_pins.h contains an unsafe ESP32-S3 pin");
+
+    static_assert(
+        allPinsUnique(ASSIGNED_PROJECT_PINS),
+        "103_board_pins.h contains a duplicate pin assignment");
+
+    static_assert(
+        BATTERY_ADC_PIN >= 1 &&
+        BATTERY_ADC_PIN <= 10,
+        "Battery measurement must use an ADC1-capable pin");
+
+    static_assert(
+        DIRECT_BUTTON_COUNT == 8,
+        "Exactly eight direct control buttons are expected");
+}
+
+#endif
+#ifndef EGS_BOARD_CONFIG_H
+#define EGS_BOARD_CONFIG_H
+
+#include <Arduino.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "103_board_pins.h"
+
+//====================================================
+// ESP32 GAME STATION
+// BOARD AND SYSTEM CONFIGURATION
+// 104_board_config.h
+//====================================================
+
+namespace BoardConfig
+{
+    //================================================
+    // SYSTEM IDENTITY
+    //================================================
+
+    inline constexpr char SYSTEM_NAME[] =
+        "ESP32 Game Station";
+
+    inline constexpr char SYSTEM_VERSION[] =
+        "12.1-core";
+
+    inline constexpr uint32_t SERIAL_BAUD_RATE =
+        115200UL;
+
+    inline constexpr uint16_t CPU_FREQUENCY_MHZ =
+        240;
+
+    inline constexpr bool REQUIRE_PSRAM = true;
+    inline constexpr uint32_t EXPECTED_PSRAM_BYTES =
+        8UL * 1024UL * 1024UL;
+
+    //================================================
+    // FEATURE FLAGS
+    //================================================
+
+    inline constexpr bool ENABLE_DISPLAY = true;
+    inline constexpr bool ENABLE_TOUCH = true;
+    inline constexpr bool ENABLE_SD_CARD = true;
+    inline constexpr bool ENABLE_RTC = true;
+    inline constexpr bool ENABLE_AUDIO = true;
+    inline constexpr bool ENABLE_HAPTIC = true;
+
+    // Deliberately disabled until the real matrix and
+    // connector pins are completely identified.
+    inline constexpr bool ENABLE_PHONE_KEYPAD = false;
+
+    inline constexpr bool ENABLE_NATIVE_USB = true;
+    inline constexpr bool ENABLE_UART0_LOGGING = true;
+
+    //================================================
+    // DISPLAY AND FRAME PACING
+    //================================================
+
+    inline constexpr uint16_t SCREEN_WIDTH = 320;
+    inline constexpr uint16_t SCREEN_HEIGHT = 240;
+    inline constexpr uint8_t SCREEN_ROTATION = 1;
+    inline constexpr uint8_t DISPLAY_COLOR_DEPTH_BITS = 16;
+
+    inline constexpr uint16_t TARGET_FPS = 45;
+    inline constexpr uint16_t MINIMUM_ACCEPTABLE_FPS = 30;
+
+    inline constexpr uint32_t TARGET_FRAME_TIME_US =
+        (1000000UL + (TARGET_FPS / 2U)) /
+        TARGET_FPS;
+
+    inline constexpr uint32_t MINIMUM_FRAME_TIME_US =
+        (1000000UL +
+         (MINIMUM_ACCEPTABLE_FPS / 2U)) /
+        MINIMUM_ACCEPTABLE_FPS;
+
+    inline constexpr uint32_t TARGET_FRAME_TIME_MS =
+        (1000UL + (TARGET_FPS / 2U)) /
+        TARGET_FPS;
+
+    inline constexpr bool ENABLE_AUTOMATIC_FRAMESKIP =
+        true;
+
+    inline constexpr uint8_t MAX_NORMAL_FRAME_SKIP = 1;
+    inline constexpr uint8_t MAX_HEAVY_FRAME_SKIP = 2;
+    inline constexpr uint8_t MAX_SNES_FRAME_SKIP = 3;
+
+    inline constexpr bool USE_PSRAM_FRAME_BUFFERS = true;
+    inline constexpr uint16_t DISPLAY_TRANSFER_LINES = 40;
+
+    inline constexpr uint32_t TFT_SPI_FREQUENCY_HZ =
+        40000000UL;
+
+    inline constexpr uint32_t TOUCH_SPI_FREQUENCY_HZ =
+        2500000UL;
+
+    inline constexpr uint32_t SD_SPI_FREQUENCY_HZ =
+        20000000UL;
+
+    inline constexpr uint8_t DEFAULT_BRIGHTNESS = 220;
+    inline constexpr uint8_t MINIMUM_BRIGHTNESS = 24;
+    inline constexpr uint8_t MAXIMUM_BRIGHTNESS = 255;
+
+    inline constexpr uint16_t BACKLIGHT_PWM_FREQUENCY_HZ =
+        5000;
+
+    inline constexpr uint8_t BACKLIGHT_PWM_RESOLUTION_BITS =
+        8;
+
+    //================================================
+    // INPUT
+    //================================================
+
+    inline constexpr bool BUTTONS_ACTIVE_LOW = true;
+    inline constexpr bool USE_INTERNAL_BUTTON_PULLUPS = true;
+
+    inline constexpr uint32_t BUTTON_DEBOUNCE_TIME_MS = 25UL;
+    inline constexpr uint32_t BUTTON_LONG_PRESS_TIME_MS = 650UL;
+    inline constexpr uint32_t BUTTON_REPEAT_DELAY_MS = 400UL;
+    inline constexpr uint32_t BUTTON_REPEAT_INTERVAL_MS = 80UL;
+
+    inline constexpr uint32_t TOUCH_DEBOUNCE_TIME_MS = 30UL;
+    inline constexpr uint16_t TOUCH_PRESSURE_MINIMUM = 180;
+
+    //================================================
+    // AUDIO
+    //================================================
+
+    inline constexpr uint32_t AUDIO_SAMPLE_RATE_HZ =
+        44100UL;
+
+    inline constexpr uint8_t AUDIO_BITS_PER_SAMPLE = 16;
+    inline constexpr uint8_t AUDIO_CHANNEL_COUNT = 2;
+
+    inline constexpr uint8_t AUDIO_DMA_BUFFER_COUNT = 8;
+    inline constexpr uint16_t AUDIO_DMA_BUFFER_FRAMES = 256;
+
+    inline constexpr size_t AUDIO_RING_BUFFER_BYTES =
+        64UL * 1024UL;
+
+    inline constexpr size_t MP3_READ_BUFFER_BYTES =
+        16UL * 1024UL;
+
+    inline constexpr uint8_t DEFAULT_MASTER_VOLUME = 80;
+    inline constexpr uint8_t DEFAULT_MUSIC_VOLUME = 65;
+    inline constexpr uint8_t DEFAULT_GAME_VOLUME = 80;
+    inline constexpr uint8_t DEFAULT_EFFECT_VOLUME = 80;
+
+    inline constexpr bool MUSIC_FORMAT_MP3_ENABLED = true;
+    inline constexpr bool MUSIC_FORMAT_WAV_ENABLED = false;
+    inline constexpr bool PCM_WAV_EFFECTS_ENABLED = true;
+
+    inline constexpr bool BACKGROUND_MUSIC_IN_MENUS = true;
+    inline constexpr bool BACKGROUND_MUSIC_IN_BUILTIN_GAMES =
+        true;
+
+    inline constexpr bool BACKGROUND_MUSIC_IN_LIGHT_EMULATORS =
+        true;
+
+    inline constexpr bool BACKGROUND_MUSIC_IN_SNES = false;
+
+    //================================================
+    // HAPTIC
+    //================================================
+
+    inline constexpr uint16_t HAPTIC_PWM_FREQUENCY_HZ = 200;
+    inline constexpr uint8_t HAPTIC_PWM_RESOLUTION_BITS = 8;
+    inline constexpr uint8_t HAPTIC_DEFAULT_STRENGTH = 180;
+    inline constexpr uint32_t HAPTIC_MAX_PULSE_TIME_MS = 1200UL;
+
+    //================================================
+    // BATTERY
+    //================================================
+
+    inline constexpr uint8_t BATTERY_ADC_BITS = 12;
+    inline constexpr uint16_t BATTERY_ADC_MAX_VALUE = 4095;
+    inline constexpr float BATTERY_ADC_REFERENCE_V = 3.30f;
+
+    // This ratio assumes equal-value divider resistors.
+    // It can be calibrated later without changing drivers.
+    inline constexpr float BATTERY_DIVIDER_RATIO = 2.00f;
+
+    inline constexpr float BATTERY_FULL_VOLTAGE = 4.20f;
+    inline constexpr float BATTERY_EMPTY_VOLTAGE = 3.00f;
+    inline constexpr float BATTERY_LOW_VOLTAGE = 3.30f;
+    inline constexpr float BATTERY_CRITICAL_VOLTAGE = 3.10f;
+
+    inline constexpr uint8_t BATTERY_SAMPLE_COUNT = 16;
+    inline constexpr uint32_t BATTERY_UPDATE_INTERVAL_MS =
+        1000UL;
+
+    inline constexpr uint8_t BATTERY_BAR_COUNT = 4;
+    inline constexpr bool SHOW_BATTERY_PERCENTAGE = false;
+
+    // Voltage thresholds for 1, 2, 3 and 4 visible bars.
+    inline constexpr float BATTERY_BAR_THRESHOLDS_V
+        [BATTERY_BAR_COUNT] =
+    {
+        3.30f,
+        3.55f,
+        3.80f,
+        4.05f
+    };
+
+    //================================================
+    // POWER
+    //================================================
+
+    inline constexpr bool BOOST_ENABLE_ACTIVE_HIGH = true;
+    inline constexpr bool HEADPHONE_DETECT_ACTIVE_LOW = true;
+    inline constexpr uint32_t POWER_STABILIZATION_TIME_MS =
+        100UL;
+
+    //================================================
+    // RTC / I2C
+    //================================================
+
+    inline constexpr uint8_t DS3231_I2C_ADDRESS = 0x68;
+    inline constexpr uint32_t I2C_FREQUENCY_HZ = 100000UL;
+    // Alarm output is intentionally not used.
+    inline constexpr bool ENABLE_RTC_ALARM_PIN = false;
+
+    //================================================
+    // STORAGE LIMITS
+    //================================================
+
+    inline constexpr uint16_t MAX_GAME_FILES = 100;
+    inline constexpr uint16_t MAX_MUSIC_FILES = 512;
+    inline constexpr uint16_t MAX_PDF_FILES = 100;
+    inline constexpr uint16_t MAX_PLAYLIST_FILES = 64;
+
+    inline constexpr uint16_t MAX_FILENAME_LENGTH = 96;
+    inline constexpr uint16_t MAX_PATH_LENGTH = 192;
+
+    inline constexpr char GAMES_FOLDER[] = "/GAMES";
+    inline constexpr char BUILTIN_GAME_DATA_FOLDER[] =
+        "/GAMES/BUILTIN";
+
+    inline constexpr char EMULATOR_FOLDER[] = "/EMULATORS";
+    inline constexpr char ROMS_FOLDER[] = "/ROMS";
+    inline constexpr char MUSIC_FOLDER[] = "/MUSIC";
+    inline constexpr char PLAYLIST_FOLDER[] =
+        "/MUSIC/PLAYLISTS";
+
+    inline constexpr char COVERS_FOLDER[] = "/COVERS";
+    inline constexpr char SAVES_FOLDER[] = "/SAVES";
+    inline constexpr char CONFIG_FOLDER[] = "/CONFIG";
+    inline constexpr char LOG_FOLDER[] = "/CONFIG";
+    inline constexpr char UPDATE_FOLDER[] = "/UPDATE";
+    inline constexpr char PDF_FOLDER[] = "/PDF";
+
+    inline constexpr char SYSTEM_LOG_FILE[] =
+        "/CONFIG/system.log";
+
+    inline constexpr bool REQUIRE_GAME_COVERS = false;
+    inline constexpr bool REQUIRE_MUSIC_COVERS = false;
+
+    //================================================
+    // TIMING AND SAFETY
+    //================================================
+
+    inline constexpr uint32_t MENU_IDLE_TIMEOUT_MS =
+        30000UL;
+
+    inline constexpr uint32_t GAME_SESSION_TIMEOUT_MS =
+        600000UL;
+
+    inline constexpr uint32_t SETTINGS_SAVE_DELAY_MS =
+        1500UL;
+
+    inline constexpr uint32_t WATCHDOG_TIMEOUT_MS =
+        5000UL;
+
+    //================================================
+    // COMPILE-TIME CONSISTENCY CHECKS
+    //================================================
+
+    static_assert(
+        TARGET_FPS == 45,
+        "The fixed native-game target must remain 45 FPS");
+
+    static_assert(
+        MINIMUM_ACCEPTABLE_FPS == 30,
+        "The minimum acceptable native-game rate must remain 30 FPS");
+
+    static_assert(
+        TARGET_FPS >= MINIMUM_ACCEPTABLE_FPS,
+        "Target FPS cannot be lower than minimum FPS");
+
+    static_assert(
+        SCREEN_WIDTH == 320 && SCREEN_HEIGHT == 240,
+        "The selected ILI9341 layout expects 320x240");
+
+    static_assert(
+        DISPLAY_COLOR_DEPTH_BITS == 16,
+        "The shared graphics pipeline expects RGB565");
+
+    static_assert(
+        AUDIO_BITS_PER_SAMPLE == 16,
+        "The audio mixer expects signed 16-bit PCM");
+
+    static_assert(
+        AUDIO_CHANNEL_COUNT == 2,
+        "The I2S mixer is configured for stereo output");
+
+    static_assert(
+        BATTERY_BAR_COUNT == 4,
+        "The battery UI must use exactly four bars");
+
+    static_assert(
+        !ENABLE_PHONE_KEYPAD,
+        "Phone keypad must stay disabled until its matrix is finalized");
+
+    static_assert(
+        BoardPins::ASSIGNED_PROJECT_PIN_COUNT == 25,
+        "Unexpected board pin assignment count");
+}
+
+#endif
+#ifndef EGS_HARDWARE_MANAGER_H
+#define EGS_HARDWARE_MANAGER_H
+
+#include <Arduino.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "103_board_pins.h"
+#include "104_board_config.h"
+
+//====================================================
+// ESP32 GAME STATION
+// LOW-LEVEL BOARD HARDWARE MANAGER
+// 105_hardware_manager.h
+//====================================================
+//
+// Responsibilities:
+// - Places all outputs in a safe state before startup.
+// - Configures direct buttons and detection inputs.
+// - Starts the shared SPI bus and DS3231 I2C bus.
+// - Verifies required PSRAM on ESP32-S3 N16R8.
+// - Owns only low-level board control.
+//
+// Deliberately not handled here:
+// - TFT_eSPI display initialization.
+// - XPT2046 touch protocol.
+// - SD filesystem mounting.
+// - I2S audio driver installation.
+// - PWM effects for backlight or vibration.
+// - Phone keypad scanning.
+//====================================================
+
+enum class HardwareInitStage : uint8_t
+{
+    NONE = 0,
+    VALIDATION,
+    SAFE_OUTPUTS,
+    INPUTS,
+    SPI_BUS,
+    I2C_BUS,
+    MEMORY_CHECK,
+    POWER_ENABLE,
+    READY,
+    FAILED
+};
+
+enum class HardwareError : uint8_t
+{
+    NONE = 0,
+    INVALID_CONFIGURATION,
+    OUTPUT_CONFIGURATION_FAILED,
+    INPUT_CONFIGURATION_FAILED,
+    I2C_INITIALIZATION_FAILED,
+    PSRAM_NOT_FOUND,
+    PSRAM_TOO_SMALL,
+    BOOST_ENABLE_FAILED
+};
+
+enum class DirectButton : uint8_t
+{
+    UP = 0,
+    DOWN,
+    LEFT,
+    RIGHT,
+    A,
+    B,
+    MENU,
+    BACK,
+    COUNT
+};
+
+struct HardwareStatus
+{
+    bool initialized;
+    bool spiReady;
+    bool i2cReady;
+    bool psramAvailable;
+    bool boostEnabled;
+    bool backlightEnabled;
+    bool hapticEnabled;
+
+    uint32_t psramBytes;
+
+    HardwareInitStage stage;
+    HardwareError error;
+};
+
+class HardwareManager
+{
+public:
+    //================================================
+    // LIFECYCLE
+    //================================================
+
+    static bool begin();
+    static void end();
+
+    static bool ready();
+    static HardwareStatus status();
+
+    static HardwareInitStage stage();
+    static HardwareError lastError();
+
+    //================================================
+    // SHARED BUSES
+    //================================================
+
+    static SPIClass& sharedSpi();
+    static TwoWire& rtcWire();
+
+    //================================================
+    // LOW-LEVEL OUTPUT CONTROL
+    //================================================
+
+    static bool setBoostEnabled(bool enabled);
+    static bool boostEnabled();
+
+    // Digital fallback control only. A later display driver
+    // may attach PWM to the same backlight pin.
+    static bool setBacklightEnabled(bool enabled);
+    static bool backlightEnabled();
+
+    // Digital fallback control only. A later haptic driver
+    // may attach PWM to the same MOSFET control pin.
+    static bool setHapticEnabled(bool enabled);
+    static bool hapticEnabled();
+
+    static void makeOutputsSafe();
+
+    //================================================
+    // INPUT ACCESS
+    //================================================
+
+    static bool buttonPressed(DirectButton button);
+    static bool headphoneConnected();
+    static int rawBatteryAdc();
+
+    //================================================
+    // VALIDATION AND TEXT HELPERS
+    //================================================
+
+    static bool validateRuntimeConfiguration();
+
+    static const char* stageText(HardwareInitStage value);
+    static const char* errorText(HardwareError value);
+
+private:
+    static HardwareStatus currentStatus;
+
+    static void clearState();
+    static bool fail(HardwareError error);
+
+    static bool configureOutputPins();
+    static bool configureInputPins();
+    static bool configureSharedSpi();
+    static bool configureRtcI2c();
+    static bool detectRequiredMemory();
+
+    static bool pinConnected(BoardPins::Pin pin);
+
+    static bool configureOutput(
+        BoardPins::Pin pin,
+        uint8_t initialLevel);
+
+    static bool configureInput(
+        BoardPins::Pin pin,
+        uint8_t mode);
+
+    static void writeActiveLevel(
+        BoardPins::Pin pin,
+        bool active,
+        bool activeHigh);
+
+    static bool validButton(DirectButton button);
+    static BoardPins::Pin buttonPin(DirectButton button);
+};
+
+static_assert(
+    static_cast<uint8_t>(DirectButton::COUNT) ==
+        BoardPins::DIRECT_BUTTON_COUNT,
+    "DirectButton order must match DIRECT_BUTTON_PINS");
+
+#endif
+#include "105_hardware_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// LOW-LEVEL BOARD HARDWARE MANAGER
+// 106_hardware_manager.cpp
+//====================================================
+
+HardwareStatus HardwareManager::currentStatus =
+{
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    0,
+    HardwareInitStage::NONE,
+    HardwareError::NONE
+};
+
+//====================================================
+// LIFECYCLE
+//====================================================
+
+bool HardwareManager::begin()
+{
+    if (currentStatus.initialized)
+    {
+        return true;
+    }
+
+    clearState();
+    currentStatus.stage = HardwareInitStage::VALIDATION;
+
+    if (!validateRuntimeConfiguration())
+    {
+        return fail(
+            HardwareError::INVALID_CONFIGURATION);
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::SAFE_OUTPUTS;
+
+    if (!configureOutputPins())
+    {
+        return fail(
+            HardwareError::OUTPUT_CONFIGURATION_FAILED);
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::INPUTS;
+
+    if (!configureInputPins())
+    {
+        return fail(
+            HardwareError::INPUT_CONFIGURATION_FAILED);
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::SPI_BUS;
+
+    if (!configureSharedSpi())
+    {
+        return fail(
+            HardwareError::INVALID_CONFIGURATION);
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::I2C_BUS;
+
+    if (!configureRtcI2c())
+    {
+        return fail(
+            HardwareError::I2C_INITIALIZATION_FAILED);
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::MEMORY_CHECK;
+
+    if (!detectRequiredMemory())
+    {
+        return false;
+    }
+
+    currentStatus.stage =
+        HardwareInitStage::POWER_ENABLE;
+
+    if (!setBoostEnabled(true))
+    {
+        return fail(
+            HardwareError::BOOST_ENABLE_FAILED);
+    }
+
+    delay(
+        BoardConfig::POWER_STABILIZATION_TIME_MS);
+
+    currentStatus.initialized = true;
+    currentStatus.stage = HardwareInitStage::READY;
+    currentStatus.error = HardwareError::NONE;
+
+    return true;
+}
+
+void HardwareManager::end()
+{
+    makeOutputsSafe();
+
+    if (currentStatus.i2cReady)
+    {
+        Wire.end();
+    }
+
+    if (currentStatus.spiReady)
+    {
+        SPI.end();
+    }
+
+    clearState();
+}
+
+bool HardwareManager::ready()
+{
+    return
+        currentStatus.initialized &&
+        currentStatus.stage ==
+            HardwareInitStage::READY &&
+        currentStatus.error ==
+            HardwareError::NONE;
+}
+
+HardwareStatus HardwareManager::status()
+{
+    return currentStatus;
+}
+
+HardwareInitStage HardwareManager::stage()
+{
+    return currentStatus.stage;
+}
+
+HardwareError HardwareManager::lastError()
+{
+    return currentStatus.error;
+}
+
+//====================================================
+// SHARED BUSES
+//====================================================
+
+SPIClass& HardwareManager::sharedSpi()
+{
+    return SPI;
+}
+
+TwoWire& HardwareManager::rtcWire()
+{
+    return Wire;
+}
+
+//====================================================
+// LOW-LEVEL OUTPUT CONTROL
+//====================================================
+
+bool HardwareManager::setBoostEnabled(
+    bool enabled)
+{
+    if (!pinConnected(
+            BoardPins::BOOST_ENABLE_PIN))
+    {
+        return false;
+    }
+
+    writeActiveLevel(
+        BoardPins::BOOST_ENABLE_PIN,
+        enabled,
+        BoardConfig::BOOST_ENABLE_ACTIVE_HIGH);
+
+    currentStatus.boostEnabled = enabled;
+
+    return true;
+}
+
+bool HardwareManager::boostEnabled()
+{
+    return currentStatus.boostEnabled;
+}
+
+bool HardwareManager::setBacklightEnabled(
+    bool enabled)
+{
+    if (!pinConnected(
+            BoardPins::TFT_BACKLIGHT_PIN))
+    {
+        return false;
+    }
+
+    digitalWrite(
+        BoardPins::TFT_BACKLIGHT_PIN,
+        enabled ? HIGH : LOW);
+
+    currentStatus.backlightEnabled = enabled;
+
+    return true;
+}
+
+bool HardwareManager::backlightEnabled()
+{
+    return currentStatus.backlightEnabled;
+}
+
+bool HardwareManager::setHapticEnabled(
+    bool enabled)
+{
+    if (!BoardConfig::ENABLE_HAPTIC ||
+        !pinConnected(
+            BoardPins::HAPTIC_PWM_PIN))
+    {
+        return false;
+    }
+
+    digitalWrite(
+        BoardPins::HAPTIC_PWM_PIN,
+        enabled ? HIGH : LOW);
+
+    currentStatus.hapticEnabled = enabled;
+
+    return true;
+}
+
+bool HardwareManager::hapticEnabled()
+{
+    return currentStatus.hapticEnabled;
+}
+
+void HardwareManager::makeOutputsSafe()
+{
+    if (pinConnected(
+            BoardPins::TFT_CS_PIN))
+    {
+        pinMode(
+            BoardPins::TFT_CS_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::TFT_CS_PIN,
+            HIGH);
+    }
+
+    if (pinConnected(
+            BoardPins::TOUCH_CS_PIN))
+    {
+        pinMode(
+            BoardPins::TOUCH_CS_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::TOUCH_CS_PIN,
+            HIGH);
+    }
+
+    if (pinConnected(
+            BoardPins::SD_CS_PIN))
+    {
+        pinMode(
+            BoardPins::SD_CS_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::SD_CS_PIN,
+            HIGH);
+    }
+
+    if (pinConnected(
+            BoardPins::TFT_BACKLIGHT_PIN))
+    {
+        pinMode(
+            BoardPins::TFT_BACKLIGHT_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::TFT_BACKLIGHT_PIN,
+            LOW);
+    }
+
+    if (pinConnected(
+            BoardPins::HAPTIC_PWM_PIN))
+    {
+        pinMode(
+            BoardPins::HAPTIC_PWM_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::HAPTIC_PWM_PIN,
+            LOW);
+    }
+
+    if (pinConnected(
+            BoardPins::SPEAKER_AMP_ENABLE_PIN))
+    {
+        pinMode(
+            BoardPins::SPEAKER_AMP_ENABLE_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::SPEAKER_AMP_ENABLE_PIN,
+            LOW);
+    }
+
+    if (pinConnected(
+            BoardPins::HEADPHONE_AMP_ENABLE_PIN))
+    {
+        pinMode(
+            BoardPins::HEADPHONE_AMP_ENABLE_PIN,
+            OUTPUT);
+
+        digitalWrite(
+            BoardPins::HEADPHONE_AMP_ENABLE_PIN,
+            LOW);
+    }
+
+    if (pinConnected(
+            BoardPins::BOOST_ENABLE_PIN))
+    {
+        pinMode(
+            BoardPins::BOOST_ENABLE_PIN,
+            OUTPUT);
+
+        writeActiveLevel(
+            BoardPins::BOOST_ENABLE_PIN,
+            false,
+            BoardConfig::BOOST_ENABLE_ACTIVE_HIGH);
+    }
+
+    currentStatus.boostEnabled = false;
+    currentStatus.backlightEnabled = false;
+    currentStatus.hapticEnabled = false;
+}
+//====================================================
+// INPUT ACCESS
+//====================================================
+
+bool HardwareManager::buttonPressed(
+    DirectButton button)
+{
+    if (!validButton(button))
+    {
+        return false;
+    }
+
+    const int rawValue =
+        digitalRead(buttonPin(button));
+
+    return BoardConfig::BUTTONS_ACTIVE_LOW
+        ? rawValue == LOW
+        : rawValue == HIGH;
+}
+
+bool HardwareManager::headphoneConnected()
+{
+    if (!pinConnected(
+            BoardPins::HEADPHONE_DETECT_PIN))
+    {
+        return false;
+    }
+
+    const int rawValue =
+        digitalRead(
+            BoardPins::HEADPHONE_DETECT_PIN);
+
+    return
+        BoardConfig::HEADPHONE_DETECT_ACTIVE_LOW
+            ? rawValue == LOW
+            : rawValue == HIGH;
+}
+
+int HardwareManager::rawBatteryAdc()
+{
+    if (!pinConnected(
+            BoardPins::BATTERY_ADC_PIN))
+    {
+        return -1;
+    }
+
+    return analogRead(
+        BoardPins::BATTERY_ADC_PIN);
+}
+
+//====================================================
+// VALIDATION
+//====================================================
+
+bool HardwareManager::
+    validateRuntimeConfiguration()
+{
+    if (!BoardPins::allPinsSafe(
+            BoardPins::ASSIGNED_PROJECT_PINS) ||
+        !BoardPins::allPinsUnique(
+            BoardPins::ASSIGNED_PROJECT_PINS))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_DISPLAY &&
+        (!pinConnected(
+            BoardPins::SPI_MOSI_PIN) ||
+         !pinConnected(
+            BoardPins::SPI_SCLK_PIN) ||
+         !pinConnected(
+            BoardPins::SPI_MISO_PIN) ||
+         !pinConnected(
+            BoardPins::TFT_CS_PIN) ||
+         !pinConnected(
+            BoardPins::TFT_DC_PIN) ||
+         !pinConnected(
+            BoardPins::TFT_BACKLIGHT_PIN)))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_TOUCH &&
+        !pinConnected(
+            BoardPins::TOUCH_CS_PIN))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_SD_CARD &&
+        !pinConnected(
+            BoardPins::SD_CS_PIN))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_AUDIO &&
+        (!pinConnected(
+            BoardPins::I2S_BCLK_PIN) ||
+         !pinConnected(
+            BoardPins::I2S_WS_PIN) ||
+         !pinConnected(
+            BoardPins::I2S_DATA_OUT_PIN)))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_RTC &&
+        (!pinConnected(
+            BoardPins::I2C_SDA_PIN) ||
+         !pinConnected(
+            BoardPins::I2C_SCL_PIN)))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_HAPTIC &&
+        !pinConnected(
+            BoardPins::HAPTIC_PWM_PIN))
+    {
+        return false;
+    }
+
+    if (BoardConfig::ENABLE_PHONE_KEYPAD)
+    {
+        return false;
+    }
+
+    return
+        pinConnected(
+            BoardPins::BOOST_ENABLE_PIN) &&
+        pinConnected(
+            BoardPins::BATTERY_ADC_PIN) &&
+        BoardPins::DIRECT_BUTTON_COUNT ==
+            static_cast<size_t>(
+                DirectButton::COUNT);
+}
+
+//====================================================
+// TEXT HELPERS
+//====================================================
+
+const char* HardwareManager::stageText(
+    HardwareInitStage value)
+{
+    switch (value)
+    {
+        case HardwareInitStage::NONE:
+            return "NONE";
+
+        case HardwareInitStage::VALIDATION:
+            return "VALIDATION";
+
+        case HardwareInitStage::SAFE_OUTPUTS:
+            return "SAFE_OUTPUTS";
+
+        case HardwareInitStage::INPUTS:
+            return "INPUTS";
+
+        case HardwareInitStage::SPI_BUS:
+            return "SPI_BUS";
+
+        case HardwareInitStage::I2C_BUS:
+            return "I2C_BUS";
+
+        case HardwareInitStage::MEMORY_CHECK:
+            return "MEMORY_CHECK";
+
+        case HardwareInitStage::POWER_ENABLE:
+            return "POWER_ENABLE";
+
+        case HardwareInitStage::READY:
+            return "READY";
+
+        case HardwareInitStage::FAILED:
+            return "FAILED";
+
+        default:
+            return "INVALID";
+    }
+}
+
+const char* HardwareManager::errorText(
+    HardwareError value)
+{
+    switch (value)
+    {
+        case HardwareError::NONE:
+            return "NONE";
+
+        case HardwareError::
+            INVALID_CONFIGURATION:
+            return "INVALID_CONFIGURATION";
+
+        case HardwareError::
+            OUTPUT_CONFIGURATION_FAILED:
+            return
+                "OUTPUT_CONFIGURATION_FAILED";
+
+        case HardwareError::
+            INPUT_CONFIGURATION_FAILED:
+            return
+                "INPUT_CONFIGURATION_FAILED";
+
+        case HardwareError::
+            I2C_INITIALIZATION_FAILED:
+            return
+                "I2C_INITIALIZATION_FAILED";
+
+        case HardwareError::PSRAM_NOT_FOUND:
+            return "PSRAM_NOT_FOUND";
+
+        case HardwareError::PSRAM_TOO_SMALL:
+            return "PSRAM_TOO_SMALL";
+
+        case HardwareError::
+            BOOST_ENABLE_FAILED:
+            return "BOOST_ENABLE_FAILED";
+
+        default:
+            return "INVALID";
+    }
+}
+//====================================================
+// PRIVATE INITIALIZATION HELPERS
+//====================================================
+
+void HardwareManager::clearState()
+{
+    currentStatus.initialized = false;
+    currentStatus.spiReady = false;
+    currentStatus.i2cReady = false;
+    currentStatus.psramAvailable = false;
+    currentStatus.boostEnabled = false;
+    currentStatus.backlightEnabled = false;
+    currentStatus.hapticEnabled = false;
+
+    currentStatus.psramBytes = 0;
+
+    currentStatus.stage =
+        HardwareInitStage::NONE;
+
+    currentStatus.error =
+        HardwareError::NONE;
+}
+
+bool HardwareManager::fail(
+    HardwareError error)
+{
+    makeOutputsSafe();
+
+    if (currentStatus.i2cReady)
+    {
+        Wire.end();
+
+        currentStatus.i2cReady = false;
+    }
+
+    if (currentStatus.spiReady)
+    {
+        SPI.end();
+
+        currentStatus.spiReady = false;
+    }
+
+    currentStatus.initialized = false;
+
+    currentStatus.stage =
+        HardwareInitStage::FAILED;
+
+    currentStatus.error = error;
+
+    return false;
+}
+
+bool HardwareManager::configureOutputPins()
+{
+    makeOutputsSafe();
+
+    if (!configureOutput(
+            BoardPins::TFT_DC_PIN,
+            LOW))
+    {
+        return false;
+    }
+
+    if (pinConnected(
+            BoardPins::TFT_RESET_PIN) &&
+        !configureOutput(
+            BoardPins::TFT_RESET_PIN,
+            HIGH))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool HardwareManager::configureInputPins()
+{
+    const uint8_t buttonMode =
+        BoardConfig::USE_INTERNAL_BUTTON_PULLUPS
+            ? INPUT_PULLUP
+            : INPUT;
+
+    for (size_t i = 0;
+         i < BoardPins::DIRECT_BUTTON_COUNT;
+         ++i)
+    {
+        if (!configureInput(
+                BoardPins::DIRECT_BUTTON_PINS[i],
+                buttonMode))
+        {
+            return false;
+        }
+    }
+
+    if (!configureInput(
+            BoardPins::BATTERY_ADC_PIN,
+            INPUT))
+    {
+        return false;
+    }
+
+    if (pinConnected(
+            BoardPins::HEADPHONE_DETECT_PIN) &&
+        !configureInput(
+            BoardPins::HEADPHONE_DETECT_PIN,
+            INPUT_PULLUP))
+    {
+        return false;
+    }
+
+    if (pinConnected(
+            BoardPins::TOUCH_IRQ_PIN) &&
+        !configureInput(
+            BoardPins::TOUCH_IRQ_PIN,
+            INPUT_PULLUP))
+    {
+        return false;
+    }
+
+    analogReadResolution(
+        BoardConfig::BATTERY_ADC_BITS);
+
+    return true;
+}
+
+bool HardwareManager::configureSharedSpi()
+{
+    if (!pinConnected(
+            BoardPins::SPI_SCLK_PIN) ||
+        !pinConnected(
+            BoardPins::SPI_MISO_PIN) ||
+        !pinConnected(
+            BoardPins::SPI_MOSI_PIN))
+    {
+        return false;
+    }
+
+    SPI.begin(
+        BoardPins::SPI_SCLK_PIN,
+        BoardPins::SPI_MISO_PIN,
+        BoardPins::SPI_MOSI_PIN,
+        BoardPins::NOT_CONNECTED);
+
+    currentStatus.spiReady = true;
+
+    return true;
+}
+
+bool HardwareManager::configureRtcI2c()
+{
+    if (!BoardConfig::ENABLE_RTC)
+    {
+        currentStatus.i2cReady = false;
+
+        return true;
+    }
+
+    const bool started =
+        Wire.begin(
+            BoardPins::I2C_SDA_PIN,
+            BoardPins::I2C_SCL_PIN,
+            BoardConfig::I2C_FREQUENCY_HZ);
+
+    currentStatus.i2cReady = started;
+
+    return started;
+}
+
+bool HardwareManager::detectRequiredMemory()
+{
+#if defined(ARDUINO_ARCH_ESP32)
+
+    currentStatus.psramAvailable =
+        psramFound();
+
+    if (currentStatus.psramAvailable)
+    {
+        currentStatus.psramBytes =
+            static_cast<uint32_t>(
+                ESP.getPsramSize());
+    }
+
+#else
+
+    currentStatus.psramAvailable =
+        !BoardConfig::REQUIRE_PSRAM;
+
+    currentStatus.psramBytes = 0;
+
+#endif
+
+    if (!BoardConfig::REQUIRE_PSRAM)
+    {
+        return true;
+    }
+
+    if (!currentStatus.psramAvailable)
+    {
+        return fail(
+            HardwareError::PSRAM_NOT_FOUND);
+    }
+
+    if (currentStatus.psramBytes <
+        BoardConfig::EXPECTED_PSRAM_BYTES)
+    {
+        return fail(
+            HardwareError::PSRAM_TOO_SMALL);
+    }
+
+    return true;
+}
+
+//====================================================
+// PRIVATE PIN HELPERS
+//====================================================
+
+bool HardwareManager::pinConnected(
+    BoardPins::Pin pin)
+{
+    return
+        pin != BoardPins::NOT_CONNECTED &&
+        BoardPins::isPhysicalEsp32S3Gpio(pin);
+}
+
+bool HardwareManager::configureOutput(
+    BoardPins::Pin pin,
+    uint8_t initialLevel)
+{
+    if (!pinConnected(pin))
+    {
+        return false;
+    }
+
+    pinMode(
+        pin,
+        OUTPUT);
+
+    digitalWrite(
+        pin,
+        initialLevel);
+
+    return true;
+}
+
+bool HardwareManager::configureInput(
+    BoardPins::Pin pin,
+    uint8_t mode)
+{
+    if (!pinConnected(pin))
+    {
+        return false;
+    }
+
+    pinMode(
+        pin,
+        mode);
+
+    return true;
+}
+
+void HardwareManager::writeActiveLevel(
+    BoardPins::Pin pin,
+    bool active,
+    bool activeHigh)
+{
+    const bool highLevel =
+        active == activeHigh;
+
+    digitalWrite(
+        pin,
+        highLevel ? HIGH : LOW);
+}
+
+bool HardwareManager::validButton(
+    DirectButton button)
+{
+    return
+        static_cast<uint8_t>(button) <
+        static_cast<uint8_t>(
+            DirectButton::COUNT);
+}
+
+BoardPins::Pin HardwareManager::buttonPin(
+    DirectButton button)
+{
+    if (!validButton(button))
+    {
+        return BoardPins::NOT_CONNECTED;
+    }
+
+    return
+        BoardPins::DIRECT_BUTTON_PINS[
+            static_cast<uint8_t>(button)];
+}
+#ifndef EGS_POWER_MANAGER_H
+#define EGS_POWER_MANAGER_H
+
+#include <Arduino.h>
+#include <stdint.h>
+
+#include "104_board_config.h"
+#include "105_hardware_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// POWER STATE AND SHUTDOWN MANAGER
+// 107_power_manager.h
+//====================================================
+//
+// Responsibilities:
+// - Tracks input activity and display idle states.
+// - Wakes the display when activity is reported.
+// - Coordinates a non-blocking safe-shutdown sequence.
+// - Disables haptic, backlight and TPS61088 boost output.
+//
+// Notes:
+// - The locking physical power button remains the primary
+//   hardware power control.
+// - DIMMED is a logical state. The later backlight/display
+//   driver can apply reduced PWM brightness through the
+//   state callback.
+// - Touch and phone-keypad drivers must call
+//   notifyActivity() when they detect valid input.
+//====================================================
+
+enum class PowerState : uint8_t
+{
+    OFF = 0,
+    STARTING,
+    ACTIVE,
+    DIMMED,
+    DISPLAY_OFF,
+    SHUTDOWN_PENDING,
+    SHUTTING_DOWN,
+    POWER_DISABLED,
+    FAILED
+};
+
+enum class ShutdownReason : uint8_t
+{
+    NONE = 0,
+    USER_REQUEST,
+    LOW_BATTERY,
+    CRITICAL_BATTERY,
+    SOFTWARE_REQUEST,
+    SYSTEM_UPDATE,
+    INTERNAL_ERROR
+};
+
+enum class PowerError : uint8_t
+{
+    NONE = 0,
+    HARDWARE_INITIALIZATION_FAILED,
+    BOOST_CONTROL_FAILED,
+    BACKLIGHT_CONTROL_FAILED,
+    INVALID_IDLE_TIMEOUTS,
+    INVALID_SHUTDOWN_REASON
+};
+
+struct PowerStatus
+{
+    bool initialized;
+    bool automaticIdleEnabled;
+    bool keepAwake;
+    bool shutdownRequested;
+    bool shutdownPreparationComplete;
+    bool boostEnabled;
+    bool backlightEnabled;
+
+    uint32_t lastActivityTime;
+    uint32_t idleTimeMs;
+    uint32_t dimTimeoutMs;
+    uint32_t displayOffTimeoutMs;
+    uint32_t shutdownRequestTime;
+
+    PowerState state;
+    ShutdownReason shutdownReason;
+    PowerError error;
+};
+
+using PowerStateCallback = void (*)(
+    PowerState previousState,
+    PowerState currentState);
+
+// Return true when files/settings/audio are safe for power-off.
+// Returning false asks PowerManager to try again until timeout.
+using ShutdownPreparationCallback = bool (*)(
+    ShutdownReason reason);
+
+class PowerManager
+{
+public:
+    static constexpr uint32_t DEFAULT_DIM_TIMEOUT_MS =
+        BoardConfig::MENU_IDLE_TIMEOUT_MS / 2UL;
+
+    static constexpr uint32_t DEFAULT_DISPLAY_OFF_TIMEOUT_MS =
+        BoardConfig::MENU_IDLE_TIMEOUT_MS;
+
+    static constexpr uint32_t DIRECT_BUTTON_POLL_INTERVAL_MS =
+        20UL;
+
+    static constexpr uint32_t SHUTDOWN_REQUEST_GRACE_MS =
+        150UL;
+
+    static constexpr uint32_t SHUTDOWN_PREPARATION_TIMEOUT_MS =
+        2500UL;
+
+    //================================================
+    // LIFECYCLE
+    //================================================
+
+    static bool begin();
+    static void update();
+    static void end();
+
+    static bool ready();
+    static PowerStatus status();
+
+    //================================================
+    // ACTIVITY AND IDLE CONTROL
+    //================================================
+
+    static void notifyActivity();
+
+    static bool setIdleTimeouts(
+        uint32_t dimTimeoutMs,
+        uint32_t displayOffTimeoutMs);
+
+    static void setAutomaticIdleEnabled(bool enabled);
+    static bool automaticIdleEnabled();
+
+    static void setKeepAwake(bool enabled);
+    static bool keepAwake();
+
+    static uint32_t idleTimeMs();
+
+    //================================================
+    // SHUTDOWN CONTROL
+    //================================================
+
+    static bool requestShutdown(ShutdownReason reason);
+    static bool cancelShutdown();
+    static bool forceShutdown(ShutdownReason reason);
+
+    static bool shutdownPending();
+    static ShutdownReason shutdownReason();
+
+    //================================================
+    // STATE ACCESS
+    //================================================
+
+    static PowerState state();
+    static PowerError lastError();
+
+    static bool displayAwake();
+    static bool displayDimmed();
+
+    //================================================
+    // CALLBACKS
+    //================================================
+
+    static void setStateCallback(
+        PowerStateCallback callback);
+
+    static void setShutdownPreparationCallback(
+        ShutdownPreparationCallback callback);
+
+    //================================================
+    // TEXT HELPERS
+    //================================================
+
+    static const char* stateText(PowerState value);
+    static const char* reasonText(ShutdownReason value);
+    static const char* errorText(PowerError value);
+
+private:
+    static PowerStatus currentStatus;
+
+    static PowerStateCallback stateCallback;
+    static ShutdownPreparationCallback shutdownCallback;
+
+    static uint32_t lastButtonPollTime;
+
+    static void clearState();
+    static bool fail(PowerError error);
+
+    static void processDirectButtonActivity(uint32_t now);
+    static void processIdle(uint32_t now);
+    static void processShutdown(uint32_t now);
+
+    static void transitionTo(PowerState newState);
+    static bool wakeDisplay();
+    static bool turnDisplayOff();
+    static bool performPowerCut();
+
+    static bool validShutdownReason(ShutdownReason reason);
+    static bool anyDirectButtonPressed();
+    static void synchronizeHardwareStatus();
+};
+
+static_assert(
+    PowerManager::DEFAULT_DIM_TIMEOUT_MS > 0,
+    "Power dim timeout must be greater than zero");
+
+static_assert(
+    PowerManager::DEFAULT_DIM_TIMEOUT_MS <
+        PowerManager::DEFAULT_DISPLAY_OFF_TIMEOUT_MS,
+    "Power dim timeout must precede display-off timeout");
+
+#endif
+#include "107_power_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// POWER STATE AND SHUTDOWN MANAGER
+// 108_power_manager.cpp
+//====================================================
+
+PowerStatus PowerManager::currentStatus =
+{
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    0,
+    0,
+    PowerManager::DEFAULT_DIM_TIMEOUT_MS,
+    PowerManager::DEFAULT_DISPLAY_OFF_TIMEOUT_MS,
+    0,
+    PowerState::OFF,
+    ShutdownReason::NONE,
+    PowerError::NONE
+};
+
+PowerStateCallback PowerManager::stateCallback = nullptr;
+
+ShutdownPreparationCallback
+    PowerManager::shutdownCallback = nullptr;
+
+uint32_t PowerManager::lastButtonPollTime = 0;
+
+//====================================================
+// LIFECYCLE
+//====================================================
+
+bool PowerManager::begin()
+{
+    if (currentStatus.initialized)
+    {
+        return ready();
+    }
+
+    clearState();
+    transitionTo(PowerState::STARTING);
+
+    if (!HardwareManager::ready() &&
+        !HardwareManager::begin())
+    {
+        return fail(
+            PowerError::HARDWARE_INITIALIZATION_FAILED);
+    }
+
+    if (!HardwareManager::boostEnabled() &&
+        !HardwareManager::setBoostEnabled(true))
+    {
+        return fail(
+            PowerError::BOOST_CONTROL_FAILED);
+    }
+
+    if (BoardConfig::ENABLE_DISPLAY &&
+        !HardwareManager::setBacklightEnabled(true))
+    {
+        return fail(
+            PowerError::BACKLIGHT_CONTROL_FAILED);
+    }
+
+    const uint32_t now = millis();
+
+    currentStatus.initialized = true;
+    currentStatus.lastActivityTime = now;
+    currentStatus.idleTimeMs = 0;
+    currentStatus.shutdownRequestTime = 0;
+    currentStatus.shutdownReason = ShutdownReason::NONE;
+    currentStatus.error = PowerError::NONE;
+
+    synchronizeHardwareStatus();
+    transitionTo(PowerState::ACTIVE);
+
+    return true;
+}
+
+void PowerManager::update()
+{
+    if (!currentStatus.initialized)
+    {
+        return;
+    }
+
+    if (currentStatus.state == PowerState::FAILED ||
+        currentStatus.state == PowerState::POWER_DISABLED)
+    {
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    processDirectButtonActivity(now);
+
+    if (currentStatus.shutdownRequested)
+    {
+        processShutdown(now);
+        return;
+    }
+
+    processIdle(now);
+    synchronizeHardwareStatus();
+}
+
+void PowerManager::end()
+{
+    if (currentStatus.initialized)
+    {
+        HardwareManager::setHapticEnabled(false);
+
+        if (BoardConfig::ENABLE_DISPLAY)
+        {
+            HardwareManager::setBacklightEnabled(false);
+        }
+    }
+
+    clearState();
+}
+
+bool PowerManager::ready()
+{
+    return
+        currentStatus.initialized &&
+        currentStatus.error == PowerError::NONE &&
+        currentStatus.state != PowerState::FAILED &&
+        currentStatus.state != PowerState::POWER_DISABLED;
+}
+
+PowerStatus PowerManager::status()
+{
+    if (currentStatus.initialized)
+    {
+        currentStatus.idleTimeMs =
+            millis() - currentStatus.lastActivityTime;
+
+        synchronizeHardwareStatus();
+    }
+
+    return currentStatus;
+}
+
+//====================================================
+// ACTIVITY AND IDLE CONTROL
+//====================================================
+
+void PowerManager::notifyActivity()
+{
+    if (!currentStatus.initialized ||
+        currentStatus.shutdownRequested)
+    {
+        return;
+    }
+
+    currentStatus.lastActivityTime = millis();
+    currentStatus.idleTimeMs = 0;
+
+    if (currentStatus.state == PowerState::DIMMED ||
+        currentStatus.state == PowerState::DISPLAY_OFF)
+    {
+        wakeDisplay();
+    }
+}
+
+bool PowerManager::setIdleTimeouts(
+    uint32_t dimTimeoutMs,
+    uint32_t displayOffTimeoutMs)
+{
+    if (dimTimeoutMs == 0 ||
+        displayOffTimeoutMs == 0 ||
+        dimTimeoutMs >= displayOffTimeoutMs)
+    {
+        currentStatus.error =
+            PowerError::INVALID_IDLE_TIMEOUTS;
+
+        return false;
+    }
+
+    currentStatus.dimTimeoutMs = dimTimeoutMs;
+    currentStatus.displayOffTimeoutMs =
+        displayOffTimeoutMs;
+
+    if (currentStatus.error ==
+        PowerError::INVALID_IDLE_TIMEOUTS)
+    {
+        currentStatus.error = PowerError::NONE;
+    }
+
+    if (currentStatus.initialized)
+    {
+        notifyActivity();
+    }
+
+    return true;
+}
+
+void PowerManager::setAutomaticIdleEnabled(bool enabled)
+{
+    currentStatus.automaticIdleEnabled = enabled;
+
+    if (!currentStatus.initialized)
+    {
+        return;
+    }
+
+    currentStatus.lastActivityTime = millis();
+    currentStatus.idleTimeMs = 0;
+
+    if (!enabled &&
+        (currentStatus.state == PowerState::DIMMED ||
+         currentStatus.state == PowerState::DISPLAY_OFF))
+    {
+        wakeDisplay();
+    }
+}
+
+bool PowerManager::automaticIdleEnabled()
+{
+    return currentStatus.automaticIdleEnabled;
+}
+
+void PowerManager::setKeepAwake(bool enabled)
+{
+    currentStatus.keepAwake = enabled;
+
+    if (!currentStatus.initialized)
+    {
+        return;
+    }
+
+    currentStatus.lastActivityTime = millis();
+    currentStatus.idleTimeMs = 0;
+
+    if (enabled &&
+        (currentStatus.state == PowerState::DIMMED ||
+         currentStatus.state == PowerState::DISPLAY_OFF))
+    {
+        wakeDisplay();
+    }
+}
+
+bool PowerManager::keepAwake()
+{
+    return currentStatus.keepAwake;
+}
+
+uint32_t PowerManager::idleTimeMs()
+{
+    if (!currentStatus.initialized)
+    {
+        return 0;
+    }
+
+    return millis() - currentStatus.lastActivityTime;
+}
+
+//====================================================
+// SHUTDOWN CONTROL
+//====================================================
+
+bool PowerManager::requestShutdown(
+    ShutdownReason reason)
+{
+    if (!currentStatus.initialized)
+    {
+        return false;
+    }
+
+    if (!validShutdownReason(reason))
+    {
+        currentStatus.error =
+            PowerError::INVALID_SHUTDOWN_REASON;
+
+        return false;
+    }
+
+    if (currentStatus.state == PowerState::POWER_DISABLED ||
+        currentStatus.state == PowerState::SHUTTING_DOWN)
+    {
+        return false;
+    }
+
+    currentStatus.error = PowerError::NONE;
+
+    if (currentStatus.shutdownRequested)
+    {
+        currentStatus.shutdownReason = reason;
+        return true;
+    }
+
+    currentStatus.shutdownRequested = true;
+    currentStatus.shutdownPreparationComplete = false;
+    currentStatus.shutdownReason = reason;
+    currentStatus.shutdownRequestTime = millis();
+
+    transitionTo(PowerState::SHUTDOWN_PENDING);
+    return true;
+}
+
+bool PowerManager::cancelShutdown()
+{
+    if (!currentStatus.initialized ||
+        currentStatus.state != PowerState::SHUTDOWN_PENDING)
+    {
+        return false;
+    }
+
+    currentStatus.shutdownRequested = false;
+    currentStatus.shutdownPreparationComplete = false;
+    currentStatus.shutdownReason = ShutdownReason::NONE;
+    currentStatus.shutdownRequestTime = 0;
+    currentStatus.error = PowerError::NONE;
+    currentStatus.lastActivityTime = millis();
+    currentStatus.idleTimeMs = 0;
+
+    return wakeDisplay();
+}
+
+bool PowerManager::forceShutdown(
+    ShutdownReason reason)
+{
+    if (!currentStatus.initialized)
+    {
+        return false;
+    }
+
+    if (!validShutdownReason(reason))
+    {
+        currentStatus.error =
+            PowerError::INVALID_SHUTDOWN_REASON;
+
+        return false;
+    }
+
+    currentStatus.error = PowerError::NONE;
+    currentStatus.shutdownRequested = true;
+    currentStatus.shutdownReason = reason;
+    currentStatus.shutdownRequestTime = millis();
+
+    transitionTo(PowerState::SHUTTING_DOWN);
+
+    HardwareManager::setHapticEnabled(false);
+
+    if (BoardConfig::ENABLE_DISPLAY)
+    {
+        HardwareManager::setBacklightEnabled(false);
+    }
+
+    if (shutdownCallback != nullptr)
+    {
+        (void)shutdownCallback(reason);
+    }
+
+    currentStatus.shutdownPreparationComplete = true;
+    return performPowerCut();
+}
+
+bool PowerManager::shutdownPending()
+{
+    return currentStatus.shutdownRequested;
+}
+
+ShutdownReason PowerManager::shutdownReason()
+{
+    return currentStatus.shutdownReason;
+}
+
+//====================================================
+// STATE ACCESS
+//====================================================
+
+PowerState PowerManager::state()
+{
+    return currentStatus.state;
+}
+
+PowerError PowerManager::lastError()
+{
+    return currentStatus.error;
+}
+
+bool PowerManager::displayAwake()
+{
+    return
+        currentStatus.state == PowerState::ACTIVE ||
+        currentStatus.state == PowerState::DIMMED;
+}
+
+bool PowerManager::displayDimmed()
+{
+    return currentStatus.state == PowerState::DIMMED;
+}
+
+//====================================================
+// CALLBACKS
+//====================================================
+
+void PowerManager::setStateCallback(
+    PowerStateCallback callback)
+{
+    stateCallback = callback;
+}
+
+void PowerManager::setShutdownPreparationCallback(
+    ShutdownPreparationCallback callback)
+{
+    shutdownCallback = callback;
+}
+
+//====================================================
+// TEXT HELPERS
+//====================================================
+
+const char* PowerManager::stateText(PowerState value)
+{
+    switch (value)
+    {
+        case PowerState::OFF:
+            return "OFF";
+
+        case PowerState::STARTING:
+            return "STARTING";
+
+        case PowerState::ACTIVE:
+            return "ACTIVE";
+
+        case PowerState::DIMMED:
+            return "DIMMED";
+
+        case PowerState::DISPLAY_OFF:
+            return "DISPLAY_OFF";
+
+        case PowerState::SHUTDOWN_PENDING:
+            return "SHUTDOWN_PENDING";
+
+        case PowerState::SHUTTING_DOWN:
+            return "SHUTTING_DOWN";
+
+        case PowerState::POWER_DISABLED:
+            return "POWER_DISABLED";
+
+        case PowerState::FAILED:
+            return "FAILED";
+
+        default:
+            return "INVALID";
+    }
+}
+
+const char* PowerManager::reasonText(
+    ShutdownReason value)
+{
+    switch (value)
+    {
+        case ShutdownReason::NONE:
+            return "NONE";
+
+        case ShutdownReason::USER_REQUEST:
+            return "USER_REQUEST";
+
+        case ShutdownReason::LOW_BATTERY:
+            return "LOW_BATTERY";
+
+        case ShutdownReason::CRITICAL_BATTERY:
+            return "CRITICAL_BATTERY";
+
+        case ShutdownReason::SOFTWARE_REQUEST:
+            return "SOFTWARE_REQUEST";
+
+        case ShutdownReason::SYSTEM_UPDATE:
+            return "SYSTEM_UPDATE";
+
+        case ShutdownReason::INTERNAL_ERROR:
+            return "INTERNAL_ERROR";
+
+        default:
+            return "INVALID";
+    }
+}
+
+const char* PowerManager::errorText(PowerError value)
+{
+    switch (value)
+    {
+        case PowerError::NONE:
+            return "NONE";
+
+        case PowerError::HARDWARE_INITIALIZATION_FAILED:
+            return "HARDWARE_INITIALIZATION_FAILED";
+
+        case PowerError::BOOST_CONTROL_FAILED:
+            return "BOOST_CONTROL_FAILED";
+
+        case PowerError::BACKLIGHT_CONTROL_FAILED:
+            return "BACKLIGHT_CONTROL_FAILED";
+
+        case PowerError::INVALID_IDLE_TIMEOUTS:
+            return "INVALID_IDLE_TIMEOUTS";
+
+        case PowerError::INVALID_SHUTDOWN_REASON:
+            return "INVALID_SHUTDOWN_REASON";
+
+        default:
+            return "INVALID";
+    }
+}
+
+//====================================================
+// PRIVATE STATE HELPERS
+//====================================================
+void PowerManager::clearState()
+{
+    currentStatus.initialized = false;
+    currentStatus.automaticIdleEnabled = true;
+    currentStatus.keepAwake = false;
+    currentStatus.shutdownRequested = false;
+    currentStatus.shutdownPreparationComplete = false;
+    currentStatus.boostEnabled = false;
+    currentStatus.backlightEnabled = false;
+
+    currentStatus.lastActivityTime = 0;
+    currentStatus.idleTimeMs = 0;
+    currentStatus.dimTimeoutMs = DEFAULT_DIM_TIMEOUT_MS;
+    currentStatus.displayOffTimeoutMs =
+        DEFAULT_DISPLAY_OFF_TIMEOUT_MS;
+    currentStatus.shutdownRequestTime = 0;
+
+    currentStatus.state = PowerState::OFF;
+    currentStatus.shutdownReason = ShutdownReason::NONE;
+    currentStatus.error = PowerError::NONE;
+
+    lastButtonPollTime = 0;
+}
+
+bool PowerManager::fail(PowerError error)
+{
+    currentStatus.initialized = false;
+    currentStatus.error = error;
+    synchronizeHardwareStatus();
+    transitionTo(PowerState::FAILED);
+
+    return false;
+}
+
+void PowerManager::processDirectButtonActivity(
+    uint32_t now)
+{
+    if (now - lastButtonPollTime <
+        DIRECT_BUTTON_POLL_INTERVAL_MS)
+    {
+        return;
+    }
+
+    lastButtonPollTime = now;
+
+    if (anyDirectButtonPressed())
+    {
+        notifyActivity();
+    }
+}
+
+void PowerManager::processIdle(uint32_t now)
+{
+    currentStatus.idleTimeMs =
+        now - currentStatus.lastActivityTime;
+
+    if (!currentStatus.automaticIdleEnabled ||
+        currentStatus.keepAwake)
+    {
+        if (currentStatus.state == PowerState::DIMMED ||
+            currentStatus.state == PowerState::DISPLAY_OFF)
+        {
+            wakeDisplay();
+        }
+
+        return;
+    }
+
+    if (currentStatus.idleTimeMs >=
+        currentStatus.displayOffTimeoutMs)
+    {
+        if (currentStatus.state != PowerState::DISPLAY_OFF)
+        {
+            turnDisplayOff();
+        }
+
+        return;
+    }
+
+    if (currentStatus.idleTimeMs >=
+            currentStatus.dimTimeoutMs &&
+        currentStatus.state == PowerState::ACTIVE)
+    {
+        transitionTo(PowerState::DIMMED);
+    }
+}
+
+void PowerManager::processShutdown(uint32_t now)
+{
+    const uint32_t elapsed =
+        now - currentStatus.shutdownRequestTime;
+
+    if (currentStatus.state == PowerState::SHUTDOWN_PENDING &&
+        elapsed < SHUTDOWN_REQUEST_GRACE_MS)
+    {
+        return;
+    }
+
+    if (currentStatus.state == PowerState::SHUTDOWN_PENDING)
+    {
+        transitionTo(PowerState::SHUTTING_DOWN);
+
+        HardwareManager::setHapticEnabled(false);
+
+        if (BoardConfig::ENABLE_DISPLAY)
+        {
+            HardwareManager::setBacklightEnabled(false);
+            currentStatus.backlightEnabled = false;
+        }
+    }
+
+    if (!currentStatus.shutdownPreparationComplete)
+    {
+        if (shutdownCallback == nullptr ||
+            shutdownCallback(currentStatus.shutdownReason))
+        {
+            currentStatus.shutdownPreparationComplete = true;
+        }
+    }
+
+    if (!currentStatus.shutdownPreparationComplete &&
+        elapsed < SHUTDOWN_PREPARATION_TIMEOUT_MS)
+    {
+        return;
+    }
+
+    (void)performPowerCut();
+}
+
+void PowerManager::transitionTo(PowerState newState)
+{
+    if (currentStatus.state == newState)
+    {
+        return;
+    }
+
+    const PowerState previousState = currentStatus.state;
+    currentStatus.state = newState;
+
+    if (stateCallback != nullptr)
+    {
+        stateCallback(previousState, newState);
+    }
+}
+
+bool PowerManager::wakeDisplay()
+{
+    if (BoardConfig::ENABLE_DISPLAY &&
+        !HardwareManager::backlightEnabled())
+    {
+        if (!HardwareManager::setBacklightEnabled(true))
+        {
+            return fail(
+                PowerError::BACKLIGHT_CONTROL_FAILED);
+        }
+    }
+
+    synchronizeHardwareStatus();
+    transitionTo(PowerState::ACTIVE);
+
+    return true;
+}
+
+bool PowerManager::turnDisplayOff()
+{
+    if (BoardConfig::ENABLE_DISPLAY &&
+        HardwareManager::backlightEnabled())
+    {
+        if (!HardwareManager::setBacklightEnabled(false))
+        {
+            return fail(
+                PowerError::BACKLIGHT_CONTROL_FAILED);
+        }
+    }
+
+    synchronizeHardwareStatus();
+    transitionTo(PowerState::DISPLAY_OFF);
+
+    return true;
+}
+
+bool PowerManager::performPowerCut()
+{
+    HardwareManager::setHapticEnabled(false);
+
+    if (BoardConfig::ENABLE_DISPLAY)
+    {
+        HardwareManager::setBacklightEnabled(false);
+    }
+
+    synchronizeHardwareStatus();
+
+    if (!HardwareManager::setBoostEnabled(false))
+    {
+        return fail(PowerError::BOOST_CONTROL_FAILED);
+    }
+
+    // On a self-latching power circuit the MCU may lose power
+    // during the call above. These assignments are still useful
+    // for tests and for boards where EN does not cut instantly.
+    currentStatus.boostEnabled = false;
+    currentStatus.backlightEnabled = false;
+    currentStatus.initialized = false;
+    currentStatus.shutdownRequested = false;
+    transitionTo(PowerState::POWER_DISABLED);
+
+    return true;
+}
+
+bool PowerManager::validShutdownReason(
+    ShutdownReason reason)
+{
+    return
+        reason > ShutdownReason::NONE &&
+        reason <= ShutdownReason::INTERNAL_ERROR;
+}
+
+bool PowerManager::anyDirectButtonPressed()
+{
+    for (uint8_t index = 0;
+         index < static_cast<uint8_t>(DirectButton::COUNT);
+         ++index)
+    {
+        if (HardwareManager::buttonPressed(
+                static_cast<DirectButton>(index)))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void PowerManager::synchronizeHardwareStatus()
+{
+    currentStatus.boostEnabled =
+        HardwareManager::boostEnabled();
+
+    currentStatus.backlightEnabled =
+        BoardConfig::ENABLE_DISPLAY
+            ? HardwareManager::backlightEnabled()
+            : false;
+}

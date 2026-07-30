@@ -3970,3 +3970,1137 @@ void PowerManager::synchronizeHardwareStatus()
             ? HardwareManager::backlightEnabled()
             : false;
 }
+#ifndef EGS_BATTERY_MANAGER_H
+#define EGS_BATTERY_MANAGER_H
+
+#include <Arduino.h>
+#include <stdint.h>
+
+#include "104_board_config.h"
+#include "105_hardware_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// SINGLE-CELL LI-ION BATTERY MANAGER
+// 109_battery_manager.h
+//====================================================
+//
+// Responsibilities:
+// - Samples the 26650 cell through the configured divider.
+// - Spreads normal ADC sampling across update() calls.
+// - Filters ADC noise with a configurable EMA filter.
+// - Produces the fixed four-bar battery icon value.
+// - Detects low and critical states with hysteresis.
+// - Supports scale/offset calibration without changing pins.
+//
+// The user interface must show only the four-bar icon.
+// Percentage remains available for diagnostics and logging.
+//====================================================
+
+enum class BatteryState : uint8_t
+{
+    UNKNOWN = 0,
+    CRITICAL,
+    LOW,
+    NORMAL,
+    FULL
+};
+
+enum class BatteryError : uint8_t
+{
+    NONE = 0,
+    HARDWARE_INITIALIZATION_FAILED,
+    INVALID_CONFIGURATION,
+    ADC_READ_FAILED,
+    INVALID_CALIBRATION,
+    INVALID_SMOOTHING_FACTOR
+};
+
+struct BatteryStatus
+{
+    bool initialized;
+    bool valid;
+    bool sampling;
+    bool changed;
+    bool low;
+    bool critical;
+    bool full;
+
+    uint16_t rawAdc;
+
+    float adcVoltage;
+    float batteryVoltage;
+    float filteredVoltage;
+
+    uint8_t percentage;
+    uint8_t bars;
+
+    uint32_t lastUpdateTime;
+    uint32_t sampleSequence;
+
+    BatteryState state;
+    BatteryError error;
+};
+
+using BatteryStateCallback = void (*)(
+    BatteryState previousState,
+    BatteryState currentState,
+    const BatteryStatus& status);
+
+class BatteryManager
+{
+public:
+    static constexpr float DEFAULT_CALIBRATION_SCALE = 1.0f;
+    static constexpr float DEFAULT_CALIBRATION_OFFSET_V = 0.0f;
+    static constexpr float DEFAULT_SMOOTHING_FACTOR = 0.25f;
+
+    static constexpr float STATE_HYSTERESIS_V = 0.05f;
+    static constexpr float BAR_HYSTERESIS_V = 0.025f;
+    static constexpr float CHANGE_EPSILON_V = 0.01f;
+
+    static constexpr float MIN_CALIBRATION_SCALE = 0.50f;
+    static constexpr float MAX_CALIBRATION_SCALE = 1.50f;
+    static constexpr float MIN_CALIBRATION_OFFSET_V = -0.50f;
+    static constexpr float MAX_CALIBRATION_OFFSET_V = 0.50f;
+
+    //================================================
+    // LIFECYCLE
+    //================================================
+
+    static bool begin(bool sampleImmediately = true);
+    static void update();
+    static void end();
+
+    static bool ready();
+    static BatteryStatus status();
+
+    //================================================
+    // SAMPLING
+    //================================================
+
+    static bool forceSample();
+    static bool sampling();
+    static uint32_t lastUpdateTime();
+    static uint32_t sampleSequence();
+
+    //================================================
+    // BATTERY VALUES
+    //================================================
+
+    static uint16_t rawAdc();
+    static float adcVoltage();
+    static float voltage();
+    static uint8_t percentage();
+    static uint8_t bars();
+
+    static BatteryState state();
+    static bool low();
+    static bool critical();
+    static bool full();
+    static bool changed();
+
+    //================================================
+    // CALIBRATION AND FILTERING
+    //================================================
+
+    static bool setCalibration(
+        float scale,
+        float offsetVoltage);
+
+    static void resetCalibration();
+
+    static float calibrationScale();
+    static float calibrationOffsetVoltage();
+
+    static bool setSmoothingFactor(float factor);
+    static float smoothingFactor();
+
+    //================================================
+    // CALLBACKS AND TEXT
+    //================================================
+
+    static void setStateCallback(
+        BatteryStateCallback callback);
+
+    static BatteryError lastError();
+
+    static const char* stateText(BatteryState value);
+    static const char* errorText(BatteryError value);
+
+private:
+    static BatteryStatus currentStatus;
+
+    static float currentCalibrationScale;
+    static float currentCalibrationOffsetV;
+    static float currentSmoothingFactor;
+
+    static BatteryStateCallback stateCallback;
+
+    static uint32_t sampleAccumulator;
+    static uint8_t collectedSampleCount;
+
+    static void clearStatus();
+    static void resetSampler();
+
+    static bool validateConfiguration();
+    static bool startSampling();
+    static bool collectOneSample();
+    static bool finishSampling();
+    static bool processRawAverage(uint16_t averageRaw);
+
+    static float rawToAdcVoltage(uint16_t rawValue);
+    static float calibratedBatteryVoltage(float measuredAdcVoltage);
+
+    static BatteryState classifyState(
+        float filteredVoltage,
+        BatteryState previousState);
+
+    static uint8_t calculateBars(
+        float filteredVoltage,
+        uint8_t previousBars,
+        bool previousValueValid);
+
+    static uint8_t calculatePercentage(float filteredVoltage);
+
+    static bool validFiniteValue(float value);
+    static float absoluteFloat(float value);
+    static float clampFloat(
+        float value,
+        float minimum,
+        float maximum);
+};
+
+static_assert(
+    BoardConfig::BATTERY_BAR_COUNT == 4,
+    "BatteryManager requires the fixed four-bar UI");
+
+static_assert(
+    BoardConfig::BATTERY_ADC_MAX_VALUE > 0,
+    "Battery ADC maximum must be greater than zero");
+
+static_assert(
+    BoardConfig::BATTERY_SAMPLE_COUNT > 0,
+    "Battery sample count must be greater than zero");
+
+static_assert(
+    BoardConfig::BATTERY_EMPTY_VOLTAGE <
+        BoardConfig::BATTERY_CRITICAL_VOLTAGE,
+    "Battery empty voltage must precede critical voltage");
+
+static_assert(
+    BoardConfig::BATTERY_CRITICAL_VOLTAGE <
+        BoardConfig::BATTERY_LOW_VOLTAGE,
+    "Battery critical voltage must precede low voltage");
+
+static_assert(
+    BoardConfig::BATTERY_LOW_VOLTAGE <
+        BoardConfig::BATTERY_FULL_VOLTAGE,
+    "Battery low voltage must precede full voltage");
+
+#endif
+#include "109_battery_manager.h"
+
+#include <math.h>
+
+//====================================================
+// ESP32 GAME STATION
+// SINGLE-CELL LI-ION BATTERY MANAGER
+// 110_battery_manager.cpp
+//====================================================
+
+BatteryStatus BatteryManager::currentStatus =
+{
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    0,
+    0.0f,
+    0.0f,
+    0.0f,
+    0,
+    0,
+    0,
+    0,
+    BatteryState::UNKNOWN,
+    BatteryError::NONE
+};
+
+float BatteryManager::currentCalibrationScale =
+    BatteryManager::DEFAULT_CALIBRATION_SCALE;
+
+float BatteryManager::currentCalibrationOffsetV =
+    BatteryManager::DEFAULT_CALIBRATION_OFFSET_V;
+
+float BatteryManager::currentSmoothingFactor =
+    BatteryManager::DEFAULT_SMOOTHING_FACTOR;
+
+BatteryStateCallback BatteryManager::stateCallback = nullptr;
+
+uint32_t BatteryManager::sampleAccumulator = 0;
+uint8_t BatteryManager::collectedSampleCount = 0;
+
+//====================================================
+// LIFECYCLE
+//====================================================
+
+bool BatteryManager::begin(bool sampleImmediately)
+{
+    if (currentStatus.initialized)
+    {
+        return ready();
+    }
+
+    clearStatus();
+
+    if (!validateConfiguration())
+    {
+        currentStatus.error =
+            BatteryError::INVALID_CONFIGURATION;
+
+        return false;
+    }
+
+    if (!HardwareManager::ready() &&
+        !HardwareManager::begin())
+    {
+        currentStatus.error =
+            BatteryError::HARDWARE_INITIALIZATION_FAILED;
+
+        return false;
+    }
+
+#if defined(ARDUINO_ARCH_ESP32)
+
+    // A 1:2 divider presents at most about 2.1 V to the ADC.
+    // Explicit 11 dB attenuation keeps that range measurable.
+    analogSetPinAttenuation(
+        BoardPins::BATTERY_ADC_PIN,
+        ADC_11db);
+
+#endif
+
+    currentStatus.initialized = true;
+    currentStatus.error = BatteryError::NONE;
+
+    if (sampleImmediately && !forceSample())
+    {
+        currentStatus.initialized = false;
+        return false;
+    }
+
+    return true;
+}
+
+void BatteryManager::update()
+{
+    if (!currentStatus.initialized)
+    {
+        return;
+    }
+
+    currentStatus.changed = false;
+
+    if (currentStatus.sampling)
+    {
+        (void)collectOneSample();
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    if (currentStatus.valid &&
+        now - currentStatus.lastUpdateTime <
+            BoardConfig::BATTERY_UPDATE_INTERVAL_MS)
+    {
+        return;
+    }
+
+    if (startSampling())
+    {
+        (void)collectOneSample();
+    }
+}
+
+void BatteryManager::end()
+{
+    clearStatus();
+}
+
+bool BatteryManager::ready()
+{
+    return
+        currentStatus.initialized &&
+        currentStatus.error == BatteryError::NONE;
+}
+
+BatteryStatus BatteryManager::status()
+{
+    return currentStatus;
+}
+
+//====================================================
+// SAMPLING
+//====================================================
+
+bool BatteryManager::forceSample()
+{
+    if (!currentStatus.initialized)
+    {
+        return false;
+    }
+
+    resetSampler();
+    currentStatus.sampling = true;
+
+    for (uint8_t index = 0;
+         index < BoardConfig::BATTERY_SAMPLE_COUNT;
+         ++index)
+    {
+        const int rawValue =
+            HardwareManager::rawBatteryAdc();
+
+        if (rawValue < 0 ||
+            rawValue >
+                static_cast<int>(
+                    BoardConfig::BATTERY_ADC_MAX_VALUE))
+        {
+            resetSampler();
+            currentStatus.error =
+                BatteryError::ADC_READ_FAILED;
+
+            return false;
+        }
+
+        sampleAccumulator +=
+            static_cast<uint16_t>(rawValue);
+
+        ++collectedSampleCount;
+    }
+
+    return finishSampling();
+}
+
+bool BatteryManager::sampling()
+{
+    return currentStatus.sampling;
+}
+
+uint32_t BatteryManager::lastUpdateTime()
+{
+    return currentStatus.lastUpdateTime;
+}
+
+uint32_t BatteryManager::sampleSequence()
+{
+    return currentStatus.sampleSequence;
+}
+
+//====================================================
+// BATTERY VALUES
+//====================================================
+
+uint16_t BatteryManager::rawAdc()
+{
+    return currentStatus.rawAdc;
+}
+
+float BatteryManager::adcVoltage()
+{
+    return currentStatus.adcVoltage;
+}
+
+float BatteryManager::voltage()
+{
+    return currentStatus.filteredVoltage;
+}
+
+uint8_t BatteryManager::percentage()
+{
+    return currentStatus.percentage;
+}
+
+uint8_t BatteryManager::bars()
+{
+    return currentStatus.bars;
+}
+
+BatteryState BatteryManager::state()
+{
+    return currentStatus.state;
+}
+
+bool BatteryManager::low()
+{
+    return currentStatus.low;
+}
+
+bool BatteryManager::critical()
+{
+    return currentStatus.critical;
+}
+
+bool BatteryManager::full()
+{
+    return currentStatus.full;
+}
+
+bool BatteryManager::changed()
+{
+    return currentStatus.changed;
+}
+
+//====================================================
+// CALIBRATION AND FILTERING
+//====================================================
+
+bool BatteryManager::setCalibration(
+    float scale,
+    float offsetVoltage)
+{
+    if (!validFiniteValue(scale) ||
+        !validFiniteValue(offsetVoltage) ||
+        scale < MIN_CALIBRATION_SCALE ||
+        scale > MAX_CALIBRATION_SCALE ||
+        offsetVoltage < MIN_CALIBRATION_OFFSET_V ||
+        offsetVoltage > MAX_CALIBRATION_OFFSET_V)
+    {
+        currentStatus.error =
+            BatteryError::INVALID_CALIBRATION;
+
+        return false;
+    }
+
+    currentCalibrationScale = scale;
+    currentCalibrationOffsetV = offsetVoltage;
+
+    if (currentStatus.error ==
+        BatteryError::INVALID_CALIBRATION)
+    {
+        currentStatus.error = BatteryError::NONE;
+    }
+
+    if (currentStatus.initialized)
+    {
+        return forceSample();
+    }
+
+    return true;
+}
+
+void BatteryManager::resetCalibration()
+{
+    currentCalibrationScale =
+        DEFAULT_CALIBRATION_SCALE;
+
+    currentCalibrationOffsetV =
+        DEFAULT_CALIBRATION_OFFSET_V;
+
+    if (currentStatus.error ==
+        BatteryError::INVALID_CALIBRATION)
+    {
+        currentStatus.error = BatteryError::NONE;
+    }
+
+    if (currentStatus.initialized)
+    {
+        (void)forceSample();
+    }
+}
+
+float BatteryManager::calibrationScale()
+{
+    return currentCalibrationScale;
+}
+
+float BatteryManager::calibrationOffsetVoltage()
+{
+    return currentCalibrationOffsetV;
+}
+
+bool BatteryManager::setSmoothingFactor(float factor)
+{
+    if (!validFiniteValue(factor) ||
+        factor <= 0.0f ||
+        factor > 1.0f)
+    {
+        currentStatus.error =
+            BatteryError::INVALID_SMOOTHING_FACTOR;
+
+        return false;
+    }
+
+    currentSmoothingFactor = factor;
+
+    if (currentStatus.error ==
+        BatteryError::INVALID_SMOOTHING_FACTOR)
+    {
+        currentStatus.error = BatteryError::NONE;
+    }
+
+    return true;
+}
+
+float BatteryManager::smoothingFactor()
+{
+    return currentSmoothingFactor;
+}
+
+//====================================================
+// CALLBACKS AND TEXT
+//====================================================
+
+void BatteryManager::setStateCallback(
+    BatteryStateCallback callback)
+{
+    stateCallback = callback;
+}
+
+BatteryError BatteryManager::lastError()
+{
+    return currentStatus.error;
+}
+
+const char* BatteryManager::stateText(
+    BatteryState value)
+{
+    switch (value)
+    {
+        case BatteryState::UNKNOWN:
+            return "UNKNOWN";
+
+        case BatteryState::CRITICAL:
+            return "CRITICAL";
+
+        case BatteryState::LOW:
+            return "LOW";
+
+        case BatteryState::NORMAL:
+            return "NORMAL";
+
+        case BatteryState::FULL:
+            return "FULL";
+
+        default:
+            return "INVALID";
+    }
+}
+
+const char* BatteryManager::errorText(
+    BatteryError value)
+{
+    switch (value)
+    {
+        case BatteryError::NONE:
+            return "NONE";
+
+        case BatteryError::HARDWARE_INITIALIZATION_FAILED:
+            return "HARDWARE_INITIALIZATION_FAILED";
+
+        case BatteryError::INVALID_CONFIGURATION:
+            return "INVALID_CONFIGURATION";
+
+        case BatteryError::ADC_READ_FAILED:
+            return "ADC_READ_FAILED";
+
+        case BatteryError::INVALID_CALIBRATION:
+            return "INVALID_CALIBRATION";
+
+        case BatteryError::INVALID_SMOOTHING_FACTOR:
+            return "INVALID_SMOOTHING_FACTOR";
+
+        default:
+            return "INVALID";
+    }
+}
+
+//====================================================
+// PRIVATE STATE AND SAMPLER HELPERS
+//====================================================
+
+void BatteryManager::clearStatus()
+{
+    currentStatus.initialized = false;
+    currentStatus.valid = false;
+    currentStatus.sampling = false;
+    currentStatus.changed = false;
+    currentStatus.low = false;
+    currentStatus.critical = false;
+    currentStatus.full = false;
+
+    currentStatus.rawAdc = 0;
+    currentStatus.adcVoltage = 0.0f;
+    currentStatus.batteryVoltage = 0.0f;
+    currentStatus.filteredVoltage = 0.0f;
+
+    currentStatus.percentage = 0;
+    currentStatus.bars = 0;
+
+    currentStatus.lastUpdateTime = 0;
+    currentStatus.sampleSequence = 0;
+
+    currentStatus.state = BatteryState::UNKNOWN;
+    currentStatus.error = BatteryError::NONE;
+
+    resetSampler();
+}
+
+void BatteryManager::resetSampler()
+{
+    sampleAccumulator = 0;
+    collectedSampleCount = 0;
+    currentStatus.sampling = false;
+}
+
+bool BatteryManager::validateConfiguration()
+{
+    if (BoardConfig::BATTERY_ADC_MAX_VALUE == 0 ||
+        BoardConfig::BATTERY_ADC_REFERENCE_V <= 0.0f ||
+        BoardConfig::BATTERY_DIVIDER_RATIO <= 0.0f ||
+        BoardConfig::BATTERY_SAMPLE_COUNT == 0 ||
+        BoardConfig::BATTERY_UPDATE_INTERVAL_MS == 0)
+    {
+        return false;
+    }
+
+    if (!(BoardConfig::BATTERY_EMPTY_VOLTAGE <
+              BoardConfig::BATTERY_CRITICAL_VOLTAGE &&
+          BoardConfig::BATTERY_CRITICAL_VOLTAGE <
+              BoardConfig::BATTERY_LOW_VOLTAGE &&
+          BoardConfig::BATTERY_LOW_VOLTAGE <
+              BoardConfig::BATTERY_FULL_VOLTAGE))
+    {
+        return false;
+    }
+
+    float previousThreshold =
+        BoardConfig::BATTERY_EMPTY_VOLTAGE;
+
+    for (uint8_t index = 0;
+         index < BoardConfig::BATTERY_BAR_COUNT;
+         ++index)
+    {
+        const float threshold =
+            BoardConfig::BATTERY_BAR_THRESHOLDS_V[index];
+
+        if (!validFiniteValue(threshold) ||
+            threshold <= previousThreshold ||
+            threshold > BoardConfig::BATTERY_FULL_VOLTAGE)
+        {
+            return false;
+        }
+
+        previousThreshold = threshold;
+    }
+
+    return
+        validFiniteValue(currentCalibrationScale) &&
+        validFiniteValue(currentCalibrationOffsetV) &&
+        validFiniteValue(currentSmoothingFactor) &&
+        currentCalibrationScale >= MIN_CALIBRATION_SCALE &&
+        currentCalibrationScale <= MAX_CALIBRATION_SCALE &&
+        currentCalibrationOffsetV >= MIN_CALIBRATION_OFFSET_V &&
+        currentCalibrationOffsetV <= MAX_CALIBRATION_OFFSET_V &&
+        currentSmoothingFactor > 0.0f &&
+        currentSmoothingFactor <= 1.0f;
+}
+
+bool BatteryManager::startSampling()
+{
+    resetSampler();
+    currentStatus.sampling = true;
+    return true;
+}
+
+bool BatteryManager::collectOneSample()
+{
+    if (!currentStatus.sampling)
+    {
+        return false;
+    }
+
+    const int rawValue =
+        HardwareManager::rawBatteryAdc();
+
+    if (rawValue < 0 ||
+        rawValue >
+            static_cast<int>(
+                BoardConfig::BATTERY_ADC_MAX_VALUE))
+    {
+        resetSampler();
+        currentStatus.error =
+            BatteryError::ADC_READ_FAILED;
+
+        return false;
+    }
+
+    sampleAccumulator +=
+        static_cast<uint16_t>(rawValue);
+
+    ++collectedSampleCount;
+
+    if (collectedSampleCount >=
+        BoardConfig::BATTERY_SAMPLE_COUNT)
+    {
+        return finishSampling();
+    }
+
+    return true;
+}
+
+bool BatteryManager::finishSampling()
+{
+    if (collectedSampleCount == 0)
+    {
+        resetSampler();
+        currentStatus.error =
+            BatteryError::ADC_READ_FAILED;
+
+        return false;
+    }
+
+    const uint32_t roundedAverage =
+        (sampleAccumulator +
+         (collectedSampleCount / 2U)) /
+        collectedSampleCount;
+
+    resetSampler();
+
+    return processRawAverage(
+        static_cast<uint16_t>(roundedAverage));
+}
+
+//====================================================
+// PRIVATE VALUE PROCESSING
+//====================================================
+
+bool BatteryManager::processRawAverage(
+    uint16_t averageRaw)
+{
+    const bool previousValueValid =
+        currentStatus.valid;
+
+    const float previousFilteredVoltage =
+        currentStatus.filteredVoltage;
+
+    const uint8_t previousBars =
+        currentStatus.bars;
+
+    const BatteryState previousState =
+        currentStatus.state;
+
+    const float measuredAdcVoltage =
+        rawToAdcVoltage(averageRaw);
+
+    const float measuredBatteryVoltage =
+        calibratedBatteryVoltage(measuredAdcVoltage);
+
+    if (!validFiniteValue(measuredAdcVoltage) ||
+        !validFiniteValue(measuredBatteryVoltage))
+    {
+        currentStatus.error =
+            BatteryError::ADC_READ_FAILED;
+
+        return false;
+    }
+
+    const float filteredVoltage =
+        previousValueValid
+            ? previousFilteredVoltage +
+                  currentSmoothingFactor *
+                      (measuredBatteryVoltage -
+                       previousFilteredVoltage)
+            : measuredBatteryVoltage;
+
+    currentStatus.rawAdc = averageRaw;
+    currentStatus.adcVoltage = measuredAdcVoltage;
+    currentStatus.batteryVoltage = measuredBatteryVoltage;
+    currentStatus.filteredVoltage = filteredVoltage;
+
+    currentStatus.bars = calculateBars(
+        filteredVoltage,
+        previousBars,
+        previousValueValid);
+
+    currentStatus.percentage =
+        calculatePercentage(filteredVoltage);
+
+    currentStatus.state = classifyState(
+        filteredVoltage,
+        previousState);
+
+    currentStatus.critical =
+        currentStatus.state == BatteryState::CRITICAL;
+
+    currentStatus.low =
+        currentStatus.state == BatteryState::LOW ||
+        currentStatus.critical;
+
+    currentStatus.full =
+        currentStatus.state == BatteryState::FULL;
+
+    currentStatus.valid = true;
+    currentStatus.lastUpdateTime = millis();
+    ++currentStatus.sampleSequence;
+    currentStatus.error = BatteryError::NONE;
+
+    currentStatus.changed =
+        !previousValueValid ||
+        currentStatus.state != previousState ||
+        currentStatus.bars != previousBars ||
+        absoluteFloat(
+            filteredVoltage - previousFilteredVoltage) >=
+            CHANGE_EPSILON_V;
+
+    if (stateCallback != nullptr &&
+        currentStatus.state != previousState)
+    {
+        stateCallback(
+            previousState,
+            currentStatus.state,
+            currentStatus);
+    }
+
+    return true;
+}
+
+float BatteryManager::rawToAdcVoltage(
+    uint16_t rawValue)
+{
+    const float normalized =
+        static_cast<float>(rawValue) /
+        static_cast<float>(
+            BoardConfig::BATTERY_ADC_MAX_VALUE);
+
+    return
+        normalized *
+        BoardConfig::BATTERY_ADC_REFERENCE_V;
+}
+
+float BatteryManager::calibratedBatteryVoltage(
+    float measuredAdcVoltage)
+{
+    return
+        measuredAdcVoltage *
+            BoardConfig::BATTERY_DIVIDER_RATIO *
+            currentCalibrationScale +
+        currentCalibrationOffsetV;
+}
+
+BatteryState BatteryManager::classifyState(
+    float filteredVoltage,
+    BatteryState previousState)
+{
+    const float criticalThreshold =
+        BoardConfig::BATTERY_CRITICAL_VOLTAGE;
+
+    const float lowThreshold =
+        BoardConfig::BATTERY_LOW_VOLTAGE;
+
+    const float fullThreshold =
+        BoardConfig::BATTERY_BAR_THRESHOLDS_V[
+            BoardConfig::BATTERY_BAR_COUNT - 1U];
+
+    if (previousState == BatteryState::CRITICAL &&
+        filteredVoltage <
+            criticalThreshold + STATE_HYSTERESIS_V)
+    {
+        return BatteryState::CRITICAL;
+    }
+
+    if (filteredVoltage <= criticalThreshold)
+    {
+        return BatteryState::CRITICAL;
+    }
+
+    if (previousState == BatteryState::LOW &&
+        filteredVoltage <
+            lowThreshold + STATE_HYSTERESIS_V)
+    {
+        return BatteryState::LOW;
+    }
+
+    if (filteredVoltage <= lowThreshold)
+    {
+        return BatteryState::LOW;
+    }
+
+    if (previousState == BatteryState::FULL &&
+        filteredVoltage >
+            fullThreshold - STATE_HYSTERESIS_V)
+    {
+        return BatteryState::FULL;
+    }
+
+    if (filteredVoltage >= fullThreshold)
+    {
+        return BatteryState::FULL;
+    }
+
+    return BatteryState::NORMAL;
+}
+
+uint8_t BatteryManager::calculateBars(
+    float filteredVoltage,
+    uint8_t previousBars,
+    bool previousValueValid)
+{
+    uint8_t directBars = 0;
+
+    for (uint8_t index = 0;
+         index < BoardConfig::BATTERY_BAR_COUNT;
+         ++index)
+    {
+        if (filteredVoltage >=
+            BoardConfig::BATTERY_BAR_THRESHOLDS_V[index])
+        {
+            directBars = index + 1U;
+        }
+    }
+
+    if (!previousValueValid ||
+        previousBars > BoardConfig::BATTERY_BAR_COUNT)
+    {
+        return directBars;
+    }
+
+    uint8_t stableBars = previousBars;
+
+    while (stableBars < BoardConfig::BATTERY_BAR_COUNT)
+    {
+        const float riseThreshold =
+            BoardConfig::BATTERY_BAR_THRESHOLDS_V[
+                stableBars] +
+            BAR_HYSTERESIS_V;
+
+        if (filteredVoltage < riseThreshold)
+        {
+            break;
+        }
+
+        ++stableBars;
+    }
+
+    while (stableBars > 0)
+    {
+        const float fallThreshold =
+            BoardConfig::BATTERY_BAR_THRESHOLDS_V[
+                stableBars - 1U] -
+            BAR_HYSTERESIS_V;
+
+        if (filteredVoltage >= fallThreshold)
+        {
+            break;
+        }
+
+        --stableBars;
+    }
+
+    return stableBars;
+}
+
+uint8_t BatteryManager::calculatePercentage(
+    float filteredVoltage)
+{
+    struct VoltagePoint
+    {
+        float voltage;
+        uint8_t percentage;
+    };
+
+    static constexpr VoltagePoint CURVE[] =
+    {
+        {3.00f, 0},
+        {3.20f, 3},
+        {3.30f, 6},
+        {3.40f, 10},
+        {3.50f, 15},
+        {3.60f, 25},
+        {3.70f, 40},
+        {3.80f, 55},
+        {3.90f, 70},
+        {4.00f, 82},
+        {4.10f, 92},
+        {4.20f, 100}
+    };
+
+    constexpr uint8_t POINT_COUNT =
+        static_cast<uint8_t>(
+            sizeof(CURVE) / sizeof(CURVE[0]));
+
+    if (filteredVoltage <= CURVE[0].voltage)
+    {
+        return CURVE[0].percentage;
+    }
+
+    if (filteredVoltage >=
+        CURVE[POINT_COUNT - 1U].voltage)
+    {
+        return CURVE[POINT_COUNT - 1U].percentage;
+    }
+
+    for (uint8_t index = 1;
+         index < POINT_COUNT;
+         ++index)
+    {
+        if (filteredVoltage <= CURVE[index].voltage)
+        {
+            const VoltagePoint& lower = CURVE[index - 1U];
+            const VoltagePoint& upper = CURVE[index];
+
+            const float position =
+                (filteredVoltage - lower.voltage) /
+                (upper.voltage - lower.voltage);
+
+            const float interpolated =
+                static_cast<float>(lower.percentage) +
+                position *
+                    static_cast<float>(
+                        upper.percentage -
+                        lower.percentage);
+
+            return static_cast<uint8_t>(
+                clampFloat(
+                    interpolated + 0.5f,
+                    0.0f,
+                    100.0f));
+        }
+    }
+
+    return 100;
+}
+
+//====================================================
+// PRIVATE NUMERIC HELPERS
+//====================================================
+
+bool BatteryManager::validFiniteValue(float value)
+{
+    return isfinite(value) != 0;
+}
+
+float BatteryManager::absoluteFloat(float value)
+{
+    return value < 0.0f ? -value : value;
+}
+
+float BatteryManager::clampFloat(
+    float value,
+    float minimum,
+    float maximum)
+{
+    if (value < minimum)
+    {
+        return minimum;
+    }
+
+    if (value > maximum)
+    {
+        return maximum;
+    }
+
+    return value;
+}

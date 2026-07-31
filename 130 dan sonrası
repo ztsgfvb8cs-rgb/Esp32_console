@@ -1,1 +1,7127 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "002_core_types.h"
+#include "005_memory_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// LINEAR SESSION MEMORY ARENA CONTRACT
+// 131_memory_arena.h
+//====================================================
+//
+// Responsibilities:
+// - Reserves one contiguous backing block from MemoryManager.
+// - Serves aligned sub-allocations without repeated malloc/free calls.
+// - Supports markers, rewind and constant-time full reset.
+// - Tracks current, remaining and peak memory usage per arena.
+// - Keeps internal-RAM and PSRAM placement explicit.
+// - Prevents stale markers from rewinding a restarted arena.
+//
+// Lifetime rule:
+// - Memory returned by allocate() remains valid until rewind(), reset(),
+//   end() or destruction of the arena.
+// - The arena does not run constructors or destructors for objects stored
+//   inside it. Callers must manage non-trivial object lifetimes manually.
+// - Individual allocations cannot be released out of order.
+//
+// Integration rule:
+// - File 132 implements this contract using MemoryManager.
+// - ResourceBudgetCoordinator will create arenas only after admission.
+// - PDF, audio, emulator and game sessions may own separate arenas.
+// - DMA buffers must continue to use internal DMA-capable allocation and
+//   must not be placed in a PSRAM-backed arena.
+//====================================================
+
+namespace egs
+{
+inline constexpr size_t MEMORY_ARENA_MINIMUM_CAPACITY_BYTES = 256U;
+
+inline constexpr size_t MEMORY_ARENA_MAXIMUM_ALIGNMENT_BYTES = 64U;
+
+inline constexpr size_t MEMORY_ARENA_DEFAULT_ALIGNMENT =
+    alignof(max_align_t);
+
+enum class MemoryArenaClearMode : uint8_t
+{
+    Preserve = 0,
+    Clear
+};
+
+enum class MemoryArenaError : uint8_t
+{
+    None = 0,
+    AlreadyInitialized,
+    NotInitialized,
+    InvalidCapacity,
+    InvalidAlignment,
+    BackingAllocationFailed,
+    OutOfSpace,
+    InvalidMarker,
+    ForeignPointer
+};
+
+struct MemoryArenaConfig
+{
+    size_t capacityBytes = 0;
+
+    MemoryPreference preference =
+        MemoryPreference::PsramPreferred;
+
+    size_t defaultAlignment =
+        MEMORY_ARENA_DEFAULT_ALIGNMENT;
+
+    // Clears the full backing block once when begin() succeeds.
+    bool clearBackingStore = true;
+
+    // Clears each returned allocation. Disable this for large streaming
+    // buffers that are guaranteed to be completely overwritten.
+    bool clearAllocations = true;
+};
+
+struct MemoryArenaMarker
+{
+    size_t offset = 0;
+    uint32_t generation = 0;
+};
+
+struct MemoryArenaStatus
+{
+    bool initialized = false;
+    bool psram = false;
+
+    MemoryPreference preference =
+        MemoryPreference::PsramPreferred;
+
+    MemoryArenaError error =
+        MemoryArenaError::None;
+
+    size_t capacityBytes = 0;
+    size_t usedBytes = 0;
+    size_t remainingBytes = 0;
+    size_t peakUsedBytes = 0;
+    size_t largestAllocationBytes = 0;
+
+    size_t defaultAlignment =
+        MEMORY_ARENA_DEFAULT_ALIGNMENT;
+
+    uint32_t allocationCount = 0;
+    uint32_t failedAllocationCount = 0;
+    uint32_t rewindCount = 0;
+    uint32_t resetCount = 0;
+    uint32_t generation = 0;
+};
+
+class MemoryArena final
+{
+public:
+    MemoryArena() = default;
+    ~MemoryArena();
+
+    MemoryArena(const MemoryArena&) = delete;
+
+    MemoryArena& operator=(
+        const MemoryArena&) = delete;
+
+    MemoryArena(
+        MemoryArena&& other) noexcept;
+
+    MemoryArena& operator=(
+        MemoryArena&& other) noexcept;
+
+    //================================================
+    // LIFECYCLE
+    //================================================
+
+    RuntimeResult begin(
+        const MemoryArenaConfig& config);
+
+    RuntimeResult begin(
+        size_t capacityBytes,
+        MemoryPreference preference =
+            MemoryPreference::PsramPreferred,
+        bool clearBackingStore = true);
+
+    void end();
+
+    bool ready() const;
+
+    MemoryArenaStatus status() const;
+
+    //================================================
+    // LINEAR ALLOCATION
+    //================================================
+
+    void* allocate(
+        size_t sizeBytes,
+        size_t alignment = 0,
+        MemoryArenaClearMode clearMode =
+            MemoryArenaClearMode::Preserve);
+
+    // Uses the config's clearAllocations preference.
+    void* allocateDefault(
+        size_t sizeBytes,
+        size_t alignment = 0);
+
+    //================================================
+    // MARKERS, REWIND AND RESET
+    //================================================
+
+    MemoryArenaMarker marker() const;
+
+    RuntimeResult rewind(
+        const MemoryArenaMarker& marker,
+        MemoryArenaClearMode clearReleasedMemory =
+            MemoryArenaClearMode::Preserve);
+
+    RuntimeResult reset(
+        MemoryArenaClearMode clearMemory =
+            MemoryArenaClearMode::Preserve);
+
+    //================================================
+    // OWNERSHIP AND METRICS
+    //================================================
+
+    bool contains(
+        const void* pointer) const;
+
+    size_t capacity() const;
+    size_t used() const;
+    size_t remaining() const;
+    size_t peakUsed() const;
+
+    bool usingPsram() const;
+
+    MemoryArenaError lastError() const;
+
+    void clearError();
+
+    static bool validAlignment(
+        size_t alignment);
+
+    static const char* errorText(
+        MemoryArenaError value);
+
+private:
+    MemoryBlock backing_ = {};
+
+    MemoryArenaConfig config_ = {};
+
+    MemoryArenaStatus status_ = {};
+
+    size_t offset_ = 0;
+
+    static bool addWouldOverflow(
+        size_t first,
+        size_t second);
+
+    static bool alignOffset(
+        size_t offset,
+        size_t alignment,
+        size_t* alignedOffset);
+
+    RuntimeResult setError(
+        MemoryArenaError error,
+        RuntimeResult result);
+
+    void moveFrom(
+        MemoryArena& other) noexcept;
+};
+
+static_assert(
+    MEMORY_ARENA_MINIMUM_CAPACITY_BYTES > 0U,
+    "Memory arena minimum capacity must be positive");
+
+static_assert(
+    MEMORY_ARENA_DEFAULT_ALIGNMENT > 0U,
+    "Memory arena default alignment must be positive");
+
+static_assert(
+    (MEMORY_ARENA_DEFAULT_ALIGNMENT &
+     (MEMORY_ARENA_DEFAULT_ALIGNMENT - 1U)) == 0U,
+    "Memory arena default alignment must be a power of two");
+
+static_assert(
+    MEMORY_ARENA_DEFAULT_ALIGNMENT <=
+        MEMORY_ARENA_MAXIMUM_ALIGNMENT_BYTES,
+    "Memory arena default alignment exceeds supported maximum");
+}
+#include "131_memory_arena.h"
+
+#include <limits.h>
+#include <string.h>
+
+namespace egs
+{
+namespace
+{
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+bool validPreference(MemoryPreference preference)
+{
+    switch (preference)
+    {
+        case MemoryPreference::InternalOnly:
+        case MemoryPreference::PsramPreferred:
+        case MemoryPreference::PsramOnly:
+            return true;
+
+        default:
+            return false;
+    }
+}
+}
+
+MemoryArena::~MemoryArena()
+{
+    end();
+}
+
+MemoryArena::MemoryArena(
+    MemoryArena&& other) noexcept
+{
+    moveFrom(other);
+}
+
+MemoryArena& MemoryArena::operator=(
+    MemoryArena&& other) noexcept
+{
+    if (this != &other)
+    {
+        end();
+        moveFrom(other);
+    }
+
+    return *this;
+}
+
+RuntimeResult MemoryArena::begin(
+    const MemoryArenaConfig& config)
+{
+    if (status_.initialized || backing_)
+    {
+        return setError(
+            MemoryArenaError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    status_ = {};
+    status_.generation = generation;
+    status_.preference = config.preference;
+    status_.capacityBytes = config.capacityBytes;
+    status_.defaultAlignment =
+        config.defaultAlignment;
+
+    if (config.capacityBytes <
+        MEMORY_ARENA_MINIMUM_CAPACITY_BYTES)
+    {
+        return setError(
+            MemoryArenaError::InvalidCapacity,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!validPreference(config.preference))
+    {
+        return setError(
+            MemoryArenaError::
+                BackingAllocationFailed,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!validAlignment(
+            config.defaultAlignment))
+    {
+        return setError(
+            MemoryArenaError::InvalidAlignment,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            MemoryArenaError::
+                BackingAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    MemoryBlock block =
+        MemoryManager::allocate(
+            config.capacityBytes,
+            config.preference,
+            config.clearBackingStore);
+
+    if (!block ||
+        block.size < config.capacityBytes)
+    {
+        if (block)
+        {
+            MemoryManager::release(block);
+        }
+
+        return setError(
+            MemoryArenaError::
+                BackingAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    backing_ = block;
+    config_ = config;
+    offset_ = 0;
+
+    status_.initialized = true;
+    status_.psram = backing_.psram;
+    status_.error = MemoryArenaError::None;
+    status_.capacityBytes = backing_.size;
+    status_.usedBytes = 0;
+    status_.remainingBytes = backing_.size;
+    status_.peakUsedBytes = 0;
+    status_.largestAllocationBytes = 0;
+    status_.allocationCount = 0;
+    status_.failedAllocationCount = 0;
+    status_.rewindCount = 0;
+    status_.resetCount = 0;
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult MemoryArena::begin(
+    size_t capacityBytes,
+    MemoryPreference preference,
+    bool clearBackingStore)
+{
+    MemoryArenaConfig config;
+
+    config.capacityBytes = capacityBytes;
+    config.preference = preference;
+    config.clearBackingStore =
+        clearBackingStore;
+
+    return begin(config);
+}
+
+void MemoryArena::end()
+{
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    if (backing_)
+    {
+        MemoryManager::release(backing_);
+    }
+
+    backing_ = {};
+    config_ = {};
+    status_ = {};
+    status_.generation = generation;
+    offset_ = 0;
+}
+
+bool MemoryArena::ready() const
+{
+    return
+        status_.initialized &&
+        backing_.data != nullptr &&
+        backing_.size >=
+            status_.capacityBytes;
+}
+
+MemoryArenaStatus MemoryArena::status() const
+{
+    return status_;
+}
+132 — Bölüm 2/3
+void* MemoryArena::allocate(
+    size_t sizeBytes,
+    size_t alignment,
+    MemoryArenaClearMode clearMode)
+{
+    if (!ready())
+    {
+        setError(
+            MemoryArenaError::NotInitialized,
+            RuntimeResult::NotReady);
+
+        return nullptr;
+    }
+
+    if (sizeBytes == 0)
+    {
+        ++status_.failedAllocationCount;
+
+        setError(
+            MemoryArenaError::InvalidCapacity,
+            RuntimeResult::InvalidArgument);
+
+        return nullptr;
+    }
+
+    const size_t effectiveAlignment =
+        alignment == 0
+            ? config_.defaultAlignment
+            : alignment;
+
+    if (!validAlignment(effectiveAlignment))
+    {
+        ++status_.failedAllocationCount;
+
+        setError(
+            MemoryArenaError::InvalidAlignment,
+            RuntimeResult::InvalidArgument);
+
+        return nullptr;
+    }
+
+    size_t alignedOffset = 0;
+
+    if (!alignOffset(
+            offset_,
+            effectiveAlignment,
+            &alignedOffset) ||
+        addWouldOverflow(
+            alignedOffset,
+            sizeBytes))
+    {
+        ++status_.failedAllocationCount;
+
+        setError(
+            MemoryArenaError::OutOfSpace,
+            RuntimeResult::OutOfMemory);
+
+        return nullptr;
+    }
+
+    const size_t nextOffset =
+        alignedOffset + sizeBytes;
+
+    if (nextOffset > backing_.size)
+    {
+        ++status_.failedAllocationCount;
+
+        setError(
+            MemoryArenaError::OutOfSpace,
+            RuntimeResult::OutOfMemory);
+
+        return nullptr;
+    }
+
+    uint8_t* const base =
+        static_cast<uint8_t*>(
+            backing_.data);
+
+    void* const result =
+        static_cast<void*>(
+            base + alignedOffset);
+
+    if (clearMode ==
+        MemoryArenaClearMode::Clear)
+    {
+        memset(result, 0, sizeBytes);
+    }
+
+    offset_ = nextOffset;
+
+    status_.usedBytes = offset_;
+
+    status_.remainingBytes =
+        backing_.size - offset_;
+
+    if (status_.usedBytes >
+        status_.peakUsedBytes)
+    {
+        status_.peakUsedBytes =
+            status_.usedBytes;
+    }
+
+    if (sizeBytes >
+        status_.largestAllocationBytes)
+    {
+        status_.largestAllocationBytes =
+            sizeBytes;
+    }
+
+    if (status_.allocationCount <
+        UINT32_MAX)
+    {
+        ++status_.allocationCount;
+    }
+
+    status_.error =
+        MemoryArenaError::None;
+
+    return result;
+}
+
+void* MemoryArena::allocateDefault(
+    size_t sizeBytes,
+    size_t alignment)
+{
+    return allocate(
+        sizeBytes,
+        alignment,
+        config_.clearAllocations
+            ? MemoryArenaClearMode::Clear
+            : MemoryArenaClearMode::Preserve);
+}
+
+MemoryArenaMarker MemoryArena::marker() const
+{
+    if (!ready())
+    {
+        return {};
+    }
+
+    MemoryArenaMarker result;
+
+    result.offset = offset_;
+
+    result.generation =
+        status_.generation;
+
+    return result;
+}
+
+RuntimeResult MemoryArena::rewind(
+    const MemoryArenaMarker& markerValue,
+    MemoryArenaClearMode
+        clearReleasedMemory)
+{
+    if (!ready())
+    {
+        return setError(
+            MemoryArenaError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (markerValue.generation == 0 ||
+        markerValue.generation !=
+            status_.generation ||
+        markerValue.offset > offset_ ||
+        markerValue.offset > backing_.size)
+    {
+        return setError(
+            MemoryArenaError::InvalidMarker,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (clearReleasedMemory ==
+            MemoryArenaClearMode::Clear &&
+        markerValue.offset < offset_)
+    {
+        uint8_t* const base =
+            static_cast<uint8_t*>(
+                backing_.data);
+
+        memset(
+            base + markerValue.offset,
+            0,
+            offset_ - markerValue.offset);
+    }
+
+    offset_ = markerValue.offset;
+
+    status_.usedBytes = offset_;
+
+    status_.remainingBytes =
+        backing_.size - offset_;
+
+    if (status_.rewindCount < UINT32_MAX)
+    {
+        ++status_.rewindCount;
+    }
+
+    status_.error =
+        MemoryArenaError::None;
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult MemoryArena::reset(
+    MemoryArenaClearMode clearMemory)
+{
+    if (!ready())
+    {
+        return setError(
+            MemoryArenaError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (clearMemory ==
+            MemoryArenaClearMode::Clear &&
+        offset_ > 0)
+    {
+        memset(
+            backing_.data,
+            0,
+            offset_);
+    }
+
+    offset_ = 0;
+
+    status_.usedBytes = 0;
+
+    status_.remainingBytes =
+        backing_.size;
+
+    status_.generation =
+        nextGeneration(
+            status_.generation);
+
+    if (status_.resetCount < UINT32_MAX)
+    {
+        ++status_.resetCount;
+    }
+
+    status_.error =
+        MemoryArenaError::None;
+
+    return RuntimeResult::Ok;
+}
+132 — Bölüm 3/3
+bool MemoryArena::contains(
+    const void* pointer) const
+{
+    if (!ready() || pointer == nullptr)
+    {
+        return false;
+    }
+
+    const uintptr_t base =
+        reinterpret_cast<uintptr_t>(
+            backing_.data);
+
+    const uintptr_t value =
+        reinterpret_cast<uintptr_t>(
+            pointer);
+
+    return
+        value >= base &&
+        static_cast<size_t>(
+            value - base) <
+            backing_.size;
+}
+
+size_t MemoryArena::capacity() const
+{
+    return ready()
+        ? backing_.size
+        : 0;
+}
+
+size_t MemoryArena::used() const
+{
+    return ready()
+        ? offset_
+        : 0;
+}
+
+size_t MemoryArena::remaining() const
+{
+    return ready()
+        ? backing_.size - offset_
+        : 0;
+}
+
+size_t MemoryArena::peakUsed() const
+{
+    return status_.peakUsedBytes;
+}
+
+bool MemoryArena::usingPsram() const
+{
+    return ready() && backing_.psram;
+}
+
+MemoryArenaError
+MemoryArena::lastError() const
+{
+    return status_.error;
+}
+
+void MemoryArena::clearError()
+{
+    status_.error =
+        MemoryArenaError::None;
+}
+
+bool MemoryArena::validAlignment(
+    size_t alignment)
+{
+    return
+        alignment > 0 &&
+        alignment <=
+            MEMORY_ARENA_MAXIMUM_ALIGNMENT_BYTES &&
+        (alignment &
+         (alignment - 1U)) == 0U;
+}
+
+const char* MemoryArena::errorText(
+    MemoryArenaError value)
+{
+    switch (value)
+    {
+        case MemoryArenaError::None:
+            return "NONE";
+
+        case MemoryArenaError::
+                AlreadyInitialized:
+            return "ALREADY_INITIALIZED";
+
+        case MemoryArenaError::
+                NotInitialized:
+            return "NOT_INITIALIZED";
+
+        case MemoryArenaError::
+                InvalidCapacity:
+            return "INVALID_CAPACITY";
+
+        case MemoryArenaError::
+                InvalidAlignment:
+            return "INVALID_ALIGNMENT";
+
+        case MemoryArenaError::
+                BackingAllocationFailed:
+            return "BACKING_ALLOCATION_FAILED";
+
+        case MemoryArenaError::OutOfSpace:
+            return "OUT_OF_SPACE";
+
+        case MemoryArenaError::InvalidMarker:
+            return "INVALID_MARKER";
+
+        case MemoryArenaError::ForeignPointer:
+            return "FOREIGN_POINTER";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool MemoryArena::addWouldOverflow(
+    size_t first,
+    size_t second)
+{
+    return second > SIZE_MAX - first;
+}
+
+bool MemoryArena::alignOffset(
+    size_t offset,
+    size_t alignment,
+    size_t* alignedOffset)
+{
+    if (alignedOffset == nullptr ||
+        !validAlignment(alignment))
+    {
+        return false;
+    }
+
+    const size_t mask =
+        alignment - 1U;
+
+    if (addWouldOverflow(offset, mask))
+    {
+        return false;
+    }
+
+    *alignedOffset =
+        (offset + mask) & ~mask;
+
+    return true;
+}
+
+RuntimeResult MemoryArena::setError(
+    MemoryArenaError error,
+    RuntimeResult result)
+{
+    status_.error = error;
+
+    return result;
+}
+
+void MemoryArena::moveFrom(
+    MemoryArena& other) noexcept
+{
+    backing_ = other.backing_;
+    config_ = other.config_;
+    status_ = other.status_;
+    offset_ = other.offset_;
+
+    const uint32_t otherGeneration =
+        nextGeneration(
+            other.status_.generation);
+
+    other.backing_ = {};
+    other.config_ = {};
+    other.status_ = {};
+
+    other.status_.generation =
+        otherGeneration;
+
+    other.offset_ = 0;
+}
+}
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "002_core_types.h"
+#include "005_memory_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// FIXED-CLASS PSRAM BLOCK POOL CONTRACT
+// 133_psram_pool.h
+//====================================================
+//
+// Responsibilities:
+// - Reserves a bounded set of contiguous backing regions.
+// - Reuses fixed-size blocks without repeated heap allocation.
+// - Selects the smallest available class that satisfies a request.
+// - Tracks generation and lease identifiers to reject stale handles.
+// - Reports reserved, requested, used and internally wasted bytes.
+// - Allows all blocks to be released in constant bounded time.
+//
+// Memory rule:
+// - Pool metadata stays in internal static storage inside the object.
+// - Backing regions normally use MemoryPreference::PsramOnly.
+// - DMA descriptors and DMA transfer buffers must not use this pool.
+// - Frequently accessed tiny state should remain in internal RAM.
+//
+// Fragmentation rule:
+// - MemoryManager is called only once for each enabled size class.
+// - Individual acquire/release operations never call malloc or free.
+// - A class stride is aligned once and reused for every block.
+//
+// Integration rule:
+// - File 134 implements this contract using MemoryManager.
+// - Audio, PDF, emulator and game caches may share one configured pool.
+// - ResourceBudgetCoordinator will validate the total reservation before
+//   the pool is initialized.
+//====================================================
+
+namespace egs
+{
+inline constexpr uint8_t PSRAM_POOL_MAX_SIZE_CLASSES = 6U;
+inline constexpr uint16_t PSRAM_POOL_MAX_BLOCKS = 96U;
+inline constexpr size_t PSRAM_POOL_MAX_ALIGNMENT_BYTES = 64U;
+
+inline constexpr uint16_t PSRAM_POOL_INVALID_SLOT =
+    0xFFFFU;
+
+inline constexpr uint8_t PSRAM_POOL_INVALID_CLASS =
+    0xFFU;
+
+enum class PsramPoolClearMode : uint8_t
+{
+    Default = 0,
+    Preserve,
+    Clear
+};
+
+enum class PsramPoolError : uint8_t
+{
+    None = 0,
+    AlreadyInitialized,
+    NotInitialized,
+    InvalidConfiguration,
+    InvalidClass,
+    InvalidAlignment,
+    CapacityOverflow,
+    PsramUnavailable,
+    BackingAllocationFailed,
+    RequestTooLarge,
+    PoolExhausted,
+    InvalidBlock,
+    ForeignBlock,
+    StaleBlock,
+    DoubleRelease
+};
+
+struct PsramPoolSizeClassConfig
+{
+    size_t blockSizeBytes = 0;
+    uint16_t blockCount = 0;
+
+    size_t alignment =
+        alignof(max_align_t);
+
+    // Clearing on acquire is safe for object/state blocks.
+    // Streaming and decode buffers that are fully overwritten
+    // should normally disable it.
+    bool clearOnAcquire = false;
+};
+
+struct PsramPoolConfig
+{
+    MemoryPreference preference =
+        MemoryPreference::PsramOnly;
+
+    PsramPoolSizeClassConfig classes[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint8_t classCount = 0;
+
+    // When a matching class is exhausted, a larger free class
+    // may satisfy the request. Disable this for tightly budgeted
+    // subsystems.
+    bool allowLargerClassFallback = true;
+
+    // Clears each complete class backing region during begin().
+    bool clearBackingStore = false;
+
+    // Rejects initialization if any backing region falls into
+    // internal RAM.
+    bool requirePsram = true;
+
+    // Optional security/debug behavior. It increases release cost.
+    bool clearBlocksOnRelease = false;
+};
+
+struct PsramPoolBlock
+{
+    void* data = nullptr;
+
+    size_t requestedBytes = 0;
+    size_t capacityBytes = 0;
+
+    uint16_t slotIndex =
+        PSRAM_POOL_INVALID_SLOT;
+
+    uint8_t classIndex =
+        PSRAM_POOL_INVALID_CLASS;
+
+    uint32_t generation = 0;
+    uint32_t leaseId = 0;
+
+    explicit operator bool() const
+    {
+        return data != nullptr;
+    }
+};
+
+struct PsramPoolClassStatus
+{
+    bool enabled = false;
+    bool psram = false;
+
+    size_t blockSizeBytes = 0;
+    size_t strideBytes = 0;
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    size_t wastedBytes = 0;
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    uint16_t freeBlocks = 0;
+    uint16_t peakUsedBlocks = 0;
+};
+
+struct PsramPoolStatus
+{
+    bool initialized = false;
+    bool allBackingsInPsram = false;
+    bool exhausted = false;
+
+    PsramPoolError error =
+        PsramPoolError::None;
+
+    MemoryPreference preference =
+        MemoryPreference::PsramOnly;
+
+    uint8_t classCount = 0;
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    uint16_t freeBlocks = 0;
+    uint16_t peakUsedBlocks = 0;
+
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    size_t wastedBytes = 0;
+    size_t peakUsedCapacityBytes = 0;
+
+    uint32_t allocationCount = 0;
+    uint32_t releaseCount = 0;
+    uint32_t failedAllocationCount = 0;
+    uint32_t releaseAllCount = 0;
+    uint32_t generation = 0;
+};
+
+using PsramPoolObserver = void (*)(
+    const PsramPoolStatus& status);
+
+class PsramPool final
+{
+public:
+    PsramPool() = default;
+    ~PsramPool();
+
+    PsramPool(
+        const PsramPool&) = delete;
+
+    PsramPool& operator=(
+        const PsramPool&) = delete;
+
+    PsramPool(
+        PsramPool&&) = delete;
+
+    PsramPool& operator=(
+        PsramPool&&) = delete;
+
+    //================================================
+    // CONFIGURATION AND LIFECYCLE
+    //================================================
+
+    // Returns a balanced general-purpose configuration.
+    // Callers may edit the returned class sizes/counts
+    // before begin().
+    static PsramPoolConfig defaultConfig();
+
+    RuntimeResult begin(
+        const PsramPoolConfig& config);
+
+    RuntimeResult beginDefault();
+
+    void end();
+
+    bool ready() const;
+
+    PsramPoolStatus status() const;
+
+    //================================================
+    // BLOCK ACQUISITION AND RELEASE
+    //================================================
+
+    PsramPoolBlock acquire(
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    // Acquires from an exact class. This is useful for cache
+    // layers that reserve one specific block geometry and
+    // forbid larger fallback.
+    PsramPoolBlock acquireFromClass(
+        uint8_t classIndex,
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    RuntimeResult release(
+        PsramPoolBlock& block,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    RuntimeResult releaseAll(
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    //================================================
+    // OWNERSHIP AND CAPACITY QUERIES
+    //================================================
+
+    bool owns(
+        const PsramPoolBlock& block) const;
+
+    bool contains(
+        const void* pointer) const;
+
+    uint8_t bestClassFor(
+        size_t requestedBytes) const;
+
+    PsramPoolClassStatus classStatus(
+        uint8_t classIndex) const;
+
+    size_t smallestBlockSize() const;
+
+    size_t largestBlockSize() const;
+
+    uint16_t freeBlockCount(
+        uint8_t classIndex) const;
+
+    bool canAcquire(
+        size_t requestedBytes) const;
+
+    //================================================
+    // DIAGNOSTICS
+    //================================================
+
+    void setObserver(
+        PsramPoolObserver observer);
+
+    PsramPoolError lastError() const;
+
+    void clearError();
+
+    static bool validAlignment(
+        size_t alignment);
+
+    static const char* errorText(
+        PsramPoolError value);
+
+private:
+    struct SlotMetadata
+    {
+        bool used = false;
+
+        uint8_t classIndex =
+            PSRAM_POOL_INVALID_CLASS;
+
+        uint32_t leaseId = 0;
+        size_t requestedBytes = 0;
+    };
+
+    PsramPoolConfig config_ = {};
+    PsramPoolStatus status_ = {};
+
+    MemoryBlock backings_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    size_t classStrides_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classSlotStarts_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classUsedBlocks_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classPeakUsedBlocks_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    size_t classRequestedBytes_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    SlotMetadata slots_[
+        PSRAM_POOL_MAX_BLOCKS] = {};
+
+    PsramPoolObserver observer_ = nullptr;
+
+    uint32_t nextLeaseId_ = 1U;
+
+    static bool addWouldOverflow(
+        size_t first,
+        size_t second);
+
+    static bool multiplyWouldOverflow(
+        size_t first,
+        size_t second);
+
+    static bool alignSize(
+        size_t value,
+        size_t alignment,
+        size_t* alignedValue);
+
+    static bool validPreference(
+        MemoryPreference preference);
+
+    bool validateConfig(
+        const PsramPoolConfig& config,
+        PsramPoolError* error) const;
+
+    int findFreeSlotInClass(
+        uint8_t classIndex) const;
+
+    void* pointerForSlot(
+        uint8_t classIndex,
+        uint16_t slotIndex) const;
+
+    PsramPoolBlock acquireFromResolvedClass(
+        uint8_t classIndex,
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode);
+
+    bool shouldClearOnAcquire(
+        uint8_t classIndex,
+        PsramPoolClearMode clearMode) const;
+
+    bool shouldClearOnRelease(
+        PsramPoolClearMode clearMode) const;
+
+    void refreshStatus();
+
+    void resetMetadata(
+        bool preserveGeneration);
+
+    RuntimeResult setError(
+        PsramPoolError error,
+        RuntimeResult result);
+
+    void notifyStateChanged() const;
+};
+
+static_assert(
+    PSRAM_POOL_MAX_SIZE_CLASSES > 0U,
+    "PSRAM pool requires at least one size class");
+
+static_assert(
+    PSRAM_POOL_MAX_BLOCKS > 0U,
+    "PSRAM pool requires at least one block slot");
+
+static_assert(
+    PSRAM_POOL_MAX_BLOCKS <
+        PSRAM_POOL_INVALID_SLOT,
+    "PSRAM pool invalid slot value overlaps valid slots");
+
+static_assert(
+    PSRAM_POOL_MAX_ALIGNMENT_BYTES > 0U &&
+        (PSRAM_POOL_MAX_ALIGNMENT_BYTES &
+         (PSRAM_POOL_MAX_ALIGNMENT_BYTES - 1U)) == 0U,
+    "PSRAM pool maximum alignment must be a power of two");
+}
+
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "002_core_types.h"
+#include "005_memory_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// FIXED-CLASS PSRAM BLOCK POOL CONTRACT
+// 133_psram_pool.h
+//====================================================
+//
+// Responsibilities:
+// - Reserves a bounded set of contiguous backing regions.
+// - Reuses fixed-size blocks without repeated heap allocation.
+// - Selects the smallest available class that satisfies a request.
+// - Tracks generation and lease identifiers to reject stale handles.
+// - Reports reserved, requested, used and internally wasted bytes.
+// - Allows all blocks to be released in constant bounded time.
+//
+// Memory rule:
+// - Pool metadata stays in internal static storage inside the object.
+// - Backing regions normally use MemoryPreference::PsramOnly.
+// - DMA descriptors and DMA transfer buffers must not use this pool.
+// - Frequently accessed tiny state should remain in internal RAM.
+//
+// Fragmentation rule:
+// - MemoryManager is called only once for each enabled size class.
+// - Individual acquire/release operations never call malloc or free.
+// - A class stride is aligned once and reused for every block.
+//
+// Integration rule:
+// - File 134 implements this contract using MemoryManager.
+// - Audio, PDF, emulator and game caches may share one configured pool.
+// - ResourceBudgetCoordinator will validate the total reservation before
+//   the pool is initialized.
+//====================================================
+
+namespace egs
+{
+inline constexpr uint8_t PSRAM_POOL_MAX_SIZE_CLASSES = 6U;
+inline constexpr uint16_t PSRAM_POOL_MAX_BLOCKS = 96U;
+inline constexpr size_t PSRAM_POOL_MAX_ALIGNMENT_BYTES = 64U;
+
+inline constexpr uint16_t PSRAM_POOL_INVALID_SLOT =
+    0xFFFFU;
+
+inline constexpr uint8_t PSRAM_POOL_INVALID_CLASS =
+    0xFFU;
+
+enum class PsramPoolClearMode : uint8_t
+{
+    Default = 0,
+    Preserve,
+    Clear
+};
+
+enum class PsramPoolError : uint8_t
+{
+    None = 0,
+    AlreadyInitialized,
+    NotInitialized,
+    InvalidConfiguration,
+    InvalidClass,
+    InvalidAlignment,
+    CapacityOverflow,
+    PsramUnavailable,
+    BackingAllocationFailed,
+    RequestTooLarge,
+    PoolExhausted,
+    InvalidBlock,
+    ForeignBlock,
+    StaleBlock,
+    DoubleRelease
+};
+
+struct PsramPoolSizeClassConfig
+{
+    size_t blockSizeBytes = 0;
+    uint16_t blockCount = 0;
+
+    size_t alignment =
+        alignof(max_align_t);
+
+    // Clearing on acquire is safe for object/state blocks.
+    // Streaming and decode buffers that are fully overwritten
+    // should normally disable it.
+    bool clearOnAcquire = false;
+};
+
+struct PsramPoolConfig
+{
+    MemoryPreference preference =
+        MemoryPreference::PsramOnly;
+
+    PsramPoolSizeClassConfig classes[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint8_t classCount = 0;
+
+    // When a matching class is exhausted, a larger free class
+    // may satisfy the request. Disable this for tightly budgeted
+    // subsystems.
+    bool allowLargerClassFallback = true;
+
+    // Clears each complete class backing region during begin().
+    bool clearBackingStore = false;
+
+    // Rejects initialization if any backing region falls into
+    // internal RAM.
+    bool requirePsram = true;
+
+    // Optional security/debug behavior. It increases release cost.
+    bool clearBlocksOnRelease = false;
+};
+
+struct PsramPoolBlock
+{
+    void* data = nullptr;
+
+    size_t requestedBytes = 0;
+    size_t capacityBytes = 0;
+
+    uint16_t slotIndex =
+        PSRAM_POOL_INVALID_SLOT;
+
+    uint8_t classIndex =
+        PSRAM_POOL_INVALID_CLASS;
+
+    uint32_t generation = 0;
+    uint32_t leaseId = 0;
+
+    explicit operator bool() const
+    {
+        return data != nullptr;
+    }
+};
+
+struct PsramPoolClassStatus
+{
+    bool enabled = false;
+    bool psram = false;
+
+    size_t blockSizeBytes = 0;
+    size_t strideBytes = 0;
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    size_t wastedBytes = 0;
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    uint16_t freeBlocks = 0;
+    uint16_t peakUsedBlocks = 0;
+};
+
+struct PsramPoolStatus
+{
+    bool initialized = false;
+    bool allBackingsInPsram = false;
+    bool exhausted = false;
+
+    PsramPoolError error =
+        PsramPoolError::None;
+
+    MemoryPreference preference =
+        MemoryPreference::PsramOnly;
+
+    uint8_t classCount = 0;
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    uint16_t freeBlocks = 0;
+    uint16_t peakUsedBlocks = 0;
+
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    size_t wastedBytes = 0;
+    size_t peakUsedCapacityBytes = 0;
+
+    uint32_t allocationCount = 0;
+    uint32_t releaseCount = 0;
+    uint32_t failedAllocationCount = 0;
+    uint32_t releaseAllCount = 0;
+    uint32_t generation = 0;
+};
+
+using PsramPoolObserver = void (*)(
+    const PsramPoolStatus& status);
+
+class PsramPool final
+{
+public:
+    PsramPool() = default;
+    ~PsramPool();
+
+    PsramPool(
+        const PsramPool&) = delete;
+
+    PsramPool& operator=(
+        const PsramPool&) = delete;
+
+    PsramPool(
+        PsramPool&&) = delete;
+
+    PsramPool& operator=(
+        PsramPool&&) = delete;
+
+    //================================================
+    // CONFIGURATION AND LIFECYCLE
+    //================================================
+
+    // Returns a balanced general-purpose configuration.
+    // Callers may edit the returned class sizes/counts
+    // before begin().
+    static PsramPoolConfig defaultConfig();
+
+    RuntimeResult begin(
+        const PsramPoolConfig& config);
+
+    RuntimeResult beginDefault();
+
+    void end();
+
+    bool ready() const;
+
+    PsramPoolStatus status() const;
+
+    //================================================
+    // BLOCK ACQUISITION AND RELEASE
+    //================================================
+
+    PsramPoolBlock acquire(
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    // Acquires from an exact class. This is useful for cache
+    // layers that reserve one specific block geometry and
+    // forbid larger fallback.
+    PsramPoolBlock acquireFromClass(
+        uint8_t classIndex,
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    RuntimeResult release(
+        PsramPoolBlock& block,
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    RuntimeResult releaseAll(
+        PsramPoolClearMode clearMode =
+            PsramPoolClearMode::Default);
+
+    //================================================
+    // OWNERSHIP AND CAPACITY QUERIES
+    //================================================
+
+    bool owns(
+        const PsramPoolBlock& block) const;
+
+    bool contains(
+        const void* pointer) const;
+
+    uint8_t bestClassFor(
+        size_t requestedBytes) const;
+
+    PsramPoolClassStatus classStatus(
+        uint8_t classIndex) const;
+
+    size_t smallestBlockSize() const;
+
+    size_t largestBlockSize() const;
+
+    uint16_t freeBlockCount(
+        uint8_t classIndex) const;
+
+    bool canAcquire(
+        size_t requestedBytes) const;
+
+    //================================================
+    // DIAGNOSTICS
+    //================================================
+
+    void setObserver(
+        PsramPoolObserver observer);
+
+    PsramPoolError lastError() const;
+
+    void clearError();
+
+    static bool validAlignment(
+        size_t alignment);
+
+    static const char* errorText(
+        PsramPoolError value);
+
+private:
+    struct SlotMetadata
+    {
+        bool used = false;
+
+        uint8_t classIndex =
+            PSRAM_POOL_INVALID_CLASS;
+
+        uint32_t leaseId = 0;
+        size_t requestedBytes = 0;
+    };
+
+    PsramPoolConfig config_ = {};
+    PsramPoolStatus status_ = {};
+
+    MemoryBlock backings_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    size_t classStrides_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classSlotStarts_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classUsedBlocks_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    uint16_t classPeakUsedBlocks_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    size_t classRequestedBytes_[
+        PSRAM_POOL_MAX_SIZE_CLASSES] = {};
+
+    SlotMetadata slots_[
+        PSRAM_POOL_MAX_BLOCKS] = {};
+
+    PsramPoolObserver observer_ = nullptr;
+
+    uint32_t nextLeaseId_ = 1U;
+
+    static bool addWouldOverflow(
+        size_t first,
+        size_t second);
+
+    static bool multiplyWouldOverflow(
+        size_t first,
+        size_t second);
+
+    static bool alignSize(
+        size_t value,
+        size_t alignment,
+        size_t* alignedValue);
+
+    static bool validPreference(
+        MemoryPreference preference);
+
+    bool validateConfig(
+        const PsramPoolConfig& config,
+        PsramPoolError* error) const;
+
+    int findFreeSlotInClass(
+        uint8_t classIndex) const;
+
+    void* pointerForSlot(
+        uint8_t classIndex,
+        uint16_t slotIndex) const;
+
+    PsramPoolBlock acquireFromResolvedClass(
+        uint8_t classIndex,
+        size_t requestedBytes,
+        PsramPoolClearMode clearMode);
+
+    bool shouldClearOnAcquire(
+        uint8_t classIndex,
+        PsramPoolClearMode clearMode) const;
+
+    bool shouldClearOnRelease(
+        PsramPoolClearMode clearMode) const;
+
+    void refreshStatus();
+
+    void resetMetadata(
+        bool preserveGeneration);
+
+    RuntimeResult setError(
+        PsramPoolError error,
+        RuntimeResult result);
+
+    void notifyStateChanged() const;
+};
+
+static_assert(
+    PSRAM_POOL_MAX_SIZE_CLASSES > 0U,
+    "PSRAM pool requires at least one size class");
+
+static_assert(
+    PSRAM_POOL_MAX_BLOCKS > 0U,
+    "PSRAM pool requires at least one block slot");
+
+static_assert(
+    PSRAM_POOL_MAX_BLOCKS <
+        PSRAM_POOL_INVALID_SLOT,
+    "PSRAM pool invalid slot value overlaps valid slots");
+
+static_assert(
+    PSRAM_POOL_MAX_ALIGNMENT_BYTES > 0U &&
+        (PSRAM_POOL_MAX_ALIGNMENT_BYTES &
+         (PSRAM_POOL_MAX_ALIGNMENT_BYTES - 1U)) == 0U,
+    "PSRAM pool maximum alignment must be a power of two");
+}
+
+#include "133_psram_pool.h"
+
+#include <limits.h>
+#include <string.h>
+
+namespace egs
+{
+namespace
+{
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+uint32_t nextLease(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+bool validClearMode(PsramPoolClearMode mode)
+{
+    switch (mode)
+    {
+        case PsramPoolClearMode::Default:
+        case PsramPoolClearMode::Preserve:
+        case PsramPoolClearMode::Clear:
+            return true;
+
+        default:
+            return false;
+    }
+}
+}
+
+PsramPool::~PsramPool()
+{
+    end();
+}
+
+PsramPoolConfig PsramPool::defaultConfig()
+{
+    PsramPoolConfig config;
+
+    config.preference = MemoryPreference::PsramOnly;
+    config.classCount = PSRAM_POOL_MAX_SIZE_CLASSES;
+    config.allowLargerClassFallback = true;
+    config.clearBackingStore = false;
+    config.requirePsram = true;
+    config.clearBlocksOnRelease = false;
+
+    config.classes[0].blockSizeBytes = 1024U;
+    config.classes[0].blockCount = 16U;
+    config.classes[0].alignment = 16U;
+    config.classes[0].clearOnAcquire = true;
+
+    config.classes[1].blockSizeBytes = 4UL * 1024UL;
+    config.classes[1].blockCount = 16U;
+    config.classes[1].alignment = 16U;
+    config.classes[1].clearOnAcquire = true;
+
+    config.classes[2].blockSizeBytes = 16UL * 1024UL;
+    config.classes[2].blockCount = 12U;
+    config.classes[2].alignment = 32U;
+    config.classes[2].clearOnAcquire = false;
+
+    config.classes[3].blockSizeBytes = 64UL * 1024UL;
+    config.classes[3].blockCount = 8U;
+    config.classes[3].alignment = 32U;
+    config.classes[3].clearOnAcquire = false;
+
+    config.classes[4].blockSizeBytes = 128UL * 1024UL;
+    config.classes[4].blockCount = 4U;
+    config.classes[4].alignment = 64U;
+    config.classes[4].clearOnAcquire = false;
+
+    config.classes[5].blockSizeBytes = 256UL * 1024UL;
+    config.classes[5].blockCount = 2U;
+    config.classes[5].alignment = 64U;
+    config.classes[5].clearOnAcquire = false;
+
+    return config;
+}
+
+RuntimeResult PsramPool::begin(
+    const PsramPoolConfig& config)
+{
+    if (status_.initialized)
+    {
+        return setError(
+            PsramPoolError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    PsramPoolError validationError =
+        PsramPoolError::None;
+
+    if (!validateConfig(config, &validationError))
+    {
+        return setError(
+            validationError,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            PsramPoolError::BackingAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    if ((config.requirePsram ||
+         config.preference == MemoryPreference::PsramOnly) &&
+        !MemoryManager::psramAvailable())
+    {
+        return setError(
+            PsramPoolError::PsramUnavailable,
+            RuntimeResult::NotReady);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    resetMetadata(true);
+
+    status_.generation = generation;
+    status_.preference = config.preference;
+    status_.classCount = config.classCount;
+    config_ = config;
+
+    uint16_t nextSlot = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config_.classes[classIndex];
+
+        size_t stride = 0;
+
+        if (!alignSize(
+                classConfig.blockSizeBytes,
+                classConfig.alignment,
+                &stride) ||
+            multiplyWouldOverflow(
+                stride,
+                classConfig.blockCount))
+        {
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::CapacityOverflow,
+                RuntimeResult::InvalidArgument);
+        }
+
+        const size_t classDataBytes =
+            stride * classConfig.blockCount;
+
+        const size_t alignmentPadding =
+            classConfig.alignment - 1U;
+
+        if (addWouldOverflow(
+                classDataBytes,
+                alignmentPadding))
+        {
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::CapacityOverflow,
+                RuntimeResult::InvalidArgument);
+        }
+
+        const size_t backingBytes =
+            classDataBytes + alignmentPadding;
+
+        MemoryBlock backing =
+            MemoryManager::allocate(
+                backingBytes,
+                config_.preference,
+                config_.clearBackingStore);
+
+        if (!backing || backing.size < backingBytes)
+        {
+            if (backing)
+            {
+                MemoryManager::release(backing);
+            }
+
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            const PsramPoolError allocationError =
+                (config_.preference ==
+                     MemoryPreference::PsramOnly &&
+                 !MemoryManager::psramAvailable())
+                    ? PsramPoolError::PsramUnavailable
+                    : PsramPoolError::BackingAllocationFailed;
+
+            return setError(
+                allocationError,
+                RuntimeResult::OutOfMemory);
+        }
+
+        if (config_.requirePsram && !backing.psram)
+        {
+            MemoryManager::release(backing);
+
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::PsramUnavailable,
+                RuntimeResult::NotReady);
+        }
+
+        backings_[classIndex] = backing;
+        classStrides_[classIndex] = stride;
+        classSlotStarts_[classIndex] = nextSlot;
+
+        for (uint16_t localSlot = 0;
+             localSlot < classConfig.blockCount;
+             ++localSlot)
+        {
+            const uint16_t globalSlot =
+                static_cast<uint16_t>(
+                    nextSlot + localSlot);
+
+            slots_[globalSlot] = {};
+            slots_[globalSlot].classIndex = classIndex;
+        }
+
+        nextSlot = static_cast<uint16_t>(
+            nextSlot + classConfig.blockCount);
+    }
+
+    status_.initialized = true;
+    status_.error = PsramPoolError::None;
+    nextLeaseId_ = 1U;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult PsramPool::beginDefault()
+{
+    return begin(defaultConfig());
+}
+
+void PsramPool::end()
+{
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    for (uint8_t classIndex = 0;
+         classIndex < PSRAM_POOL_MAX_SIZE_CLASSES;
+         ++classIndex)
+    {
+        MemoryManager::release(
+            backings_[classIndex]);
+    }
+
+    resetMetadata(false);
+    status_.generation = generation;
+    observer_ = nullptr;
+}
+
+bool PsramPool::ready() const
+{
+    if (!status_.initialized ||
+        config_.classCount == 0 ||
+        config_.classCount >
+            PSRAM_POOL_MAX_SIZE_CLASSES)
+    {
+        return false;
+    }
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (!backings_[classIndex] ||
+            classStrides_[classIndex] == 0)
+        {
+            return false;
+        }
+
+        if (config_.requirePsram &&
+            !backings_[classIndex].psram)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+PsramPoolStatus PsramPool::status() const
+{
+    return status_;
+}
+
+PsramPoolBlock PsramPool::acquire(
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+
+        return {};
+    }
+
+    if (requestedBytes == 0 ||
+        !validClearMode(clearMode))
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    const uint8_t firstClass =
+        bestClassFor(requestedBytes);
+
+    if (firstClass == PSRAM_POOL_INVALID_CLASS)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::RequestTooLarge,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    uint8_t selectedClass = firstClass;
+
+    while (selectedClass < config_.classCount)
+    {
+        if (findFreeSlotInClass(selectedClass) >= 0)
+        {
+            return acquireFromResolvedClass(
+                selectedClass,
+                requestedBytes,
+                clearMode);
+        }
+
+        if (!config_.allowLargerClassFallback)
+        {
+            break;
+        }
+
+        ++selectedClass;
+    }
+
+    if (status_.failedAllocationCount < UINT32_MAX)
+    {
+        ++status_.failedAllocationCount;
+    }
+
+    refreshStatus();
+
+    setError(
+        PsramPoolError::PoolExhausted,
+        RuntimeResult::OutOfMemory);
+
+    return {};
+}
+
+PsramPoolBlock PsramPool::acquireFromClass(
+    uint8_t classIndex,
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+
+        return {};
+    }
+
+    if (classIndex >= config_.classCount)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidClass,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    if (requestedBytes == 0 ||
+        !validClearMode(clearMode))
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    if (requestedBytes >
+        config_.classes[classIndex].blockSizeBytes)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::RequestTooLarge,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    if (findFreeSlotInClass(classIndex) < 0)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        refreshStatus();
+
+        setError(
+            PsramPoolError::PoolExhausted,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    return acquireFromResolvedClass(
+        classIndex,
+        requestedBytes,
+        clearMode);
+}
+134 — Bölüm 2/3
+RuntimeResult PsramPool::release(
+    PsramPoolBlock& block,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!block ||
+        block.slotIndex == PSRAM_POOL_INVALID_SLOT ||
+        block.classIndex == PSRAM_POOL_INVALID_CLASS ||
+        block.leaseId == 0 ||
+        !validClearMode(clearMode))
+    {
+        return setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (block.classIndex >= config_.classCount)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (block.generation != status_.generation)
+    {
+        return setError(
+            PsramPoolError::StaleBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[block.classIndex];
+
+    const uint16_t classEnd =
+        static_cast<uint16_t>(
+            classStart +
+            config_.classes[block.classIndex].blockCount);
+
+    if (block.slotIndex < classStart ||
+        block.slotIndex >= classEnd ||
+        block.slotIndex >= PSRAM_POOL_MAX_BLOCKS)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    void* const expectedPointer =
+        pointerForSlot(
+            block.classIndex,
+            block.slotIndex);
+
+    if (expectedPointer == nullptr ||
+        expectedPointer != block.data)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    SlotMetadata& metadata =
+        slots_[block.slotIndex];
+
+    if (metadata.classIndex != block.classIndex)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!metadata.used)
+    {
+        return setError(
+            PsramPoolError::DoubleRelease,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (metadata.leaseId != block.leaseId)
+    {
+        return setError(
+            PsramPoolError::StaleBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (shouldClearOnRelease(clearMode))
+    {
+        memset(
+            expectedPointer,
+            0,
+            classStrides_[block.classIndex]);
+    }
+
+    if (classRequestedBytes_[block.classIndex] >=
+        metadata.requestedBytes)
+    {
+        classRequestedBytes_[block.classIndex] -=
+            metadata.requestedBytes;
+    }
+    else
+    {
+        classRequestedBytes_[block.classIndex] = 0;
+    }
+
+    if (classUsedBlocks_[block.classIndex] > 0)
+    {
+        --classUsedBlocks_[block.classIndex];
+    }
+
+    metadata.used = false;
+    metadata.leaseId = 0;
+    metadata.requestedBytes = 0;
+
+    block = {};
+
+    if (status_.releaseCount < UINT32_MAX)
+    {
+        ++status_.releaseCount;
+    }
+
+    status_.error = PsramPoolError::None;
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult PsramPool::releaseAll(
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validClearMode(clearMode))
+    {
+        return setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const bool clearMemory =
+        shouldClearOnRelease(clearMode);
+
+    uint32_t releasedBlocks = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (clearMemory && backings_[classIndex])
+        {
+            memset(
+                backings_[classIndex].data,
+                0,
+                backings_[classIndex].size);
+        }
+
+        releasedBlocks +=
+            classUsedBlocks_[classIndex];
+
+        classUsedBlocks_[classIndex] = 0;
+        classRequestedBytes_[classIndex] = 0;
+
+        const uint16_t classStart =
+            classSlotStarts_[classIndex];
+
+        const uint16_t classCount =
+            config_.classes[classIndex].blockCount;
+
+        for (uint16_t localSlot = 0;
+             localSlot < classCount;
+             ++localSlot)
+        {
+            SlotMetadata& metadata =
+                slots_[static_cast<uint16_t>(
+                    classStart + localSlot)];
+
+            metadata.used = false;
+            metadata.classIndex = classIndex;
+            metadata.leaseId = 0;
+            metadata.requestedBytes = 0;
+        }
+    }
+
+    if (releasedBlocks >
+        UINT32_MAX - status_.releaseCount)
+    {
+        status_.releaseCount = UINT32_MAX;
+    }
+    else
+    {
+        status_.releaseCount += releasedBlocks;
+    }
+
+    if (status_.releaseAllCount < UINT32_MAX)
+    {
+        ++status_.releaseAllCount;
+    }
+
+    status_.generation =
+        nextGeneration(status_.generation);
+
+    nextLeaseId_ = 1U;
+    status_.error = PsramPoolError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+bool PsramPool::owns(
+    const PsramPoolBlock& block) const
+{
+    if (!ready() ||
+        !block ||
+        block.classIndex >= config_.classCount ||
+        block.slotIndex >= PSRAM_POOL_MAX_BLOCKS ||
+        block.generation != status_.generation ||
+        block.leaseId == 0)
+    {
+        return false;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[block.classIndex];
+
+    const uint16_t classEnd =
+        static_cast<uint16_t>(
+            classStart +
+            config_.classes[block.classIndex].blockCount);
+
+    if (block.slotIndex < classStart ||
+        block.slotIndex >= classEnd)
+    {
+        return false;
+    }
+
+    const SlotMetadata& metadata =
+        slots_[block.slotIndex];
+
+    return
+        metadata.used &&
+        metadata.classIndex == block.classIndex &&
+        metadata.leaseId == block.leaseId &&
+        pointerForSlot(
+            block.classIndex,
+            block.slotIndex) == block.data;
+}
+
+bool PsramPool::contains(
+    const void* pointer) const
+{
+    if (!ready() || pointer == nullptr)
+    {
+        return false;
+    }
+
+    const uintptr_t value =
+        reinterpret_cast<uintptr_t>(pointer);
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const uintptr_t base =
+            reinterpret_cast<uintptr_t>(
+                backings_[classIndex].data);
+
+        if (value >= base &&
+            static_cast<size_t>(value - base) <
+                backings_[classIndex].size)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+uint8_t PsramPool::bestClassFor(
+    size_t requestedBytes) const
+{
+    if (!ready() || requestedBytes == 0)
+    {
+        return PSRAM_POOL_INVALID_CLASS;
+    }
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (requestedBytes <=
+            config_.classes[classIndex].blockSizeBytes)
+        {
+            return classIndex;
+        }
+    }
+
+    return PSRAM_POOL_INVALID_CLASS;
+}
+
+PsramPoolClassStatus PsramPool::classStatus(
+    uint8_t classIndex) const
+{
+    PsramPoolClassStatus result;
+
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return result;
+    }
+
+    const PsramPoolSizeClassConfig& classConfig =
+        config_.classes[classIndex];
+
+    result.enabled = true;
+    result.psram = backings_[classIndex].psram;
+    result.blockSizeBytes = classConfig.blockSizeBytes;
+    result.strideBytes = classStrides_[classIndex];
+    result.reservedBytes = backings_[classIndex].size;
+    result.totalBlocks = classConfig.blockCount;
+    result.usedBlocks = classUsedBlocks_[classIndex];
+    result.freeBlocks = static_cast<uint16_t>(
+        result.totalBlocks - result.usedBlocks);
+    result.peakUsedBlocks =
+        classPeakUsedBlocks_[classIndex];
+
+    result.usedCapacityBytes =
+        classConfig.blockSizeBytes *
+        result.usedBlocks;
+
+    result.requestedBytes =
+        classRequestedBytes_[classIndex];
+
+    result.wastedBytes =
+        result.usedCapacityBytes >=
+                result.requestedBytes
+            ? result.usedCapacityBytes -
+                result.requestedBytes
+            : 0;
+
+    return result;
+}
+
+size_t PsramPool::smallestBlockSize() const
+{
+    return ready()
+        ? config_.classes[0].blockSizeBytes
+        : 0;
+}
+
+size_t PsramPool::largestBlockSize() const
+{
+    return ready()
+        ? config_.classes[
+              config_.classCount - 1U].blockSizeBytes
+        : 0;
+}
+
+uint16_t PsramPool::freeBlockCount(
+    uint8_t classIndex) const
+{
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return 0;
+    }
+
+    return static_cast<uint16_t>(
+        config_.classes[classIndex].blockCount -
+        classUsedBlocks_[classIndex]);
+}
+
+bool PsramPool::canAcquire(
+    size_t requestedBytes) const
+{
+    const uint8_t firstClass =
+        bestClassFor(requestedBytes);
+
+    if (firstClass == PSRAM_POOL_INVALID_CLASS)
+    {
+        return false;
+    }
+
+    uint8_t classIndex = firstClass;
+
+    while (classIndex < config_.classCount)
+    {
+        if (freeBlockCount(classIndex) > 0)
+        {
+            return true;
+        }
+
+        if (!config_.allowLargerClassFallback)
+        {
+            break;
+        }
+
+        ++classIndex;
+    }
+
+    return false;
+}
+
+void PsramPool::setObserver(
+    PsramPoolObserver observer)
+{
+    observer_ = observer;
+}
+
+PsramPoolError PsramPool::lastError() const
+{
+    return status_.error;
+}
+
+void PsramPool::clearError()
+{
+    status_.error = PsramPoolError::None;
+}
+
+bool PsramPool::validAlignment(
+    size_t alignment)
+{
+    return
+        alignment > 0 &&
+        alignment <= PSRAM_POOL_MAX_ALIGNMENT_BYTES &&
+        (alignment & (alignment - 1U)) == 0U;
+}
+
+const char* PsramPool::errorText(
+    PsramPoolError value)
+{
+    switch (value)
+    {
+        case PsramPoolError::None:
+            return "NONE";
+
+        case PsramPoolError::AlreadyInitialized:
+            return "ALREADY_INITIALIZED";
+
+        case PsramPoolError::NotInitialized:
+            return "NOT_INITIALIZED";
+
+        case PsramPoolError::InvalidConfiguration:
+            return "INVALID_CONFIGURATION";
+
+        case PsramPoolError::InvalidClass:
+            return "INVALID_CLASS";
+
+        case PsramPoolError::InvalidAlignment:
+            return "INVALID_ALIGNMENT";
+
+        case PsramPoolError::CapacityOverflow:
+            return "CAPACITY_OVERFLOW";
+
+        case PsramPoolError::PsramUnavailable:
+            return "PSRAM_UNAVAILABLE";
+
+        case PsramPoolError::BackingAllocationFailed:
+            return "BACKING_ALLOCATION_FAILED";
+
+        case PsramPoolError::RequestTooLarge:
+            return "REQUEST_TOO_LARGE";
+
+        case PsramPoolError::PoolExhausted:
+            return "POOL_EXHAUSTED";
+
+        case PsramPoolError::InvalidBlock:
+            return "INVALID_BLOCK";
+
+        case PsramPoolError::ForeignBlock:
+            return "FOREIGN_BLOCK";
+
+        case PsramPoolError::StaleBlock:
+            return "STALE_BLOCK";
+
+        case PsramPoolError::DoubleRelease:
+            return "DOUBLE_RELEASE";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+134 — Bölüm 3/3
+bool PsramPool::addWouldOverflow(
+    size_t first,
+    size_t second)
+{
+    return second > SIZE_MAX - first;
+}
+
+bool PsramPool::multiplyWouldOverflow(
+    size_t first,
+    size_t second)
+{
+    return first != 0 &&
+        second > SIZE_MAX / first;
+}
+
+bool PsramPool::alignSize(
+    size_t value,
+    size_t alignment,
+    size_t* alignedValue)
+{
+    if (alignedValue == nullptr ||
+        !validAlignment(alignment))
+    {
+        return false;
+    }
+
+    const size_t mask = alignment - 1U;
+
+    if (addWouldOverflow(value, mask))
+    {
+        return false;
+    }
+
+    *alignedValue =
+        (value + mask) & ~mask;
+
+    return true;
+}
+
+bool PsramPool::validPreference(
+    MemoryPreference preference)
+{
+    switch (preference)
+    {
+        case MemoryPreference::InternalOnly:
+        case MemoryPreference::PsramPreferred:
+        case MemoryPreference::PsramOnly:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool PsramPool::validateConfig(
+    const PsramPoolConfig& config,
+    PsramPoolError* error) const
+{
+    if (error != nullptr)
+    {
+        *error = PsramPoolError::None;
+    }
+
+    if (!validPreference(config.preference) ||
+        config.classCount == 0 ||
+        config.classCount >
+            PSRAM_POOL_MAX_SIZE_CLASSES ||
+        (config.requirePsram &&
+         config.preference ==
+             MemoryPreference::InternalOnly))
+    {
+        if (error != nullptr)
+        {
+            *error =
+                PsramPoolError::InvalidConfiguration;
+        }
+
+        return false;
+    }
+
+    uint16_t totalBlocks = 0;
+    size_t previousBlockSize = 0;
+    size_t totalReservedBytes = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config.classes[classIndex];
+
+        if (classConfig.blockSizeBytes == 0 ||
+            classConfig.blockCount == 0)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidConfiguration;
+            }
+
+            return false;
+        }
+
+        if (!validAlignment(classConfig.alignment))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidAlignment;
+            }
+
+            return false;
+        }
+
+        if (classIndex > 0 &&
+            classConfig.blockSizeBytes <=
+                previousBlockSize)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidConfiguration;
+            }
+
+            return false;
+        }
+
+        if (classConfig.blockCount >
+            PSRAM_POOL_MAX_BLOCKS - totalBlocks)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        size_t stride = 0;
+
+        if (!alignSize(
+                classConfig.blockSizeBytes,
+                classConfig.alignment,
+                &stride) ||
+            multiplyWouldOverflow(
+                stride,
+                classConfig.blockCount))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        const size_t classDataBytes =
+            stride * classConfig.blockCount;
+
+        const size_t alignmentPadding =
+            classConfig.alignment - 1U;
+
+        if (addWouldOverflow(
+                classDataBytes,
+                alignmentPadding))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        const size_t classReservedBytes =
+            classDataBytes + alignmentPadding;
+
+        if (addWouldOverflow(
+                totalReservedBytes,
+                classReservedBytes))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        totalReservedBytes += classReservedBytes;
+        totalBlocks = static_cast<uint16_t>(
+            totalBlocks + classConfig.blockCount);
+        previousBlockSize = classConfig.blockSizeBytes;
+    }
+
+    return totalBlocks > 0 &&
+        totalReservedBytes > 0;
+}
+
+int PsramPool::findFreeSlotInClass(
+    uint8_t classIndex) const
+{
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return -1;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[classIndex];
+
+    const uint16_t classCount =
+        config_.classes[classIndex].blockCount;
+
+    for (uint16_t localSlot = 0;
+         localSlot < classCount;
+         ++localSlot)
+    {
+        const uint16_t globalSlot =
+            static_cast<uint16_t>(
+                classStart + localSlot);
+
+        if (!slots_[globalSlot].used)
+        {
+            return static_cast<int>(globalSlot);
+        }
+    }
+
+    return -1;
+}
+
+void* PsramPool::pointerForSlot(
+    uint8_t classIndex,
+    uint16_t slotIndex) const
+{
+    if (classIndex >= config_.classCount ||
+        !backings_[classIndex])
+    {
+        return nullptr;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[classIndex];
+
+    const uint16_t classCount =
+        config_.classes[classIndex].blockCount;
+
+    if (slotIndex < classStart ||
+        slotIndex >=
+            static_cast<uint16_t>(
+                classStart + classCount))
+    {
+        return nullptr;
+    }
+
+    const size_t localSlot =
+        static_cast<size_t>(slotIndex - classStart);
+
+    const uintptr_t rawBase =
+        reinterpret_cast<uintptr_t>(
+            backings_[classIndex].data);
+
+    const size_t alignment =
+        config_.classes[classIndex].alignment;
+
+    const uintptr_t alignmentMask =
+        static_cast<uintptr_t>(alignment - 1U);
+
+    if (rawBase > UINTPTR_MAX - alignmentMask)
+    {
+        return nullptr;
+    }
+
+    const uintptr_t alignedBase =
+        (rawBase + alignmentMask) &
+        ~alignmentMask;
+
+    const size_t baseAdjustment =
+        static_cast<size_t>(alignedBase - rawBase);
+
+    const size_t offset =
+        localSlot * classStrides_[classIndex];
+
+    if (baseAdjustment > backings_[classIndex].size ||
+        offset >
+            backings_[classIndex].size -
+            baseAdjustment ||
+        classStrides_[classIndex] >
+            backings_[classIndex].size -
+            baseAdjustment - offset)
+    {
+        return nullptr;
+    }
+
+    return reinterpret_cast<void*>(
+        alignedBase + offset);
+}
+
+PsramPoolBlock PsramPool::acquireFromResolvedClass(
+    uint8_t classIndex,
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    const int freeSlot =
+        findFreeSlotInClass(classIndex);
+
+    if (freeSlot < 0)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::PoolExhausted,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    const uint16_t slotIndex =
+        static_cast<uint16_t>(freeSlot);
+
+    void* const pointer =
+        pointerForSlot(classIndex, slotIndex);
+
+    if (pointer == nullptr)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::BackingAllocationFailed,
+            RuntimeResult::InternalError);
+
+        return {};
+    }
+
+    if (shouldClearOnAcquire(classIndex, clearMode))
+    {
+        memset(
+            pointer,
+            0,
+            classStrides_[classIndex]);
+    }
+
+    uint32_t leaseId = nextLeaseId_;
+
+    if (leaseId == 0)
+    {
+        leaseId = 1U;
+    }
+
+    nextLeaseId_ = nextLease(leaseId);
+
+    SlotMetadata& metadata = slots_[slotIndex];
+    metadata.used = true;
+    metadata.classIndex = classIndex;
+    metadata.leaseId = leaseId;
+    metadata.requestedBytes = requestedBytes;
+
+    if (classUsedBlocks_[classIndex] < UINT16_MAX)
+    {
+        ++classUsedBlocks_[classIndex];
+    }
+
+    if (classUsedBlocks_[classIndex] >
+        classPeakUsedBlocks_[classIndex])
+    {
+        classPeakUsedBlocks_[classIndex] =
+            classUsedBlocks_[classIndex];
+    }
+
+    if (addWouldOverflow(
+            classRequestedBytes_[classIndex],
+            requestedBytes))
+    {
+        classRequestedBytes_[classIndex] = SIZE_MAX;
+    }
+    else
+    {
+        classRequestedBytes_[classIndex] +=
+            requestedBytes;
+    }
+
+    if (status_.allocationCount < UINT32_MAX)
+    {
+        ++status_.allocationCount;
+    }
+
+    PsramPoolBlock block;
+    block.data = pointer;
+    block.requestedBytes = requestedBytes;
+    block.capacityBytes =
+        config_.classes[classIndex].blockSizeBytes;
+    block.slotIndex = slotIndex;
+    block.classIndex = classIndex;
+    block.generation = status_.generation;
+    block.leaseId = leaseId;
+
+    status_.error = PsramPoolError::None;
+    refreshStatus();
+    notifyStateChanged();
+
+    return block;
+}
+
+bool PsramPool::shouldClearOnAcquire(
+    uint8_t classIndex,
+    PsramPoolClearMode clearMode) const
+{
+    if (clearMode == PsramPoolClearMode::Clear)
+    {
+        return true;
+    }
+
+    if (clearMode == PsramPoolClearMode::Preserve)
+    {
+        return false;
+    }
+
+    return classIndex < config_.classCount &&
+        config_.classes[classIndex].clearOnAcquire;
+}
+
+bool PsramPool::shouldClearOnRelease(
+    PsramPoolClearMode clearMode) const
+{
+    if (clearMode == PsramPoolClearMode::Clear)
+    {
+        return true;
+    }
+
+    if (clearMode == PsramPoolClearMode::Preserve)
+    {
+        return false;
+    }
+
+    return config_.clearBlocksOnRelease;
+}
+
+void PsramPool::refreshStatus()
+{
+    if (!status_.initialized)
+    {
+        status_.allBackingsInPsram = false;
+        status_.exhausted = false;
+        status_.totalBlocks = 0;
+        status_.usedBlocks = 0;
+        status_.freeBlocks = 0;
+        status_.reservedBytes = 0;
+        status_.usedCapacityBytes = 0;
+        status_.requestedBytes = 0;
+        status_.wastedBytes = 0;
+        return;
+    }
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    bool allInPsram = true;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config_.classes[classIndex];
+
+        totalBlocks = static_cast<uint16_t>(
+            totalBlocks + classConfig.blockCount);
+
+        usedBlocks = static_cast<uint16_t>(
+            usedBlocks + classUsedBlocks_[classIndex]);
+
+        reservedBytes += backings_[classIndex].size;
+
+        usedCapacityBytes +=
+            classConfig.blockSizeBytes *
+            classUsedBlocks_[classIndex];
+
+        requestedBytes +=
+            classRequestedBytes_[classIndex];
+
+        allInPsram =
+            allInPsram && backings_[classIndex].psram;
+    }
+
+    status_.classCount = config_.classCount;
+    status_.preference = config_.preference;
+    status_.allBackingsInPsram = allInPsram;
+    status_.totalBlocks = totalBlocks;
+    status_.usedBlocks = usedBlocks;
+    status_.freeBlocks = static_cast<uint16_t>(
+        totalBlocks - usedBlocks);
+    status_.exhausted =
+        totalBlocks > 0 && usedBlocks == totalBlocks;
+    status_.reservedBytes = reservedBytes;
+    status_.usedCapacityBytes = usedCapacityBytes;
+    status_.requestedBytes = requestedBytes;
+    status_.wastedBytes =
+        usedCapacityBytes >= requestedBytes
+            ? usedCapacityBytes - requestedBytes
+            : 0;
+
+    if (usedBlocks > status_.peakUsedBlocks)
+    {
+        status_.peakUsedBlocks = usedBlocks;
+    }
+
+    if (usedCapacityBytes >
+        status_.peakUsedCapacityBytes)
+    {
+        status_.peakUsedCapacityBytes =
+            usedCapacityBytes;
+    }
+}
+
+void PsramPool::resetMetadata(
+    bool preserveGeneration)
+{
+    const uint32_t generation =
+        preserveGeneration
+            ? status_.generation
+            : 0U;
+
+    config_ = {};
+    status_ = {};
+    status_.generation = generation;
+
+    for (uint8_t classIndex = 0;
+         classIndex < PSRAM_POOL_MAX_SIZE_CLASSES;
+         ++classIndex)
+    {
+        backings_[classIndex] = {};
+        classStrides_[classIndex] = 0;
+        classSlotStarts_[classIndex] = 0;
+        classUsedBlocks_[classIndex] = 0;
+        classPeakUsedBlocks_[classIndex] = 0;
+        classRequestedBytes_[classIndex] = 0;
+    }
+
+    for (uint16_t slotIndex = 0;
+         slotIndex < PSRAM_POOL_MAX_BLOCKS;
+         ++slotIndex)
+    {
+        slots_[slotIndex] = {};
+    }
+
+    nextLeaseId_ = 1U;
+}
+
+RuntimeResult PsramPool::setError(
+    PsramPoolError error,
+    RuntimeResult result)
+{
+    status_.error = error;
+    notifyStateChanged();
+
+    return result;
+}
+
+void PsramPool::notifyStateChanged() const
+{
+    if (observer_ != nullptr)
+    {
+        observer_(status_);
+    }
+}
+}
+#include "133_psram_pool.h"
+
+#include <limits.h>
+#include <string.h>
+
+namespace egs
+{
+namespace
+{
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+uint32_t nextLease(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+bool validClearMode(PsramPoolClearMode mode)
+{
+    switch (mode)
+    {
+        case PsramPoolClearMode::Default:
+        case PsramPoolClearMode::Preserve:
+        case PsramPoolClearMode::Clear:
+            return true;
+
+        default:
+            return false;
+    }
+}
+}
+
+PsramPool::~PsramPool()
+{
+    end();
+}
+
+PsramPoolConfig PsramPool::defaultConfig()
+{
+    PsramPoolConfig config;
+
+    config.preference = MemoryPreference::PsramOnly;
+    config.classCount = PSRAM_POOL_MAX_SIZE_CLASSES;
+    config.allowLargerClassFallback = true;
+    config.clearBackingStore = false;
+    config.requirePsram = true;
+    config.clearBlocksOnRelease = false;
+
+    config.classes[0].blockSizeBytes = 1024U;
+    config.classes[0].blockCount = 16U;
+    config.classes[0].alignment = 16U;
+    config.classes[0].clearOnAcquire = true;
+
+    config.classes[1].blockSizeBytes = 4UL * 1024UL;
+    config.classes[1].blockCount = 16U;
+    config.classes[1].alignment = 16U;
+    config.classes[1].clearOnAcquire = true;
+
+    config.classes[2].blockSizeBytes = 16UL * 1024UL;
+    config.classes[2].blockCount = 12U;
+    config.classes[2].alignment = 32U;
+    config.classes[2].clearOnAcquire = false;
+
+    config.classes[3].blockSizeBytes = 64UL * 1024UL;
+    config.classes[3].blockCount = 8U;
+    config.classes[3].alignment = 32U;
+    config.classes[3].clearOnAcquire = false;
+
+    config.classes[4].blockSizeBytes = 128UL * 1024UL;
+    config.classes[4].blockCount = 4U;
+    config.classes[4].alignment = 64U;
+    config.classes[4].clearOnAcquire = false;
+
+    config.classes[5].blockSizeBytes = 256UL * 1024UL;
+    config.classes[5].blockCount = 2U;
+    config.classes[5].alignment = 64U;
+    config.classes[5].clearOnAcquire = false;
+
+    return config;
+}
+
+RuntimeResult PsramPool::begin(
+    const PsramPoolConfig& config)
+{
+    if (status_.initialized)
+    {
+        return setError(
+            PsramPoolError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    PsramPoolError validationError =
+        PsramPoolError::None;
+
+    if (!validateConfig(config, &validationError))
+    {
+        return setError(
+            validationError,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            PsramPoolError::BackingAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    if ((config.requirePsram ||
+         config.preference == MemoryPreference::PsramOnly) &&
+        !MemoryManager::psramAvailable())
+    {
+        return setError(
+            PsramPoolError::PsramUnavailable,
+            RuntimeResult::NotReady);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    resetMetadata(true);
+
+    status_.generation = generation;
+    status_.preference = config.preference;
+    status_.classCount = config.classCount;
+    config_ = config;
+
+    uint16_t nextSlot = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config_.classes[classIndex];
+
+        size_t stride = 0;
+
+        if (!alignSize(
+                classConfig.blockSizeBytes,
+                classConfig.alignment,
+                &stride) ||
+            multiplyWouldOverflow(
+                stride,
+                classConfig.blockCount))
+        {
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::CapacityOverflow,
+                RuntimeResult::InvalidArgument);
+        }
+
+        const size_t classDataBytes =
+            stride * classConfig.blockCount;
+
+        const size_t alignmentPadding =
+            classConfig.alignment - 1U;
+
+        if (addWouldOverflow(
+                classDataBytes,
+                alignmentPadding))
+        {
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::CapacityOverflow,
+                RuntimeResult::InvalidArgument);
+        }
+
+        const size_t backingBytes =
+            classDataBytes + alignmentPadding;
+
+        MemoryBlock backing =
+            MemoryManager::allocate(
+                backingBytes,
+                config_.preference,
+                config_.clearBackingStore);
+
+        if (!backing || backing.size < backingBytes)
+        {
+            if (backing)
+            {
+                MemoryManager::release(backing);
+            }
+
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            const PsramPoolError allocationError =
+                (config_.preference ==
+                     MemoryPreference::PsramOnly &&
+                 !MemoryManager::psramAvailable())
+                    ? PsramPoolError::PsramUnavailable
+                    : PsramPoolError::BackingAllocationFailed;
+
+            return setError(
+                allocationError,
+                RuntimeResult::OutOfMemory);
+        }
+
+        if (config_.requirePsram && !backing.psram)
+        {
+            MemoryManager::release(backing);
+
+            for (uint8_t releaseIndex = 0;
+                 releaseIndex < classIndex;
+                 ++releaseIndex)
+            {
+                MemoryManager::release(
+                    backings_[releaseIndex]);
+            }
+
+            resetMetadata(true);
+            status_.generation = generation;
+
+            return setError(
+                PsramPoolError::PsramUnavailable,
+                RuntimeResult::NotReady);
+        }
+
+        backings_[classIndex] = backing;
+        classStrides_[classIndex] = stride;
+        classSlotStarts_[classIndex] = nextSlot;
+
+        for (uint16_t localSlot = 0;
+             localSlot < classConfig.blockCount;
+             ++localSlot)
+        {
+            const uint16_t globalSlot =
+                static_cast<uint16_t>(
+                    nextSlot + localSlot);
+
+            slots_[globalSlot] = {};
+            slots_[globalSlot].classIndex = classIndex;
+        }
+
+        nextSlot = static_cast<uint16_t>(
+            nextSlot + classConfig.blockCount);
+    }
+
+    status_.initialized = true;
+    status_.error = PsramPoolError::None;
+    nextLeaseId_ = 1U;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult PsramPool::beginDefault()
+{
+    return begin(defaultConfig());
+}
+
+void PsramPool::end()
+{
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    for (uint8_t classIndex = 0;
+         classIndex < PSRAM_POOL_MAX_SIZE_CLASSES;
+         ++classIndex)
+    {
+        MemoryManager::release(
+            backings_[classIndex]);
+    }
+
+    resetMetadata(false);
+    status_.generation = generation;
+    observer_ = nullptr;
+}
+
+bool PsramPool::ready() const
+{
+    if (!status_.initialized ||
+        config_.classCount == 0 ||
+        config_.classCount >
+            PSRAM_POOL_MAX_SIZE_CLASSES)
+    {
+        return false;
+    }
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (!backings_[classIndex] ||
+            classStrides_[classIndex] == 0)
+        {
+            return false;
+        }
+
+        if (config_.requirePsram &&
+            !backings_[classIndex].psram)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+PsramPoolStatus PsramPool::status() const
+{
+    return status_;
+}
+
+PsramPoolBlock PsramPool::acquire(
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+
+        return {};
+    }
+
+    if (requestedBytes == 0 ||
+        !validClearMode(clearMode))
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    const uint8_t firstClass =
+        bestClassFor(requestedBytes);
+
+    if (firstClass == PSRAM_POOL_INVALID_CLASS)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::RequestTooLarge,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    uint8_t selectedClass = firstClass;
+
+    while (selectedClass < config_.classCount)
+    {
+        if (findFreeSlotInClass(selectedClass) >= 0)
+        {
+            return acquireFromResolvedClass(
+                selectedClass,
+                requestedBytes,
+                clearMode);
+        }
+
+        if (!config_.allowLargerClassFallback)
+        {
+            break;
+        }
+
+        ++selectedClass;
+    }
+
+    if (status_.failedAllocationCount < UINT32_MAX)
+    {
+        ++status_.failedAllocationCount;
+    }
+
+    refreshStatus();
+
+    setError(
+        PsramPoolError::PoolExhausted,
+        RuntimeResult::OutOfMemory);
+
+    return {};
+}
+
+PsramPoolBlock PsramPool::acquireFromClass(
+    uint8_t classIndex,
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+
+        return {};
+    }
+
+    if (classIndex >= config_.classCount)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidClass,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    if (requestedBytes == 0 ||
+        !validClearMode(clearMode))
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+
+        return {};
+    }
+
+    if (requestedBytes >
+        config_.classes[classIndex].blockSizeBytes)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::RequestTooLarge,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    if (findFreeSlotInClass(classIndex) < 0)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        refreshStatus();
+
+        setError(
+            PsramPoolError::PoolExhausted,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    return acquireFromResolvedClass(
+        classIndex,
+        requestedBytes,
+        clearMode);
+}
+134 — Bölüm 2/3
+RuntimeResult PsramPool::release(
+    PsramPoolBlock& block,
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!block ||
+        block.slotIndex == PSRAM_POOL_INVALID_SLOT ||
+        block.classIndex == PSRAM_POOL_INVALID_CLASS ||
+        block.leaseId == 0 ||
+        !validClearMode(clearMode))
+    {
+        return setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (block.classIndex >= config_.classCount)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (block.generation != status_.generation)
+    {
+        return setError(
+            PsramPoolError::StaleBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[block.classIndex];
+
+    const uint16_t classEnd =
+        static_cast<uint16_t>(
+            classStart +
+            config_.classes[block.classIndex].blockCount);
+
+    if (block.slotIndex < classStart ||
+        block.slotIndex >= classEnd ||
+        block.slotIndex >= PSRAM_POOL_MAX_BLOCKS)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    void* const expectedPointer =
+        pointerForSlot(
+            block.classIndex,
+            block.slotIndex);
+
+    if (expectedPointer == nullptr ||
+        expectedPointer != block.data)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    SlotMetadata& metadata =
+        slots_[block.slotIndex];
+
+    if (metadata.classIndex != block.classIndex)
+    {
+        return setError(
+            PsramPoolError::ForeignBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!metadata.used)
+    {
+        return setError(
+            PsramPoolError::DoubleRelease,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (metadata.leaseId != block.leaseId)
+    {
+        return setError(
+            PsramPoolError::StaleBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (shouldClearOnRelease(clearMode))
+    {
+        memset(
+            expectedPointer,
+            0,
+            classStrides_[block.classIndex]);
+    }
+
+    if (classRequestedBytes_[block.classIndex] >=
+        metadata.requestedBytes)
+    {
+        classRequestedBytes_[block.classIndex] -=
+            metadata.requestedBytes;
+    }
+    else
+    {
+        classRequestedBytes_[block.classIndex] = 0;
+    }
+
+    if (classUsedBlocks_[block.classIndex] > 0)
+    {
+        --classUsedBlocks_[block.classIndex];
+    }
+
+    metadata.used = false;
+    metadata.leaseId = 0;
+    metadata.requestedBytes = 0;
+
+    block = {};
+
+    if (status_.releaseCount < UINT32_MAX)
+    {
+        ++status_.releaseCount;
+    }
+
+    status_.error = PsramPoolError::None;
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult PsramPool::releaseAll(
+    PsramPoolClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            PsramPoolError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validClearMode(clearMode))
+    {
+        return setError(
+            PsramPoolError::InvalidBlock,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const bool clearMemory =
+        shouldClearOnRelease(clearMode);
+
+    uint32_t releasedBlocks = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (clearMemory && backings_[classIndex])
+        {
+            memset(
+                backings_[classIndex].data,
+                0,
+                backings_[classIndex].size);
+        }
+
+        releasedBlocks +=
+            classUsedBlocks_[classIndex];
+
+        classUsedBlocks_[classIndex] = 0;
+        classRequestedBytes_[classIndex] = 0;
+
+        const uint16_t classStart =
+            classSlotStarts_[classIndex];
+
+        const uint16_t classCount =
+            config_.classes[classIndex].blockCount;
+
+        for (uint16_t localSlot = 0;
+             localSlot < classCount;
+             ++localSlot)
+        {
+            SlotMetadata& metadata =
+                slots_[static_cast<uint16_t>(
+                    classStart + localSlot)];
+
+            metadata.used = false;
+            metadata.classIndex = classIndex;
+            metadata.leaseId = 0;
+            metadata.requestedBytes = 0;
+        }
+    }
+
+    if (releasedBlocks >
+        UINT32_MAX - status_.releaseCount)
+    {
+        status_.releaseCount = UINT32_MAX;
+    }
+    else
+    {
+        status_.releaseCount += releasedBlocks;
+    }
+
+    if (status_.releaseAllCount < UINT32_MAX)
+    {
+        ++status_.releaseAllCount;
+    }
+
+    status_.generation =
+        nextGeneration(status_.generation);
+
+    nextLeaseId_ = 1U;
+    status_.error = PsramPoolError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+bool PsramPool::owns(
+    const PsramPoolBlock& block) const
+{
+    if (!ready() ||
+        !block ||
+        block.classIndex >= config_.classCount ||
+        block.slotIndex >= PSRAM_POOL_MAX_BLOCKS ||
+        block.generation != status_.generation ||
+        block.leaseId == 0)
+    {
+        return false;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[block.classIndex];
+
+    const uint16_t classEnd =
+        static_cast<uint16_t>(
+            classStart +
+            config_.classes[block.classIndex].blockCount);
+
+    if (block.slotIndex < classStart ||
+        block.slotIndex >= classEnd)
+    {
+        return false;
+    }
+
+    const SlotMetadata& metadata =
+        slots_[block.slotIndex];
+
+    return
+        metadata.used &&
+        metadata.classIndex == block.classIndex &&
+        metadata.leaseId == block.leaseId &&
+        pointerForSlot(
+            block.classIndex,
+            block.slotIndex) == block.data;
+}
+
+bool PsramPool::contains(
+    const void* pointer) const
+{
+    if (!ready() || pointer == nullptr)
+    {
+        return false;
+    }
+
+    const uintptr_t value =
+        reinterpret_cast<uintptr_t>(pointer);
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const uintptr_t base =
+            reinterpret_cast<uintptr_t>(
+                backings_[classIndex].data);
+
+        if (value >= base &&
+            static_cast<size_t>(value - base) <
+                backings_[classIndex].size)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+uint8_t PsramPool::bestClassFor(
+    size_t requestedBytes) const
+{
+    if (!ready() || requestedBytes == 0)
+    {
+        return PSRAM_POOL_INVALID_CLASS;
+    }
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        if (requestedBytes <=
+            config_.classes[classIndex].blockSizeBytes)
+        {
+            return classIndex;
+        }
+    }
+
+    return PSRAM_POOL_INVALID_CLASS;
+}
+
+PsramPoolClassStatus PsramPool::classStatus(
+    uint8_t classIndex) const
+{
+    PsramPoolClassStatus result;
+
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return result;
+    }
+
+    const PsramPoolSizeClassConfig& classConfig =
+        config_.classes[classIndex];
+
+    result.enabled = true;
+    result.psram = backings_[classIndex].psram;
+    result.blockSizeBytes = classConfig.blockSizeBytes;
+    result.strideBytes = classStrides_[classIndex];
+    result.reservedBytes = backings_[classIndex].size;
+    result.totalBlocks = classConfig.blockCount;
+    result.usedBlocks = classUsedBlocks_[classIndex];
+    result.freeBlocks = static_cast<uint16_t>(
+        result.totalBlocks - result.usedBlocks);
+    result.peakUsedBlocks =
+        classPeakUsedBlocks_[classIndex];
+
+    result.usedCapacityBytes =
+        classConfig.blockSizeBytes *
+        result.usedBlocks;
+
+    result.requestedBytes =
+        classRequestedBytes_[classIndex];
+
+    result.wastedBytes =
+        result.usedCapacityBytes >=
+                result.requestedBytes
+            ? result.usedCapacityBytes -
+                result.requestedBytes
+            : 0;
+
+    return result;
+}
+
+size_t PsramPool::smallestBlockSize() const
+{
+    return ready()
+        ? config_.classes[0].blockSizeBytes
+        : 0;
+}
+
+size_t PsramPool::largestBlockSize() const
+{
+    return ready()
+        ? config_.classes[
+              config_.classCount - 1U].blockSizeBytes
+        : 0;
+}
+
+uint16_t PsramPool::freeBlockCount(
+    uint8_t classIndex) const
+{
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return 0;
+    }
+
+    return static_cast<uint16_t>(
+        config_.classes[classIndex].blockCount -
+        classUsedBlocks_[classIndex]);
+}
+
+bool PsramPool::canAcquire(
+    size_t requestedBytes) const
+{
+    const uint8_t firstClass =
+        bestClassFor(requestedBytes);
+
+    if (firstClass == PSRAM_POOL_INVALID_CLASS)
+    {
+        return false;
+    }
+
+    uint8_t classIndex = firstClass;
+
+    while (classIndex < config_.classCount)
+    {
+        if (freeBlockCount(classIndex) > 0)
+        {
+            return true;
+        }
+
+        if (!config_.allowLargerClassFallback)
+        {
+            break;
+        }
+
+        ++classIndex;
+    }
+
+    return false;
+}
+
+void PsramPool::setObserver(
+    PsramPoolObserver observer)
+{
+    observer_ = observer;
+}
+
+PsramPoolError PsramPool::lastError() const
+{
+    return status_.error;
+}
+
+void PsramPool::clearError()
+{
+    status_.error = PsramPoolError::None;
+}
+
+bool PsramPool::validAlignment(
+    size_t alignment)
+{
+    return
+        alignment > 0 &&
+        alignment <= PSRAM_POOL_MAX_ALIGNMENT_BYTES &&
+        (alignment & (alignment - 1U)) == 0U;
+}
+
+const char* PsramPool::errorText(
+    PsramPoolError value)
+{
+    switch (value)
+    {
+        case PsramPoolError::None:
+            return "NONE";
+
+        case PsramPoolError::AlreadyInitialized:
+            return "ALREADY_INITIALIZED";
+
+        case PsramPoolError::NotInitialized:
+            return "NOT_INITIALIZED";
+
+        case PsramPoolError::InvalidConfiguration:
+            return "INVALID_CONFIGURATION";
+
+        case PsramPoolError::InvalidClass:
+            return "INVALID_CLASS";
+
+        case PsramPoolError::InvalidAlignment:
+            return "INVALID_ALIGNMENT";
+
+        case PsramPoolError::CapacityOverflow:
+            return "CAPACITY_OVERFLOW";
+
+        case PsramPoolError::PsramUnavailable:
+            return "PSRAM_UNAVAILABLE";
+
+        case PsramPoolError::BackingAllocationFailed:
+            return "BACKING_ALLOCATION_FAILED";
+
+        case PsramPoolError::RequestTooLarge:
+            return "REQUEST_TOO_LARGE";
+
+        case PsramPoolError::PoolExhausted:
+            return "POOL_EXHAUSTED";
+
+        case PsramPoolError::InvalidBlock:
+            return "INVALID_BLOCK";
+
+        case PsramPoolError::ForeignBlock:
+            return "FOREIGN_BLOCK";
+
+        case PsramPoolError::StaleBlock:
+            return "STALE_BLOCK";
+
+        case PsramPoolError::DoubleRelease:
+            return "DOUBLE_RELEASE";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+134 — Bölüm 3/3
+bool PsramPool::addWouldOverflow(
+    size_t first,
+    size_t second)
+{
+    return second > SIZE_MAX - first;
+}
+
+bool PsramPool::multiplyWouldOverflow(
+    size_t first,
+    size_t second)
+{
+    return first != 0 &&
+        second > SIZE_MAX / first;
+}
+
+bool PsramPool::alignSize(
+    size_t value,
+    size_t alignment,
+    size_t* alignedValue)
+{
+    if (alignedValue == nullptr ||
+        !validAlignment(alignment))
+    {
+        return false;
+    }
+
+    const size_t mask = alignment - 1U;
+
+    if (addWouldOverflow(value, mask))
+    {
+        return false;
+    }
+
+    *alignedValue =
+        (value + mask) & ~mask;
+
+    return true;
+}
+
+bool PsramPool::validPreference(
+    MemoryPreference preference)
+{
+    switch (preference)
+    {
+        case MemoryPreference::InternalOnly:
+        case MemoryPreference::PsramPreferred:
+        case MemoryPreference::PsramOnly:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool PsramPool::validateConfig(
+    const PsramPoolConfig& config,
+    PsramPoolError* error) const
+{
+    if (error != nullptr)
+    {
+        *error = PsramPoolError::None;
+    }
+
+    if (!validPreference(config.preference) ||
+        config.classCount == 0 ||
+        config.classCount >
+            PSRAM_POOL_MAX_SIZE_CLASSES ||
+        (config.requirePsram &&
+         config.preference ==
+             MemoryPreference::InternalOnly))
+    {
+        if (error != nullptr)
+        {
+            *error =
+                PsramPoolError::InvalidConfiguration;
+        }
+
+        return false;
+    }
+
+    uint16_t totalBlocks = 0;
+    size_t previousBlockSize = 0;
+    size_t totalReservedBytes = 0;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config.classes[classIndex];
+
+        if (classConfig.blockSizeBytes == 0 ||
+            classConfig.blockCount == 0)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidConfiguration;
+            }
+
+            return false;
+        }
+
+        if (!validAlignment(classConfig.alignment))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidAlignment;
+            }
+
+            return false;
+        }
+
+        if (classIndex > 0 &&
+            classConfig.blockSizeBytes <=
+                previousBlockSize)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::InvalidConfiguration;
+            }
+
+            return false;
+        }
+
+        if (classConfig.blockCount >
+            PSRAM_POOL_MAX_BLOCKS - totalBlocks)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        size_t stride = 0;
+
+        if (!alignSize(
+                classConfig.blockSizeBytes,
+                classConfig.alignment,
+                &stride) ||
+            multiplyWouldOverflow(
+                stride,
+                classConfig.blockCount))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        const size_t classDataBytes =
+            stride * classConfig.blockCount;
+
+        const size_t alignmentPadding =
+            classConfig.alignment - 1U;
+
+        if (addWouldOverflow(
+                classDataBytes,
+                alignmentPadding))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        const size_t classReservedBytes =
+            classDataBytes + alignmentPadding;
+
+        if (addWouldOverflow(
+                totalReservedBytes,
+                classReservedBytes))
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    PsramPoolError::CapacityOverflow;
+            }
+
+            return false;
+        }
+
+        totalReservedBytes += classReservedBytes;
+        totalBlocks = static_cast<uint16_t>(
+            totalBlocks + classConfig.blockCount);
+        previousBlockSize = classConfig.blockSizeBytes;
+    }
+
+    return totalBlocks > 0 &&
+        totalReservedBytes > 0;
+}
+
+int PsramPool::findFreeSlotInClass(
+    uint8_t classIndex) const
+{
+    if (!ready() ||
+        classIndex >= config_.classCount)
+    {
+        return -1;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[classIndex];
+
+    const uint16_t classCount =
+        config_.classes[classIndex].blockCount;
+
+    for (uint16_t localSlot = 0;
+         localSlot < classCount;
+         ++localSlot)
+    {
+        const uint16_t globalSlot =
+            static_cast<uint16_t>(
+                classStart + localSlot);
+
+        if (!slots_[globalSlot].used)
+        {
+            return static_cast<int>(globalSlot);
+        }
+    }
+
+    return -1;
+}
+
+void* PsramPool::pointerForSlot(
+    uint8_t classIndex,
+    uint16_t slotIndex) const
+{
+    if (classIndex >= config_.classCount ||
+        !backings_[classIndex])
+    {
+        return nullptr;
+    }
+
+    const uint16_t classStart =
+        classSlotStarts_[classIndex];
+
+    const uint16_t classCount =
+        config_.classes[classIndex].blockCount;
+
+    if (slotIndex < classStart ||
+        slotIndex >=
+            static_cast<uint16_t>(
+                classStart + classCount))
+    {
+        return nullptr;
+    }
+
+    const size_t localSlot =
+        static_cast<size_t>(slotIndex - classStart);
+
+    const uintptr_t rawBase =
+        reinterpret_cast<uintptr_t>(
+            backings_[classIndex].data);
+
+    const size_t alignment =
+        config_.classes[classIndex].alignment;
+
+    const uintptr_t alignmentMask =
+        static_cast<uintptr_t>(alignment - 1U);
+
+    if (rawBase > UINTPTR_MAX - alignmentMask)
+    {
+        return nullptr;
+    }
+
+    const uintptr_t alignedBase =
+        (rawBase + alignmentMask) &
+        ~alignmentMask;
+
+    const size_t baseAdjustment =
+        static_cast<size_t>(alignedBase - rawBase);
+
+    const size_t offset =
+        localSlot * classStrides_[classIndex];
+
+    if (baseAdjustment > backings_[classIndex].size ||
+        offset >
+            backings_[classIndex].size -
+            baseAdjustment ||
+        classStrides_[classIndex] >
+            backings_[classIndex].size -
+            baseAdjustment - offset)
+    {
+        return nullptr;
+    }
+
+    return reinterpret_cast<void*>(
+        alignedBase + offset);
+}
+
+PsramPoolBlock PsramPool::acquireFromResolvedClass(
+    uint8_t classIndex,
+    size_t requestedBytes,
+    PsramPoolClearMode clearMode)
+{
+    const int freeSlot =
+        findFreeSlotInClass(classIndex);
+
+    if (freeSlot < 0)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::PoolExhausted,
+            RuntimeResult::OutOfMemory);
+
+        return {};
+    }
+
+    const uint16_t slotIndex =
+        static_cast<uint16_t>(freeSlot);
+
+    void* const pointer =
+        pointerForSlot(classIndex, slotIndex);
+
+    if (pointer == nullptr)
+    {
+        if (status_.failedAllocationCount < UINT32_MAX)
+        {
+            ++status_.failedAllocationCount;
+        }
+
+        setError(
+            PsramPoolError::BackingAllocationFailed,
+            RuntimeResult::InternalError);
+
+        return {};
+    }
+
+    if (shouldClearOnAcquire(classIndex, clearMode))
+    {
+        memset(
+            pointer,
+            0,
+            classStrides_[classIndex]);
+    }
+
+    uint32_t leaseId = nextLeaseId_;
+
+    if (leaseId == 0)
+    {
+        leaseId = 1U;
+    }
+
+    nextLeaseId_ = nextLease(leaseId);
+
+    SlotMetadata& metadata = slots_[slotIndex];
+    metadata.used = true;
+    metadata.classIndex = classIndex;
+    metadata.leaseId = leaseId;
+    metadata.requestedBytes = requestedBytes;
+
+    if (classUsedBlocks_[classIndex] < UINT16_MAX)
+    {
+        ++classUsedBlocks_[classIndex];
+    }
+
+    if (classUsedBlocks_[classIndex] >
+        classPeakUsedBlocks_[classIndex])
+    {
+        classPeakUsedBlocks_[classIndex] =
+            classUsedBlocks_[classIndex];
+    }
+
+    if (addWouldOverflow(
+            classRequestedBytes_[classIndex],
+            requestedBytes))
+    {
+        classRequestedBytes_[classIndex] = SIZE_MAX;
+    }
+    else
+    {
+        classRequestedBytes_[classIndex] +=
+            requestedBytes;
+    }
+
+    if (status_.allocationCount < UINT32_MAX)
+    {
+        ++status_.allocationCount;
+    }
+
+    PsramPoolBlock block;
+    block.data = pointer;
+    block.requestedBytes = requestedBytes;
+    block.capacityBytes =
+        config_.classes[classIndex].blockSizeBytes;
+    block.slotIndex = slotIndex;
+    block.classIndex = classIndex;
+    block.generation = status_.generation;
+    block.leaseId = leaseId;
+
+    status_.error = PsramPoolError::None;
+    refreshStatus();
+    notifyStateChanged();
+
+    return block;
+}
+
+bool PsramPool::shouldClearOnAcquire(
+    uint8_t classIndex,
+    PsramPoolClearMode clearMode) const
+{
+    if (clearMode == PsramPoolClearMode::Clear)
+    {
+        return true;
+    }
+
+    if (clearMode == PsramPoolClearMode::Preserve)
+    {
+        return false;
+    }
+
+    return classIndex < config_.classCount &&
+        config_.classes[classIndex].clearOnAcquire;
+}
+
+bool PsramPool::shouldClearOnRelease(
+    PsramPoolClearMode clearMode) const
+{
+    if (clearMode == PsramPoolClearMode::Clear)
+    {
+        return true;
+    }
+
+    if (clearMode == PsramPoolClearMode::Preserve)
+    {
+        return false;
+    }
+
+    return config_.clearBlocksOnRelease;
+}
+
+void PsramPool::refreshStatus()
+{
+    if (!status_.initialized)
+    {
+        status_.allBackingsInPsram = false;
+        status_.exhausted = false;
+        status_.totalBlocks = 0;
+        status_.usedBlocks = 0;
+        status_.freeBlocks = 0;
+        status_.reservedBytes = 0;
+        status_.usedCapacityBytes = 0;
+        status_.requestedBytes = 0;
+        status_.wastedBytes = 0;
+        return;
+    }
+
+    uint16_t totalBlocks = 0;
+    uint16_t usedBlocks = 0;
+    size_t reservedBytes = 0;
+    size_t usedCapacityBytes = 0;
+    size_t requestedBytes = 0;
+    bool allInPsram = true;
+
+    for (uint8_t classIndex = 0;
+         classIndex < config_.classCount;
+         ++classIndex)
+    {
+        const PsramPoolSizeClassConfig& classConfig =
+            config_.classes[classIndex];
+
+        totalBlocks = static_cast<uint16_t>(
+            totalBlocks + classConfig.blockCount);
+
+        usedBlocks = static_cast<uint16_t>(
+            usedBlocks + classUsedBlocks_[classIndex]);
+
+        reservedBytes += backings_[classIndex].size;
+
+        usedCapacityBytes +=
+            classConfig.blockSizeBytes *
+            classUsedBlocks_[classIndex];
+
+        requestedBytes +=
+            classRequestedBytes_[classIndex];
+
+        allInPsram =
+            allInPsram && backings_[classIndex].psram;
+    }
+
+    status_.classCount = config_.classCount;
+    status_.preference = config_.preference;
+    status_.allBackingsInPsram = allInPsram;
+    status_.totalBlocks = totalBlocks;
+    status_.usedBlocks = usedBlocks;
+    status_.freeBlocks = static_cast<uint16_t>(
+        totalBlocks - usedBlocks);
+    status_.exhausted =
+        totalBlocks > 0 && usedBlocks == totalBlocks;
+    status_.reservedBytes = reservedBytes;
+    status_.usedCapacityBytes = usedCapacityBytes;
+    status_.requestedBytes = requestedBytes;
+    status_.wastedBytes =
+        usedCapacityBytes >= requestedBytes
+            ? usedCapacityBytes - requestedBytes
+            : 0;
+
+    if (usedBlocks > status_.peakUsedBlocks)
+    {
+        status_.peakUsedBlocks = usedBlocks;
+    }
+
+    if (usedCapacityBytes >
+        status_.peakUsedCapacityBytes)
+    {
+        status_.peakUsedCapacityBytes =
+            usedCapacityBytes;
+    }
+}
+
+void PsramPool::resetMetadata(
+    bool preserveGeneration)
+{
+    const uint32_t generation =
+        preserveGeneration
+            ? status_.generation
+            : 0U;
+
+    config_ = {};
+    status_ = {};
+    status_.generation = generation;
+
+    for (uint8_t classIndex = 0;
+         classIndex < PSRAM_POOL_MAX_SIZE_CLASSES;
+         ++classIndex)
+    {
+        backings_[classIndex] = {};
+        classStrides_[classIndex] = 0;
+        classSlotStarts_[classIndex] = 0;
+        classUsedBlocks_[classIndex] = 0;
+        classPeakUsedBlocks_[classIndex] = 0;
+        classRequestedBytes_[classIndex] = 0;
+    }
+
+    for (uint16_t slotIndex = 0;
+         slotIndex < PSRAM_POOL_MAX_BLOCKS;
+         ++slotIndex)
+    {
+        slots_[slotIndex] = {};
+    }
+
+    nextLeaseId_ = 1U;
+}
+
+RuntimeResult PsramPool::setError(
+    PsramPoolError error,
+    RuntimeResult result)
+{
+    status_.error = error;
+    notifyStateChanged();
+
+    return result;
+}
+
+void PsramPool::notifyStateChanged() const
+{
+    if (observer_ != nullptr)
+    {
+        observer_(status_);
+    }
+}
+}
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "002_core_types.h"
+#include "005_memory_manager.h"
+
+//====================================================
+// ESP32 GAME STATION
+// GENERAL-PURPOSE BYTE STREAM RING BUFFER CONTRACT
+// 135_stream_ring_buffer.h
+//====================================================
+//
+// Responsibilities:
+// - Stores a bounded byte stream in one contiguous backing block.
+// - Supports owned MemoryManager storage or caller-owned storage.
+// - Exposes copy-based and zero-copy read/write operations.
+// - Handles wrap-around without moving unread data.
+// - Tracks high-water mark, overflow, underflow and dropped bytes.
+// - Allows strict rejection or oldest-data overwrite on overflow.
+//
+// Concurrency rule:
+// - This class does not acquire an internal mutex.
+// - All calls must come from one execution context, or callers must
+//   provide external synchronization around every operation.
+// - The later PCM ring buffer may add a dedicated SPSC task contract.
+//
+// Lifetime rule:
+// - Spans returned by writableSpans() and readableSpans() remain valid
+//   only until the next mutating call on the same ring buffer.
+// - commitWrite() must follow writableSpans().
+// - consumeRead() must follow readableSpans().
+// - External backing memory must outlive the ring buffer attachment.
+//
+// Integration rule:
+// - File 136 implements this contract.
+// - SdStreamService, PDF streaming and decoder staging may use it.
+// - DMA buffers must use internal DMA-capable storage rather than a
+//   PSRAM-backed instance of this generic ring buffer.
+//====================================================
+
+namespace egs
+{
+inline constexpr size_t
+    STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES = 256U;
+
+inline constexpr size_t
+    STREAM_RING_BUFFER_DEFAULT_ALIGNMENT =
+        alignof(max_align_t);
+
+enum class StreamRingBufferOverflowPolicy : uint8_t
+{
+    RejectNewData = 0,
+    OverwriteOldest
+};
+
+enum class StreamRingBufferClearMode : uint8_t
+{
+    Preserve = 0,
+    Clear
+};
+
+enum class StreamRingBufferError : uint8_t
+{
+    None = 0,
+    AlreadyInitialized,
+    NotInitialized,
+    InvalidConfiguration,
+    InvalidCapacity,
+    InvalidPointer,
+    BackingAllocationFailed,
+    SourceOverlapsBuffer,
+    DestinationOverlapsBuffer,
+    WriteReservationActive,
+    ReadReservationActive,
+    NoWriteReservation,
+    NoReadReservation,
+    CommitExceedsReservation,
+    ConsumeExceedsReservation,
+    InsufficientReadableData,
+    InsufficientWritableSpace,
+    InvalidOffset
+};
+
+struct StreamRingBufferConfig
+{
+    size_t capacityBytes = 0;
+
+    MemoryPreference preference =
+        MemoryPreference::PsramPreferred;
+
+    StreamRingBufferOverflowPolicy overflowPolicy =
+        StreamRingBufferOverflowPolicy::RejectNewData;
+
+    // Allows copy-based operations to transfer the amount
+    // that currently fits instead of rejecting the entire
+    // request.
+    bool allowPartialWrites = true;
+    bool allowPartialReads = true;
+
+    bool clearBackingStore = true;
+    bool clearConsumedBytes = false;
+    bool clearOnReset = false;
+};
+
+struct StreamRingBufferMutableSpan
+{
+    uint8_t* data = nullptr;
+    size_t size = 0;
+};
+
+struct StreamRingBufferConstSpan
+{
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+};
+
+struct StreamRingBufferWritableSpans
+{
+    StreamRingBufferMutableSpan first = {};
+    StreamRingBufferMutableSpan second = {};
+
+    size_t totalSize() const
+    {
+        return first.size + second.size;
+    }
+};
+
+struct StreamRingBufferReadableSpans
+{
+    StreamRingBufferConstSpan first = {};
+    StreamRingBufferConstSpan second = {};
+
+    size_t totalSize() const
+    {
+        return first.size + second.size;
+    }
+};
+
+struct StreamRingBufferStatus
+{
+    bool initialized = false;
+    bool ownsBackingStore = false;
+    bool psram = false;
+    bool empty = true;
+    bool full = false;
+    bool writeReservationActive = false;
+    bool readReservationActive = false;
+
+    StreamRingBufferOverflowPolicy overflowPolicy =
+        StreamRingBufferOverflowPolicy::RejectNewData;
+
+    StreamRingBufferError error =
+        StreamRingBufferError::None;
+
+    size_t capacityBytes = 0;
+    size_t readableBytes = 0;
+    size_t writableBytes = 0;
+    size_t highWatermarkBytes = 0;
+
+    size_t writeReservationBytes = 0;
+    size_t readReservationBytes = 0;
+
+    uint64_t totalWrittenBytes = 0;
+    uint64_t totalReadBytes = 0;
+    uint64_t totalDiscardedBytes = 0;
+    uint64_t totalOverwrittenBytes = 0;
+    uint64_t totalRejectedBytes = 0;
+
+    uint32_t writeCount = 0;
+    uint32_t readCount = 0;
+    uint32_t overflowCount = 0;
+    uint32_t underflowCount = 0;
+    uint32_t resetCount = 0;
+    uint32_t generation = 0;
+};
+
+using StreamRingBufferObserver = void (*)(
+    const StreamRingBufferStatus& status);
+
+class StreamRingBuffer final
+{
+public:
+    StreamRingBuffer() = default;
+    ~StreamRingBuffer();
+
+    StreamRingBuffer(
+        const StreamRingBuffer&) = delete;
+
+    StreamRingBuffer& operator=(
+        const StreamRingBuffer&) = delete;
+
+    StreamRingBuffer(
+        StreamRingBuffer&& other) noexcept;
+
+    StreamRingBuffer& operator=(
+        StreamRingBuffer&& other) noexcept;
+
+    //================================================
+    // LIFECYCLE AND BACKING STORAGE
+    //================================================
+
+    RuntimeResult begin(
+        const StreamRingBufferConfig& config);
+
+    RuntimeResult begin(
+        size_t capacityBytes,
+        MemoryPreference preference =
+            MemoryPreference::PsramPreferred,
+        StreamRingBufferOverflowPolicy overflowPolicy =
+            StreamRingBufferOverflowPolicy::RejectNewData);
+
+    RuntimeResult attach(
+        void* externalBuffer,
+        size_t capacityBytes,
+        const StreamRingBufferConfig& config);
+
+    RuntimeResult attach(
+        void* externalBuffer,
+        size_t capacityBytes,
+        StreamRingBufferOverflowPolicy overflowPolicy =
+            StreamRingBufferOverflowPolicy::RejectNewData,
+        bool clearBackingStore = false);
+
+    void end();
+
+    bool ready() const;
+
+    StreamRingBufferStatus status() const;
+
+    //================================================
+    // COPY-BASED STREAM OPERATIONS
+    //================================================
+
+    RuntimeResult write(
+        const void* source,
+        size_t sizeBytes,
+        size_t* writtenBytes = nullptr);
+
+    RuntimeResult read(
+        void* destination,
+        size_t sizeBytes,
+        size_t* readBytes = nullptr);
+
+    RuntimeResult peek(
+        void* destination,
+        size_t sizeBytes,
+        size_t offsetBytes = 0,
+        size_t* copiedBytes = nullptr) const;
+
+    RuntimeResult discard(
+        size_t sizeBytes,
+        size_t* discardedBytes = nullptr,
+        StreamRingBufferClearMode clearMode =
+            StreamRingBufferClearMode::Preserve);
+
+    //================================================
+    // ZERO-COPY PRODUCER OPERATIONS
+    //================================================
+
+    RuntimeResult writableSpans(
+        size_t requestedBytes,
+        StreamRingBufferWritableSpans& spans,
+        bool allowPartial = true);
+
+    RuntimeResult commitWrite(
+        size_t committedBytes);
+
+    RuntimeResult cancelWrite();
+
+    //================================================
+    // ZERO-COPY CONSUMER OPERATIONS
+    //================================================
+
+    RuntimeResult readableSpans(
+        size_t requestedBytes,
+        StreamRingBufferReadableSpans& spans,
+        bool allowPartial = true);
+
+    RuntimeResult consumeRead(
+        size_t consumedBytes,
+        StreamRingBufferClearMode clearMode =
+            StreamRingBufferClearMode::Preserve);
+
+    RuntimeResult cancelRead();
+
+    //================================================
+    // STATE AND CAPACITY
+    //================================================
+
+    RuntimeResult reset(
+        StreamRingBufferClearMode clearMode =
+            StreamRingBufferClearMode::Preserve);
+
+    size_t capacity() const;
+    size_t availableRead() const;
+    size_t availableWrite() const;
+    size_t highWatermark() const;
+
+    bool empty() const;
+    bool full() const;
+    bool usingPsram() const;
+    bool ownsBackingStore() const;
+
+    bool contains(
+        const void* pointer) const;
+
+    //================================================
+    // POLICY AND DIAGNOSTICS
+    //================================================
+
+    RuntimeResult setOverflowPolicy(
+        StreamRingBufferOverflowPolicy policy);
+
+    StreamRingBufferOverflowPolicy
+        overflowPolicy() const;
+
+    void setObserver(
+        StreamRingBufferObserver observer);
+
+    StreamRingBufferError lastError() const;
+
+    void clearError();
+
+    static const char* errorText(
+        StreamRingBufferError value);
+
+private:
+    MemoryBlock backing_ = {};
+    StreamRingBufferConfig config_ = {};
+    StreamRingBufferStatus status_ = {};
+
+    size_t readOffset_ = 0;
+    size_t writeOffset_ = 0;
+    size_t usedBytes_ = 0;
+
+    size_t writeReservationBytes_ = 0;
+    size_t readReservationBytes_ = 0;
+
+    StreamRingBufferObserver observer_ = nullptr;
+
+    static bool validOverflowPolicy(
+        StreamRingBufferOverflowPolicy policy);
+
+    static bool validConfig(
+        const StreamRingBufferConfig& config,
+        size_t effectiveCapacity);
+
+    static bool rangesOverlap(
+        const void* first,
+        size_t firstSize,
+        const void* second,
+        size_t secondSize);
+
+    static uint64_t saturatingAdd64(
+        uint64_t first,
+        uint64_t second);
+
+    static uint32_t saturatingIncrement32(
+        uint32_t value);
+
+    size_t contiguousReadableBytes() const;
+    size_t contiguousWritableBytes() const;
+
+    void advanceReadOffset(
+        size_t sizeBytes);
+
+    void advanceWriteOffset(
+        size_t sizeBytes);
+
+    RuntimeResult makeWritableSpace(
+        size_t requestedBytes,
+        size_t* acceptedBytes);
+
+    void clearRange(
+        size_t startOffset,
+        size_t sizeBytes);
+
+    void refreshStatus();
+
+    RuntimeResult setError(
+        StreamRingBufferError error,
+        RuntimeResult result) const;
+
+    void moveFrom(
+        StreamRingBuffer& other) noexcept;
+
+    void notifyStateChanged() const;
+};
+
+static_assert(
+    STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES > 0U,
+    "Stream ring buffer minimum capacity must be positive");
+
+static_assert(
+    STREAM_RING_BUFFER_DEFAULT_ALIGNMENT > 0U,
+    "Stream ring buffer alignment must be positive");
+
+static_assert(
+    sizeof(uint64_t) >= 8U,
+    "Stream ring buffer byte counters require 64-bit integers");
+}
+#include "135_stream_ring_buffer.h"
+
+#include <limits.h>
+#include <string.h>
+
+namespace egs
+{
+namespace
+{
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+bool validClearMode(StreamRingBufferClearMode mode)
+{
+    switch (mode)
+    {
+        case StreamRingBufferClearMode::Preserve:
+        case StreamRingBufferClearMode::Clear:
+            return true;
+
+        default:
+            return false;
+    }
+}
+}
+
+StreamRingBuffer::~StreamRingBuffer()
+{
+    end();
+}
+
+StreamRingBuffer::StreamRingBuffer(
+    StreamRingBuffer&& other) noexcept
+{
+    moveFrom(other);
+}
+
+StreamRingBuffer& StreamRingBuffer::operator=(
+    StreamRingBuffer&& other) noexcept
+{
+    if (this != &other)
+    {
+        end();
+        moveFrom(other);
+    }
+
+    return *this;
+}
+
+RuntimeResult StreamRingBuffer::begin(
+    const StreamRingBufferConfig& config)
+{
+    if (status_.initialized || backing_)
+    {
+        return setError(
+            StreamRingBufferError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    if (!validConfig(config, config.capacityBytes))
+    {
+        return setError(
+            config.capacityBytes <
+                    STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES
+                ? StreamRingBufferError::InvalidCapacity
+                : StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            StreamRingBufferError::BackingAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    MemoryBlock block = MemoryManager::allocate(
+        config.capacityBytes,
+        config.preference,
+        config.clearBackingStore);
+
+    if (!block || block.size < config.capacityBytes)
+    {
+        if (block)
+        {
+            MemoryManager::release(block);
+        }
+
+        return setError(
+            StreamRingBufferError::BackingAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    backing_ = block;
+    config_ = config;
+    readOffset_ = 0;
+    writeOffset_ = 0;
+    usedBytes_ = 0;
+    writeReservationBytes_ = 0;
+    readReservationBytes_ = 0;
+
+    status_ = {};
+    status_.initialized = true;
+    status_.ownsBackingStore = true;
+    status_.psram = backing_.psram;
+    status_.overflowPolicy = config_.overflowPolicy;
+    status_.capacityBytes = backing_.size;
+    status_.generation = generation;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::begin(
+    size_t capacityBytes,
+    MemoryPreference preference,
+    StreamRingBufferOverflowPolicy overflowPolicy)
+{
+    StreamRingBufferConfig config;
+    config.capacityBytes = capacityBytes;
+    config.preference = preference;
+    config.overflowPolicy = overflowPolicy;
+
+    return begin(config);
+}
+
+RuntimeResult StreamRingBuffer::attach(
+    void* externalBuffer,
+    size_t capacityBytes,
+    const StreamRingBufferConfig& config)
+{
+    if (status_.initialized || backing_)
+    {
+        return setError(
+            StreamRingBufferError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    if (externalBuffer == nullptr)
+    {
+        return setError(
+            StreamRingBufferError::InvalidPointer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!validConfig(config, capacityBytes))
+    {
+        return setError(
+            capacityBytes <
+                    STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES
+                ? StreamRingBufferError::InvalidCapacity
+                : StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    backing_ = {};
+    backing_.data = externalBuffer;
+    backing_.size = capacityBytes;
+    backing_.psram = false;
+
+    config_ = config;
+    config_.capacityBytes = capacityBytes;
+
+    if (config_.clearBackingStore)
+    {
+        memset(backing_.data, 0, backing_.size);
+    }
+
+    readOffset_ = 0;
+    writeOffset_ = 0;
+    usedBytes_ = 0;
+    writeReservationBytes_ = 0;
+    readReservationBytes_ = 0;
+
+    status_ = {};
+    status_.initialized = true;
+    status_.ownsBackingStore = false;
+    status_.psram = false;
+    status_.overflowPolicy = config_.overflowPolicy;
+    status_.capacityBytes = backing_.size;
+    status_.generation = generation;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::attach(
+    void* externalBuffer,
+    size_t capacityBytes,
+    StreamRingBufferOverflowPolicy overflowPolicy,
+    bool clearBackingStore)
+{
+    StreamRingBufferConfig config;
+    config.capacityBytes = capacityBytes;
+    config.overflowPolicy = overflowPolicy;
+    config.clearBackingStore = clearBackingStore;
+
+    return attach(
+        externalBuffer,
+        capacityBytes,
+        config);
+}
+
+void StreamRingBuffer::end()
+{
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    if (status_.ownsBackingStore && backing_)
+    {
+        MemoryManager::release(backing_);
+    }
+
+    backing_ = {};
+    config_ = {};
+    status_ = {};
+    status_.generation = generation;
+
+    readOffset_ = 0;
+    writeOffset_ = 0;
+    usedBytes_ = 0;
+    writeReservationBytes_ = 0;
+    readReservationBytes_ = 0;
+    observer_ = nullptr;
+}
+
+bool StreamRingBuffer::ready() const
+{
+    return
+        status_.initialized &&
+        backing_.data != nullptr &&
+        backing_.size >=
+            STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES &&
+        backing_.size == status_.capacityBytes &&
+        usedBytes_ <= backing_.size;
+}
+
+StreamRingBufferStatus StreamRingBuffer::status() const
+{
+    return status_;
+}
+
+RuntimeResult StreamRingBuffer::write(
+    const void* source,
+    size_t sizeBytes,
+    size_t* writtenBytes)
+{
+    if (writtenBytes != nullptr)
+    {
+        *writtenBytes = 0;
+    }
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (sizeBytes == 0)
+    {
+        status_.error = StreamRingBufferError::None;
+        return RuntimeResult::Ok;
+    }
+
+    if (source == nullptr)
+    {
+        return setError(
+            StreamRingBufferError::InvalidPointer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (rangesOverlap(
+            source,
+            sizeBytes,
+            backing_.data,
+            backing_.size))
+    {
+        return setError(
+            StreamRingBufferError::SourceOverlapsBuffer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint8_t* sourceBytes =
+        static_cast<const uint8_t*>(source);
+
+    size_t acceptedBytes = 0;
+    size_t sourceOffset = 0;
+
+    if (config_.overflowPolicy ==
+        StreamRingBufferOverflowPolicy::OverwriteOldest)
+    {
+        if (sizeBytes > backing_.size)
+        {
+            sourceOffset = sizeBytes - backing_.size;
+            acceptedBytes = backing_.size;
+
+            status_.totalRejectedBytes = saturatingAdd64(
+                status_.totalRejectedBytes,
+                sourceOffset);
+
+            status_.overflowCount =
+                saturatingIncrement32(status_.overflowCount);
+        }
+        else
+        {
+            acceptedBytes = sizeBytes;
+        }
+
+        const size_t writable = backing_.size - usedBytes_;
+
+        if (acceptedBytes > writable)
+        {
+            const size_t overwriteBytes =
+                acceptedBytes - writable;
+
+            if (config_.clearConsumedBytes)
+            {
+                clearRange(readOffset_, overwriteBytes);
+            }
+
+            advanceReadOffset(overwriteBytes);
+            usedBytes_ -= overwriteBytes;
+
+            status_.totalDiscardedBytes = saturatingAdd64(
+                status_.totalDiscardedBytes,
+                overwriteBytes);
+
+            status_.totalOverwrittenBytes = saturatingAdd64(
+                status_.totalOverwrittenBytes,
+                overwriteBytes);
+
+            status_.overflowCount =
+                saturatingIncrement32(status_.overflowCount);
+        }
+    }
+    else
+    {
+        const RuntimeResult spaceResult =
+            makeWritableSpace(sizeBytes, &acceptedBytes);
+
+        if (spaceResult != RuntimeResult::Ok)
+        {
+            return spaceResult;
+        }
+    }
+
+    if (acceptedBytes == 0)
+    {
+        return setError(
+            StreamRingBufferError::InsufficientWritableSpace,
+            RuntimeResult::OutOfMemory);
+    }
+
+    const size_t firstBytes =
+        acceptedBytes < backing_.size - writeOffset_
+            ? acceptedBytes
+            : backing_.size - writeOffset_;
+
+    uint8_t* const destination =
+        static_cast<uint8_t*>(backing_.data);
+
+    memcpy(
+        destination + writeOffset_,
+        sourceBytes + sourceOffset,
+        firstBytes);
+
+    const size_t secondBytes =
+        acceptedBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        memcpy(
+            destination,
+            sourceBytes + sourceOffset + firstBytes,
+            secondBytes);
+    }
+
+    advanceWriteOffset(acceptedBytes);
+    usedBytes_ += acceptedBytes;
+
+    status_.totalWrittenBytes = saturatingAdd64(
+        status_.totalWrittenBytes,
+        acceptedBytes);
+
+    status_.writeCount =
+        saturatingIncrement32(status_.writeCount);
+
+    status_.error = StreamRingBufferError::None;
+
+    if (writtenBytes != nullptr)
+    {
+        *writtenBytes = acceptedBytes;
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::read(
+    void* destination,
+    size_t sizeBytes,
+    size_t* readBytes)
+{
+    if (readBytes != nullptr)
+    {
+        *readBytes = 0;
+    }
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (sizeBytes == 0)
+    {
+        status_.error = StreamRingBufferError::None;
+        return RuntimeResult::Ok;
+    }
+
+    if (destination == nullptr)
+    {
+        return setError(
+            StreamRingBufferError::InvalidPointer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (rangesOverlap(
+            destination,
+            sizeBytes,
+            backing_.data,
+            backing_.size))
+    {
+        return setError(
+            StreamRingBufferError::DestinationOverlapsBuffer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    size_t acceptedBytes = sizeBytes;
+
+    if (sizeBytes > usedBytes_)
+    {
+        status_.underflowCount =
+            saturatingIncrement32(status_.underflowCount);
+
+        if (!config_.allowPartialReads || usedBytes_ == 0)
+        {
+            return setError(
+                StreamRingBufferError::InsufficientReadableData,
+                RuntimeResult::NotReady);
+        }
+
+        acceptedBytes = usedBytes_;
+    }
+
+    const size_t firstBytes =
+        acceptedBytes < contiguousReadableBytes()
+            ? acceptedBytes
+            : contiguousReadableBytes();
+
+    const uint8_t* const source =
+        static_cast<const uint8_t*>(backing_.data);
+
+    memcpy(
+        destination,
+        source + readOffset_,
+        firstBytes);
+
+    const size_t secondBytes =
+        acceptedBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        memcpy(
+            static_cast<uint8_t*>(destination) + firstBytes,
+            source,
+            secondBytes);
+    }
+
+    if (config_.clearConsumedBytes)
+    {
+        clearRange(readOffset_, acceptedBytes);
+    }
+
+    advanceReadOffset(acceptedBytes);
+    usedBytes_ -= acceptedBytes;
+
+    status_.totalReadBytes = saturatingAdd64(
+        status_.totalReadBytes,
+        acceptedBytes);
+
+    status_.readCount =
+        saturatingIncrement32(status_.readCount);
+
+    status_.error = StreamRingBufferError::None;
+
+    if (readBytes != nullptr)
+    {
+        *readBytes = acceptedBytes;
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+136 — Bölüm 2/3
+RuntimeResult StreamRingBuffer::peek(
+    void* destination,
+    size_t sizeBytes,
+    size_t offsetBytes,
+    size_t* copiedBytes) const
+{
+    if (copiedBytes != nullptr)
+    {
+        *copiedBytes = 0;
+    }
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (sizeBytes == 0)
+    {
+        const_cast<StreamRingBuffer*>(this)->status_.error =
+            StreamRingBufferError::None;
+
+        return RuntimeResult::Ok;
+    }
+
+    if (destination == nullptr)
+    {
+        return setError(
+            StreamRingBufferError::InvalidPointer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (rangesOverlap(
+            destination,
+            sizeBytes,
+            backing_.data,
+            backing_.size))
+    {
+        return setError(
+            StreamRingBufferError::DestinationOverlapsBuffer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (offsetBytes > usedBytes_)
+    {
+        return setError(
+            StreamRingBufferError::InvalidOffset,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const size_t available =
+        usedBytes_ - offsetBytes;
+
+    size_t acceptedBytes = sizeBytes;
+
+    if (sizeBytes > available)
+    {
+        StreamRingBuffer* const self =
+            const_cast<StreamRingBuffer*>(this);
+
+        self->status_.underflowCount =
+            saturatingIncrement32(
+                self->status_.underflowCount);
+
+        if (!config_.allowPartialReads ||
+            available == 0)
+        {
+            return setError(
+                StreamRingBufferError::
+                    InsufficientReadableData,
+                RuntimeResult::NotReady);
+        }
+
+        acceptedBytes = available;
+    }
+
+    const size_t bytesUntilEnd =
+        backing_.size - readOffset_;
+
+    const size_t sourceOffset =
+        offsetBytes < bytesUntilEnd
+            ? readOffset_ + offsetBytes
+            : offsetBytes - bytesUntilEnd;
+
+    const size_t firstBytes =
+        acceptedBytes <
+                backing_.size - sourceOffset
+            ? acceptedBytes
+            : backing_.size - sourceOffset;
+
+    const uint8_t* const source =
+        static_cast<const uint8_t*>(
+            backing_.data);
+
+    memcpy(
+        destination,
+        source + sourceOffset,
+        firstBytes);
+
+    const size_t secondBytes =
+        acceptedBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        memcpy(
+            static_cast<uint8_t*>(destination) +
+                firstBytes,
+            source,
+            secondBytes);
+    }
+
+    StreamRingBuffer* const self =
+        const_cast<StreamRingBuffer*>(this);
+
+    self->status_.error =
+        StreamRingBufferError::None;
+
+    if (copiedBytes != nullptr)
+    {
+        *copiedBytes = acceptedBytes;
+    }
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::discard(
+    size_t sizeBytes,
+    size_t* discardedBytes,
+    StreamRingBufferClearMode clearMode)
+{
+    if (discardedBytes != nullptr)
+    {
+        *discardedBytes = 0;
+    }
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (!validClearMode(clearMode))
+    {
+        return setError(
+            StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (sizeBytes == 0)
+    {
+        status_.error =
+            StreamRingBufferError::None;
+
+        return RuntimeResult::Ok;
+    }
+
+    size_t acceptedBytes = sizeBytes;
+
+    if (sizeBytes > usedBytes_)
+    {
+        status_.underflowCount =
+            saturatingIncrement32(
+                status_.underflowCount);
+
+        if (!config_.allowPartialReads ||
+            usedBytes_ == 0)
+        {
+            return setError(
+                StreamRingBufferError::
+                    InsufficientReadableData,
+                RuntimeResult::NotReady);
+        }
+
+        acceptedBytes = usedBytes_;
+    }
+
+    if (clearMode ==
+            StreamRingBufferClearMode::Clear ||
+        config_.clearConsumedBytes)
+    {
+        clearRange(
+            readOffset_,
+            acceptedBytes);
+    }
+
+    advanceReadOffset(acceptedBytes);
+    usedBytes_ -= acceptedBytes;
+
+    status_.totalDiscardedBytes =
+        saturatingAdd64(
+            status_.totalDiscardedBytes,
+            acceptedBytes);
+
+    status_.readCount =
+        saturatingIncrement32(
+            status_.readCount);
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    if (discardedBytes != nullptr)
+    {
+        *discardedBytes = acceptedBytes;
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::writableSpans(
+    size_t requestedBytes,
+    StreamRingBufferWritableSpans& spans,
+    bool allowPartial)
+{
+    spans = {};
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (requestedBytes == 0)
+    {
+        return setError(
+            StreamRingBufferError::InvalidCapacity,
+            RuntimeResult::InvalidArgument);
+    }
+
+    size_t acceptedBytes = requestedBytes;
+
+    if (config_.overflowPolicy ==
+        StreamRingBufferOverflowPolicy::OverwriteOldest)
+    {
+        if (acceptedBytes > backing_.size)
+        {
+            if (!allowPartial)
+            {
+                status_.overflowCount =
+                    saturatingIncrement32(
+                        status_.overflowCount);
+
+                return setError(
+                    StreamRingBufferError::
+                        InsufficientWritableSpace,
+                    RuntimeResult::OutOfMemory);
+            }
+
+            status_.totalRejectedBytes =
+                saturatingAdd64(
+                    status_.totalRejectedBytes,
+                    acceptedBytes -
+                        backing_.size);
+
+            acceptedBytes = backing_.size;
+
+            status_.overflowCount =
+                saturatingIncrement32(
+                    status_.overflowCount);
+        }
+
+        const size_t writable =
+            backing_.size - usedBytes_;
+
+        if (acceptedBytes > writable)
+        {
+            const size_t overwriteBytes =
+                acceptedBytes - writable;
+
+            if (config_.clearConsumedBytes)
+            {
+                clearRange(
+                    readOffset_,
+                    overwriteBytes);
+            }
+
+            advanceReadOffset(overwriteBytes);
+            usedBytes_ -= overwriteBytes;
+
+            status_.totalDiscardedBytes =
+                saturatingAdd64(
+                    status_.totalDiscardedBytes,
+                    overwriteBytes);
+
+            status_.totalOverwrittenBytes =
+                saturatingAdd64(
+                    status_.totalOverwrittenBytes,
+                    overwriteBytes);
+
+            status_.overflowCount =
+                saturatingIncrement32(
+                    status_.overflowCount);
+        }
+    }
+    else
+    {
+        const size_t writable =
+            backing_.size - usedBytes_;
+
+        if (acceptedBytes > writable)
+        {
+            status_.overflowCount =
+                saturatingIncrement32(
+                    status_.overflowCount);
+
+            if (!allowPartial || writable == 0)
+            {
+                status_.totalRejectedBytes =
+                    saturatingAdd64(
+                        status_.totalRejectedBytes,
+                        requestedBytes);
+
+                return setError(
+                    StreamRingBufferError::
+                        InsufficientWritableSpace,
+                    RuntimeResult::OutOfMemory);
+            }
+
+            status_.totalRejectedBytes =
+                saturatingAdd64(
+                    status_.totalRejectedBytes,
+                    acceptedBytes - writable);
+
+            acceptedBytes = writable;
+        }
+    }
+
+    uint8_t* const base =
+        static_cast<uint8_t*>(backing_.data);
+
+    const size_t firstBytes =
+        acceptedBytes <
+                backing_.size - writeOffset_
+            ? acceptedBytes
+            : backing_.size - writeOffset_;
+
+    spans.first.data =
+        base + writeOffset_;
+
+    spans.first.size =
+        firstBytes;
+
+    const size_t secondBytes =
+        acceptedBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        spans.second.data = base;
+        spans.second.size = secondBytes;
+    }
+
+    writeReservationBytes_ =
+        acceptedBytes;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::commitWrite(
+    size_t committedBytes)
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ == 0)
+    {
+        return setError(
+            StreamRingBufferError::NoWriteReservation,
+            RuntimeResult::NotReady);
+    }
+
+    if (committedBytes >
+        writeReservationBytes_)
+    {
+        return setError(
+            StreamRingBufferError::
+                CommitExceedsReservation,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (committedBytes > 0)
+    {
+        advanceWriteOffset(committedBytes);
+        usedBytes_ += committedBytes;
+
+        status_.totalWrittenBytes =
+            saturatingAdd64(
+                status_.totalWrittenBytes,
+                committedBytes);
+
+        status_.writeCount =
+            saturatingIncrement32(
+                status_.writeCount);
+    }
+
+    writeReservationBytes_ = 0;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::cancelWrite()
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ == 0)
+    {
+        return setError(
+            StreamRingBufferError::NoWriteReservation,
+            RuntimeResult::NotReady);
+    }
+
+    writeReservationBytes_ = 0;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::readableSpans(
+    size_t requestedBytes,
+    StreamRingBufferReadableSpans& spans,
+    bool allowPartial)
+{
+    spans = {};
+
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (requestedBytes == 0)
+    {
+        return setError(
+            StreamRingBufferError::InvalidCapacity,
+            RuntimeResult::InvalidArgument);
+    }
+
+    size_t acceptedBytes = requestedBytes;
+
+    if (acceptedBytes > usedBytes_)
+    {
+        status_.underflowCount =
+            saturatingIncrement32(
+                status_.underflowCount);
+
+        if (!allowPartial || usedBytes_ == 0)
+        {
+            return setError(
+                StreamRingBufferError::
+                    InsufficientReadableData,
+                RuntimeResult::NotReady);
+        }
+
+        acceptedBytes = usedBytes_;
+    }
+
+    const uint8_t* const base =
+        static_cast<const uint8_t*>(
+            backing_.data);
+
+    const size_t firstBytes =
+        acceptedBytes <
+                contiguousReadableBytes()
+            ? acceptedBytes
+            : contiguousReadableBytes();
+
+    spans.first.data =
+        base + readOffset_;
+
+    spans.first.size =
+        firstBytes;
+
+    const size_t secondBytes =
+        acceptedBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        spans.second.data = base;
+        spans.second.size = secondBytes;
+    }
+
+    readReservationBytes_ =
+        acceptedBytes;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::consumeRead(
+    size_t consumedBytes,
+    StreamRingBufferClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (readReservationBytes_ == 0)
+    {
+        return setError(
+            StreamRingBufferError::NoReadReservation,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validClearMode(clearMode))
+    {
+        return setError(
+            StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (consumedBytes >
+        readReservationBytes_)
+    {
+        return setError(
+            StreamRingBufferError::
+                ConsumeExceedsReservation,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (consumedBytes > 0)
+    {
+        if (clearMode ==
+                StreamRingBufferClearMode::Clear ||
+            config_.clearConsumedBytes)
+        {
+            clearRange(
+                readOffset_,
+                consumedBytes);
+        }
+
+        advanceReadOffset(consumedBytes);
+        usedBytes_ -= consumedBytes;
+
+        status_.totalReadBytes =
+            saturatingAdd64(
+                status_.totalReadBytes,
+                consumedBytes);
+
+        status_.readCount =
+            saturatingIncrement32(
+                status_.readCount);
+    }
+
+    readReservationBytes_ = 0;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+136 — Bölüm 3/3
+RuntimeResult StreamRingBuffer::cancelRead()
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (readReservationBytes_ == 0)
+    {
+        return setError(
+            StreamRingBufferError::NoReadReservation,
+            RuntimeResult::NotReady);
+    }
+
+    readReservationBytes_ = 0;
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult StreamRingBuffer::reset(
+    StreamRingBufferClearMode clearMode)
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validClearMode(clearMode))
+    {
+        return setError(
+            StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (clearMode ==
+            StreamRingBufferClearMode::Clear ||
+        config_.clearOnReset)
+    {
+        memset(
+            backing_.data,
+            0,
+            backing_.size);
+    }
+
+    readOffset_ = 0;
+    writeOffset_ = 0;
+    usedBytes_ = 0;
+    writeReservationBytes_ = 0;
+    readReservationBytes_ = 0;
+
+    status_.resetCount =
+        saturatingIncrement32(
+            status_.resetCount);
+
+    status_.generation =
+        nextGeneration(
+            status_.generation);
+
+    status_.error =
+        StreamRingBufferError::None;
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+size_t StreamRingBuffer::capacity() const
+{
+    return ready()
+        ? backing_.size
+        : 0;
+}
+
+size_t StreamRingBuffer::availableRead() const
+{
+    return ready()
+        ? usedBytes_
+        : 0;
+}
+
+size_t StreamRingBuffer::availableWrite() const
+{
+    return ready()
+        ? backing_.size - usedBytes_
+        : 0;
+}
+
+size_t StreamRingBuffer::highWatermark() const
+{
+    return status_.highWatermarkBytes;
+}
+
+bool StreamRingBuffer::empty() const
+{
+    return !ready() || usedBytes_ == 0;
+}
+
+bool StreamRingBuffer::full() const
+{
+    return ready() &&
+        usedBytes_ == backing_.size;
+}
+
+bool StreamRingBuffer::usingPsram() const
+{
+    return ready() && backing_.psram;
+}
+
+bool StreamRingBuffer::ownsBackingStore() const
+{
+    return ready() &&
+        status_.ownsBackingStore;
+}
+
+bool StreamRingBuffer::contains(
+    const void* pointer) const
+{
+    if (!ready() || pointer == nullptr)
+    {
+        return false;
+    }
+
+    const uintptr_t base =
+        reinterpret_cast<uintptr_t>(
+            backing_.data);
+
+    const uintptr_t value =
+        reinterpret_cast<uintptr_t>(
+            pointer);
+
+    return
+        value >= base &&
+        static_cast<size_t>(
+            value - base) <
+            backing_.size;
+}
+
+RuntimeResult StreamRingBuffer::setOverflowPolicy(
+    StreamRingBufferOverflowPolicy policy)
+{
+    if (!ready())
+    {
+        return setError(
+            StreamRingBufferError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validOverflowPolicy(policy))
+    {
+        return setError(
+            StreamRingBufferError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (writeReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::WriteReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    if (readReservationBytes_ > 0)
+    {
+        return setError(
+            StreamRingBufferError::ReadReservationActive,
+            RuntimeResult::Busy);
+    }
+
+    config_.overflowPolicy = policy;
+    status_.overflowPolicy = policy;
+    status_.error =
+        StreamRingBufferError::None;
+
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+StreamRingBufferOverflowPolicy
+StreamRingBuffer::overflowPolicy() const
+{
+    return config_.overflowPolicy;
+}
+
+void StreamRingBuffer::setObserver(
+    StreamRingBufferObserver observer)
+{
+    observer_ = observer;
+}
+
+StreamRingBufferError
+StreamRingBuffer::lastError() const
+{
+    return status_.error;
+}
+
+void StreamRingBuffer::clearError()
+{
+    status_.error =
+        StreamRingBufferError::None;
+}
+
+const char* StreamRingBuffer::errorText(
+    StreamRingBufferError value)
+{
+    switch (value)
+    {
+        case StreamRingBufferError::None:
+            return "NONE";
+
+        case StreamRingBufferError::
+                AlreadyInitialized:
+            return "ALREADY_INITIALIZED";
+
+        case StreamRingBufferError::
+                NotInitialized:
+            return "NOT_INITIALIZED";
+
+        case StreamRingBufferError::
+                InvalidConfiguration:
+            return "INVALID_CONFIGURATION";
+
+        case StreamRingBufferError::
+                InvalidCapacity:
+            return "INVALID_CAPACITY";
+
+        case StreamRingBufferError::
+                InvalidPointer:
+            return "INVALID_POINTER";
+
+        case StreamRingBufferError::
+                BackingAllocationFailed:
+            return "BACKING_ALLOCATION_FAILED";
+
+        case StreamRingBufferError::
+                SourceOverlapsBuffer:
+            return "SOURCE_OVERLAPS_BUFFER";
+
+        case StreamRingBufferError::
+                DestinationOverlapsBuffer:
+            return "DESTINATION_OVERLAPS_BUFFER";
+
+        case StreamRingBufferError::
+                WriteReservationActive:
+            return "WRITE_RESERVATION_ACTIVE";
+
+        case StreamRingBufferError::
+                ReadReservationActive:
+            return "READ_RESERVATION_ACTIVE";
+
+        case StreamRingBufferError::
+                NoWriteReservation:
+            return "NO_WRITE_RESERVATION";
+
+        case StreamRingBufferError::
+                NoReadReservation:
+            return "NO_READ_RESERVATION";
+
+        case StreamRingBufferError::
+                CommitExceedsReservation:
+            return "COMMIT_EXCEEDS_RESERVATION";
+
+        case StreamRingBufferError::
+                ConsumeExceedsReservation:
+            return "CONSUME_EXCEEDS_RESERVATION";
+
+        case StreamRingBufferError::
+                InsufficientReadableData:
+            return "INSUFFICIENT_READABLE_DATA";
+
+        case StreamRingBufferError::
+                InsufficientWritableSpace:
+            return "INSUFFICIENT_WRITABLE_SPACE";
+
+        case StreamRingBufferError::
+                InvalidOffset:
+            return "INVALID_OFFSET";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool StreamRingBuffer::validOverflowPolicy(
+    StreamRingBufferOverflowPolicy policy)
+{
+    switch (policy)
+    {
+        case StreamRingBufferOverflowPolicy::
+                RejectNewData:
+
+        case StreamRingBufferOverflowPolicy::
+                OverwriteOldest:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool StreamRingBuffer::validConfig(
+    const StreamRingBufferConfig& config,
+    size_t effectiveCapacity)
+{
+    return
+        effectiveCapacity >=
+            STREAM_RING_BUFFER_MINIMUM_CAPACITY_BYTES &&
+        validOverflowPolicy(
+            config.overflowPolicy);
+}
+
+bool StreamRingBuffer::rangesOverlap(
+    const void* first,
+    size_t firstSize,
+    const void* second,
+    size_t secondSize)
+{
+    if (first == nullptr ||
+        second == nullptr ||
+        firstSize == 0 ||
+        secondSize == 0)
+    {
+        return false;
+    }
+
+    const uintptr_t firstAddress =
+        reinterpret_cast<uintptr_t>(first);
+
+    const uintptr_t secondAddress =
+        reinterpret_cast<uintptr_t>(second);
+
+    if (firstAddress <= secondAddress)
+    {
+        return
+            secondAddress - firstAddress <
+            firstSize;
+    }
+
+    return
+        firstAddress - secondAddress <
+        secondSize;
+}
+
+uint64_t StreamRingBuffer::saturatingAdd64(
+    uint64_t first,
+    uint64_t second)
+{
+    return second > UINT64_MAX - first
+        ? UINT64_MAX
+        : first + second;
+}
+
+uint32_t StreamRingBuffer::
+    saturatingIncrement32(uint32_t value)
+{
+    return value == UINT32_MAX
+        ? UINT32_MAX
+        : value + 1U;
+}
+
+size_t StreamRingBuffer::
+    contiguousReadableBytes() const
+{
+    if (!ready() || usedBytes_ == 0)
+    {
+        return 0;
+    }
+
+    const size_t untilEnd =
+        backing_.size - readOffset_;
+
+    return usedBytes_ < untilEnd
+        ? usedBytes_
+        : untilEnd;
+}
+
+size_t StreamRingBuffer::
+    contiguousWritableBytes() const
+{
+    if (!ready() ||
+        usedBytes_ == backing_.size)
+    {
+        return 0;
+    }
+
+    const size_t writable =
+        backing_.size - usedBytes_;
+
+    const size_t untilEnd =
+        backing_.size - writeOffset_;
+
+    return writable < untilEnd
+        ? writable
+        : untilEnd;
+}
+
+void StreamRingBuffer::advanceReadOffset(
+    size_t sizeBytes)
+{
+    if (!ready() || sizeBytes == 0)
+    {
+        return;
+    }
+
+    const size_t bytesUntilEnd =
+        backing_.size - readOffset_;
+
+    readOffset_ =
+        sizeBytes < bytesUntilEnd
+            ? readOffset_ + sizeBytes
+            : sizeBytes - bytesUntilEnd;
+}
+
+void StreamRingBuffer::advanceWriteOffset(
+    size_t sizeBytes)
+{
+    if (!ready() || sizeBytes == 0)
+    {
+        return;
+    }
+
+    const size_t bytesUntilEnd =
+        backing_.size - writeOffset_;
+
+    writeOffset_ =
+        sizeBytes < bytesUntilEnd
+            ? writeOffset_ + sizeBytes
+            : sizeBytes - bytesUntilEnd;
+}
+
+RuntimeResult StreamRingBuffer::
+    makeWritableSpace(
+        size_t requestedBytes,
+        size_t* acceptedBytes)
+{
+    if (acceptedBytes == nullptr)
+    {
+        return setError(
+            StreamRingBufferError::InvalidPointer,
+            RuntimeResult::InvalidArgument);
+    }
+
+    *acceptedBytes = 0;
+
+    const size_t writable =
+        backing_.size - usedBytes_;
+
+    if (requestedBytes <= writable)
+    {
+        *acceptedBytes = requestedBytes;
+        return RuntimeResult::Ok;
+    }
+
+    status_.overflowCount =
+        saturatingIncrement32(
+            status_.overflowCount);
+
+    if (!config_.allowPartialWrites ||
+        writable == 0)
+    {
+        status_.totalRejectedBytes =
+            saturatingAdd64(
+                status_.totalRejectedBytes,
+                requestedBytes);
+
+        return setError(
+            StreamRingBufferError::
+                InsufficientWritableSpace,
+            RuntimeResult::OutOfMemory);
+    }
+
+    *acceptedBytes = writable;
+
+    status_.totalRejectedBytes =
+        saturatingAdd64(
+            status_.totalRejectedBytes,
+            requestedBytes - writable);
+
+    return RuntimeResult::Ok;
+}
+
+void StreamRingBuffer::clearRange(
+    size_t startOffset,
+    size_t sizeBytes)
+{
+    if (!ready() ||
+        sizeBytes == 0 ||
+        startOffset >= backing_.size)
+    {
+        return;
+    }
+
+    uint8_t* const base =
+        static_cast<uint8_t*>(
+            backing_.data);
+
+    const size_t firstBytes =
+        sizeBytes <
+                backing_.size - startOffset
+            ? sizeBytes
+            : backing_.size - startOffset;
+
+    memset(
+        base + startOffset,
+        0,
+        firstBytes);
+
+    const size_t secondBytes =
+        sizeBytes - firstBytes;
+
+    if (secondBytes > 0)
+    {
+        memset(
+            base,
+            0,
+            secondBytes);
+    }
+}
+
+void StreamRingBuffer::refreshStatus()
+{
+    status_.capacityBytes =
+        backing_ ? backing_.size : 0;
+
+    status_.readableBytes =
+        usedBytes_;
+
+    status_.writableBytes =
+        backing_ &&
+                usedBytes_ <= backing_.size
+            ? backing_.size - usedBytes_
+            : 0;
+
+    status_.empty =
+        usedBytes_ == 0;
+
+    status_.full =
+        backing_ &&
+        usedBytes_ == backing_.size;
+
+    status_.writeReservationActive =
+        writeReservationBytes_ > 0;
+
+    status_.readReservationActive =
+        readReservationBytes_ > 0;
+
+    status_.writeReservationBytes =
+        writeReservationBytes_;
+
+    status_.readReservationBytes =
+        readReservationBytes_;
+
+    status_.overflowPolicy =
+        config_.overflowPolicy;
+
+    if (usedBytes_ >
+        status_.highWatermarkBytes)
+    {
+        status_.highWatermarkBytes =
+            usedBytes_;
+    }
+}
+
+RuntimeResult StreamRingBuffer::setError(
+    StreamRingBufferError error,
+    RuntimeResult result) const
+{
+    StreamRingBuffer* const self =
+        const_cast<StreamRingBuffer*>(this);
+
+    self->status_.error = error;
+    self->notifyStateChanged();
+
+    return result;
+}
+
+void StreamRingBuffer::moveFrom(
+    StreamRingBuffer& other) noexcept
+{
+    backing_ = other.backing_;
+    config_ = other.config_;
+    status_ = other.status_;
+
+    readOffset_ =
+        other.readOffset_;
+
+    writeOffset_ =
+        other.writeOffset_;
+
+    usedBytes_ =
+        other.usedBytes_;
+
+    writeReservationBytes_ =
+        other.writeReservationBytes_;
+
+    readReservationBytes_ =
+        other.readReservationBytes_;
+
+    observer_ =
+        other.observer_;
+
+    const uint32_t otherGeneration =
+        nextGeneration(
+            other.status_.generation);
+
+    other.backing_ = {};
+    other.config_ = {};
+    other.status_ = {};
+
+    other.status_.generation =
+        otherGeneration;
+
+    other.readOffset_ = 0;
+    other.writeOffset_ = 0;
+    other.usedBytes_ = 0;
+    other.writeReservationBytes_ = 0;
+    other.readReservationBytes_ = 0;
+    other.observer_ = nullptr;
+}
+
+void StreamRingBuffer::
+    notifyStateChanged() const
+{
+    if (observer_ != nullptr)
+    {
+        observer_(status_);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

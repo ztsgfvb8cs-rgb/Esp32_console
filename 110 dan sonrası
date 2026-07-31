@@ -13415,5 +13415,1697 @@ static_assert(
     "AI perception confidence must use "
     "permille range");
 }
+#include "129_ai_perception_system.h"
+
+#include <Arduino.h>
+
+#include <limits.h>
+
+namespace egs
+{
+namespace
+{
+constexpr uint16_t KNOWN_SOURCE_FLAGS =
+    AiPerceptionSourceVision |
+    AiPerceptionSourceHearing |
+    AiPerceptionSourceContact |
+    AiPerceptionSourceGameRule |
+    AiPerceptionSourcePrediction;
+
+uint16_t clampPermille(uint16_t value)
+{
+    return value > AI_PERMILLE_MAX
+        ? AI_PERMILLE_MAX
+        : value;
+}
+
+bool timeReached(uint32_t nowMs, uint32_t deadlineMs)
+{
+    return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
+
+uint64_t saturatedSquare(int64_t value)
+{
+    const uint64_t magnitude = value < 0
+        ? static_cast<uint64_t>(-(value + 1)) + 1ULL
+        : static_cast<uint64_t>(value);
+
+    if (magnitude != 0 &&
+        magnitude > UINT64_MAX / magnitude)
+    {
+        return UINT64_MAX;
+    }
+
+    return magnitude * magnitude;
+}
+
+uint64_t saturatedAdd(uint64_t first, uint64_t second)
+{
+    return second > UINT64_MAX - first
+        ? UINT64_MAX
+        : first + second;
+}
+
+uint64_t distanceSquared(
+    const AiPoint2& first,
+    const AiPoint2& second)
+{
+    const int64_t dx =
+        static_cast<int64_t>(second.x) -
+        static_cast<int64_t>(first.x);
+
+    const int64_t dy =
+        static_cast<int64_t>(second.y) -
+        static_cast<int64_t>(first.y);
+
+    return saturatedAdd(
+        saturatedSquare(dx),
+        saturatedSquare(dy));
+}
+
+uint32_t integerSquareRoot(uint64_t value)
+{
+    uint64_t result = 0;
+    uint64_t bit = 1ULL << 62U;
+
+    while (bit > value)
+    {
+        bit >>= 2U;
+    }
+
+    while (bit != 0)
+    {
+        if (value >= result + bit)
+        {
+            value -= result + bit;
+            result = (result >> 1U) + bit;
+        }
+        else
+        {
+            result >>= 1U;
+        }
+
+        bit >>= 2U;
+    }
+
+    return result > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(result);
+}
+
+uint32_t pointDistance(
+    const AiPoint2& first,
+    const AiPoint2& second)
+{
+    return integerSquareRoot(
+        distanceSquared(first, second));
+}
+
+int32_t directionScorePermille(
+    const AiPerceptionObserverState& observer,
+    const AiPoint2& target)
+{
+    const int64_t dx =
+        static_cast<int64_t>(target.x) -
+        static_cast<int64_t>(observer.position.x);
+
+    const int64_t dy =
+        static_cast<int64_t>(target.y) -
+        static_cast<int64_t>(observer.position.y);
+
+    if (dx == 0 && dy == 0)
+    {
+        return static_cast<int32_t>(AI_PERMILLE_MAX);
+    }
+
+    const int64_t forwardX = observer.forwardPermille.x;
+    const int64_t forwardY = observer.forwardPermille.y;
+
+    const uint32_t directionLength = integerSquareRoot(
+        saturatedAdd(
+            saturatedSquare(dx),
+            saturatedSquare(dy)));
+
+    const uint32_t forwardLength = integerSquareRoot(
+        saturatedAdd(
+            saturatedSquare(forwardX),
+            saturatedSquare(forwardY)));
+
+    if (directionLength == 0 || forwardLength == 0)
+    {
+        return -static_cast<int32_t>(AI_PERMILLE_MAX);
+    }
+
+    const int64_t dot =
+        dx * forwardX +
+        dy * forwardY;
+
+    const uint64_t denominator =
+        static_cast<uint64_t>(directionLength) *
+        static_cast<uint64_t>(forwardLength);
+
+    if (denominator == 0)
+    {
+        return -static_cast<int32_t>(AI_PERMILLE_MAX);
+    }
+
+    int64_t score =
+        (dot * static_cast<int64_t>(AI_PERMILLE_MAX)) /
+        static_cast<int64_t>(denominator);
+
+    if (score > AI_PERMILLE_MAX)
+    {
+        score = AI_PERMILLE_MAX;
+    }
+    else if (score < -static_cast<int64_t>(AI_PERMILLE_MAX))
+    {
+        score = -static_cast<int64_t>(AI_PERMILLE_MAX);
+    }
+
+    return static_cast<int32_t>(score);
+}
+
+bool insideVisionArc(
+    const AiPerceptionObserverState& observer,
+    const AiPoint2& target,
+    uint16_t arcPermille)
+{
+    if (arcPermille >= AI_PERMILLE_MAX)
+    {
+        return true;
+    }
+
+    const int32_t minimumDirectionScore =
+        static_cast<int32_t>(AI_PERMILLE_MAX) -
+        static_cast<int32_t>(arcPermille) * 2;
+
+    return directionScorePermille(observer, target) >=
+        minimumDirectionScore;
+}
+
+uint32_t scaledRange(
+    uint32_t baseRange,
+    uint16_t strengthPermille)
+{
+    const uint64_t scaled =
+        static_cast<uint64_t>(baseRange) *
+        clampPermille(strengthPermille);
+
+    const uint64_t rounded =
+        (scaled + AI_PERMILLE_MAX / 2U) /
+        AI_PERMILLE_MAX;
+
+    return rounded > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(rounded);
+}
+
+uint16_t multipliedPermille(
+    uint16_t first,
+    uint16_t second)
+{
+    const uint32_t product =
+        static_cast<uint32_t>(clampPermille(first)) *
+        static_cast<uint32_t>(clampPermille(second));
+
+    return static_cast<uint16_t>(
+        (product + AI_PERMILLE_MAX / 2U) /
+        AI_PERMILLE_MAX);
+}
+
+uint32_t memoryDurationForSources(
+    uint16_t sourceFlags,
+    const AiPerceptionPolicy& policy)
+{
+    uint32_t durationMs = 0;
+
+    if ((sourceFlags & AiPerceptionSourceVision) != 0U ||
+        (sourceFlags & AiPerceptionSourceGameRule) != 0U)
+    {
+        durationMs = policy.visualMemoryMs;
+    }
+
+    if ((sourceFlags & AiPerceptionSourceHearing) != 0U &&
+        policy.hearingMemoryMs > durationMs)
+    {
+        durationMs = policy.hearingMemoryMs;
+    }
+
+    if ((sourceFlags & AiPerceptionSourceContact) != 0U &&
+        policy.contactMemoryMs > durationMs)
+    {
+        durationMs = policy.contactMemoryMs;
+    }
+
+    return durationMs;
+}
+
+uint16_t baseConfidenceForObservation(
+    const AiPerceptionObservation& observation,
+    const AiPerceptionPolicy& policy,
+    const AiDifficultyProfile& difficulty)
+{
+    uint16_t confidence = 0;
+
+    if ((observation.sourceFlags &
+         AiPerceptionSourceGameRule) != 0U)
+    {
+        confidence = AI_PERMILLE_MAX;
+    }
+
+    if ((observation.sourceFlags &
+         AiPerceptionSourceContact) != 0U &&
+        policy.contactConfidencePermille > confidence)
+    {
+        confidence = policy.contactConfidencePermille;
+    }
+
+    if ((observation.sourceFlags &
+         AiPerceptionSourceVision) != 0U)
+    {
+        uint16_t visualConfidence = AI_PERMILLE_MAX;
+
+        const uint16_t visualPenalty =
+            static_cast<uint16_t>(
+                difficulty.aimErrorPermille / 3U +
+                difficulty.movementErrorPermille / 4U);
+
+        visualConfidence = visualPenalty >= visualConfidence
+            ? 0U
+            : static_cast<uint16_t>(
+                visualConfidence - visualPenalty);
+
+        if (observation.visibility ==
+            AiVisibilityState::Peripheral)
+        {
+            visualConfidence = multipliedPermille(
+                visualConfidence,
+                policy.peripheralConfidencePermille);
+        }
+
+        if (visualConfidence > confidence)
+        {
+            confidence = visualConfidence;
+        }
+    }
+
+    if ((observation.sourceFlags &
+         AiPerceptionSourceHearing) != 0U)
+    {
+        uint16_t hearingConfidence =
+            policy.hearingConfidencePermille;
+
+        const uint16_t randomnessRetention =
+            difficulty.randomnessPermille >=
+                    AI_PERMILLE_MAX * 2U
+                ? 0U
+                : static_cast<uint16_t>(
+                    AI_PERMILLE_MAX -
+                    difficulty.randomnessPermille / 2U);
+
+        hearingConfidence = multipliedPermille(
+            hearingConfidence,
+            randomnessRetention);
+
+        if (hearingConfidence > confidence)
+        {
+            confidence = hearingConfidence;
+        }
+    }
+
+    return clampPermille(confidence);
+}
+
+int32_t predictedCoordinate(
+    int32_t position,
+    int32_t velocity,
+    uint32_t horizonMs,
+    uint16_t predictionStrengthPermille)
+{
+    const int64_t displacement =
+        static_cast<int64_t>(velocity) *
+        static_cast<int64_t>(horizonMs) *
+        static_cast<int64_t>(
+            clampPermille(predictionStrengthPermille));
+
+    const int64_t scaledDisplacement =
+        displacement /
+        static_cast<int64_t>(
+            AI_PERMILLE_MAX * 1000UL);
+
+    const int64_t predicted =
+        static_cast<int64_t>(position) +
+        scaledDisplacement;
+
+    if (predicted > INT32_MAX)
+    {
+        return INT32_MAX;
+    }
+
+    if (predicted < INT32_MIN)
+    {
+        return INT32_MIN;
+    }
+
+    return static_cast<int32_t>(predicted);
+}
+}
+
+AiPerceptionStatus AiPerceptionSystem::currentStatus_ = {};
+AiPerceptionPolicy AiPerceptionSystem::policy_ = {};
+AiDifficultyProfile AiPerceptionSystem::difficultyProfile_ = {};
+AiPerceptionObserverState AiPerceptionSystem::observerState_ = {};
+
+AiPerceptionStimulus AiPerceptionSystem::frameStimuli_[
+    AI_PERCEPTION_MAX_FRAME_STIMULI] = {};
+
+AiPerceptionObservation AiPerceptionSystem::observations_[
+    AI_PERCEPTION_MAX_TRACKED_ENTITIES] = {};
+
+AiLineOfSightCallback AiPerceptionSystem::lineOfSightCallback_ = nullptr;
+void* AiPerceptionSystem::lineOfSightContext_ = nullptr;
+AiPerceptionObserver AiPerceptionSystem::observer_ = nullptr;
+
+bool AiPerceptionSystem::begin()
+{
+    if (currentStatus_.initialized)
+    {
+        return true;
+    }
+
+    currentStatus_ = {};
+    policy_ = {};
+    difficultyProfile_ = AiDifficultyProfile{};
+    observerState_ = {};
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_FRAME_STIMULI;
+         ++i)
+    {
+        frameStimuli_[i] = {};
+    }
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_TRACKED_ENTITIES;
+         ++i)
+    {
+        observations_[i] = {};
+    }
+
+    if (!validatePolicy(policy_) ||
+        !AiDifficultyManager::validateProfile(
+            difficultyProfile_))
+    {
+        currentStatus_.error =
+            AiPerceptionError::InvalidPolicy;
+
+        return false;
+    }
+
+    currentStatus_.initialized = true;
+    currentStatus_.difficultyLevel =
+        difficultyProfile_.level;
+    currentStatus_.error = AiPerceptionError::None;
+
+    notifyStateChanged();
+    return true;
+}
+
+void AiPerceptionSystem::reset()
+{
+    const bool initialized = currentStatus_.initialized;
+
+    currentStatus_ = {};
+    currentStatus_.initialized = initialized;
+    currentStatus_.difficultyLevel =
+        difficultyProfile_.level;
+
+    observerState_ = {};
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_FRAME_STIMULI;
+         ++i)
+    {
+        frameStimuli_[i] = {};
+    }
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_TRACKED_ENTITIES;
+         ++i)
+    {
+        observations_[i] = {};
+    }
+
+    notifyStateChanged();
+}
+
+void AiPerceptionSystem::end()
+{
+    currentStatus_ = {};
+    policy_ = {};
+    difficultyProfile_ = {};
+    observerState_ = {};
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_FRAME_STIMULI;
+         ++i)
+    {
+        frameStimuli_[i] = {};
+    }
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_TRACKED_ENTITIES;
+         ++i)
+    {
+        observations_[i] = {};
+    }
+
+    lineOfSightCallback_ = nullptr;
+    lineOfSightContext_ = nullptr;
+    observer_ = nullptr;
+}
+
+bool AiPerceptionSystem::ready()
+{
+    return currentStatus_.initialized &&
+        currentStatus_.error == AiPerceptionError::None;
+}
+
+AiPerceptionStatus AiPerceptionSystem::status()
+{
+    refreshCounts();
+    return currentStatus_;
+}
+
+bool AiPerceptionSystem::beginFrame(
+    const AiPerceptionObserverState& observer,
+    uint32_t nowMs)
+{
+    if (!currentStatus_.initialized)
+    {
+        setError(AiPerceptionError::NotInitialized);
+        return false;
+    }
+
+    if (currentStatus_.frameOpen)
+    {
+        setError(AiPerceptionError::FrameAlreadyOpen);
+        return false;
+    }
+
+    if (!validateObserver(observer))
+    {
+        setError(AiPerceptionError::InvalidObserver);
+        return false;
+    }
+
+    if (nowMs == 0)
+    {
+        nowMs = millis();
+    }
+
+    decayAndPredict(nowMs);
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        observations_[i].currentlyPerceived = false;
+
+        if (observations_[i].visibility !=
+                AiVisibilityState::Unknown &&
+            observations_[i].visibility !=
+                AiVisibilityState::Predicted)
+        {
+            observations_[i].visibility =
+                AiVisibilityState::Remembered;
+        }
+    }
+
+    observerState_ = observer;
+
+    for (size_t i = 0;
+         i < AI_PERCEPTION_MAX_FRAME_STIMULI;
+         ++i)
+    {
+        frameStimuli_[i] = {};
+    }
+
+    currentStatus_.frameOpen = true;
+    currentStatus_.observerValid = true;
+    currentStatus_.stimulusOverflowed = false;
+    currentStatus_.observationOverflowed = false;
+    currentStatus_.stimulusCount = 0;
+    currentStatus_.frameStartedAtMs = nowMs;
+    currentStatus_.error = AiPerceptionError::None;
+
+    notifyStateChanged();
+    return true;
+}
+
+bool AiPerceptionSystem::submitStimulus(
+    const AiPerceptionStimulus& stimulus)
+{
+    if (!currentStatus_.initialized)
+    {
+        setError(AiPerceptionError::NotInitialized);
+        return false;
+    }
+
+    if (!currentStatus_.frameOpen)
+    {
+        setError(AiPerceptionError::FrameNotOpen);
+        return false;
+    }
+
+    if (!validateStimulus(stimulus))
+    {
+        setError(AiPerceptionError::InvalidStimulus);
+        return false;
+    }
+
+    if (currentStatus_.stimulusCount >=
+        AI_PERCEPTION_MAX_FRAME_STIMULI)
+    {
+        currentStatus_.stimulusOverflowed = true;
+        setError(AiPerceptionError::StimulusCapacityExceeded);
+        return false;
+    }
+
+    frameStimuli_[currentStatus_.stimulusCount] = stimulus;
+    ++currentStatus_.stimulusCount;
+    currentStatus_.error = AiPerceptionError::None;
+
+    return true;
+}
+130 — Bölüm 2/3
+bool AiPerceptionSystem::endFrame()
+{
+    if (!currentStatus_.initialized)
+    {
+        setError(AiPerceptionError::NotInitialized);
+        return false;
+    }
+
+    if (!currentStatus_.frameOpen)
+    {
+        setError(AiPerceptionError::FrameNotOpen);
+        return false;
+    }
+
+    const uint32_t nowMs = currentStatus_.frameStartedAtMs;
+
+    for (size_t i = 0;
+         i < currentStatus_.stimulusCount;
+         ++i)
+    {
+        processStimulus(frameStimuli_[i], nowMs);
+    }
+
+    currentStatus_.frameOpen = false;
+    currentStatus_.frameCompletedAtMs = nowMs;
+    ++currentStatus_.frameSequence;
+    currentStatus_.error = AiPerceptionError::None;
+
+    refreshCounts();
+    notifyStateChanged();
+
+    return true;
+}
+
+void AiPerceptionSystem::update(uint32_t nowMs)
+{
+    if (!currentStatus_.initialized ||
+        currentStatus_.frameOpen)
+    {
+        return;
+    }
+
+    if (nowMs == 0)
+    {
+        nowMs = millis();
+    }
+
+    decayAndPredict(nowMs);
+    refreshCounts();
+    notifyStateChanged();
+}
+
+bool AiPerceptionSystem::frameOpen()
+{
+    return currentStatus_.frameOpen;
+}
+
+size_t AiPerceptionSystem::observationCount()
+{
+    return currentStatus_.observationCount;
+}
+
+const AiPerceptionObservation*
+AiPerceptionSystem::observationAt(size_t index)
+{
+    return index < currentStatus_.observationCount
+        ? &observations_[index]
+        : nullptr;
+}
+
+const AiPerceptionObservation*
+AiPerceptionSystem::findByEntityId(uint16_t entityId)
+{
+    const int index = findObservationIndex(entityId);
+
+    return index >= 0
+        ? &observations_[static_cast<size_t>(index)]
+        : nullptr;
+}
+
+const AiPerceptionObservation* AiPerceptionSystem::nearest(
+    const AiPerceptionQuery& query)
+{
+    const AiPerceptionObservation* selected = nullptr;
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        const AiPerceptionObservation& candidate =
+            observations_[i];
+
+        if (!queryMatches(candidate, query))
+        {
+            continue;
+        }
+
+        if (selected == nullptr ||
+            candidate.distance < selected->distance ||
+            (candidate.distance == selected->distance &&
+             candidate.confidencePermille >
+                 selected->confidencePermille))
+        {
+            selected = &candidate;
+        }
+    }
+
+    return selected;
+}
+
+const AiPerceptionObservation*
+AiPerceptionSystem::highestThreat(
+    const AiPerceptionQuery& query)
+{
+    const AiPerceptionObservation* selected = nullptr;
+    uint32_t selectedScore = 0;
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        const AiPerceptionObservation& candidate =
+            observations_[i];
+
+        if (!queryMatches(candidate, query))
+        {
+            continue;
+        }
+
+        const uint32_t score =
+            static_cast<uint32_t>(
+                candidate.threatPermille) *
+            candidate.confidencePermille;
+
+        if (selected == nullptr ||
+            score > selectedScore ||
+            (score == selectedScore &&
+             candidate.distance < selected->distance))
+        {
+            selected = &candidate;
+            selectedScore = score;
+        }
+    }
+
+    return selected;
+}
+
+size_t AiPerceptionSystem::copyObservations(
+    AiPerceptionObservation* destination,
+    size_t capacity,
+    const AiPerceptionQuery& query)
+{
+    if (capacity > 0 && destination == nullptr)
+    {
+        setError(AiPerceptionError::InvalidQuery);
+        return 0;
+    }
+
+    size_t copied = 0;
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount &&
+         copied < capacity;
+         ++i)
+    {
+        if (!queryMatches(observations_[i], query))
+        {
+            continue;
+        }
+
+        destination[copied] = observations_[i];
+        ++copied;
+    }
+
+    currentStatus_.error = AiPerceptionError::None;
+    return copied;
+}
+
+uint32_t AiPerceptionSystem::categoryBit(
+    AiEntityCategory category)
+{
+    const uint8_t index = static_cast<uint8_t>(category);
+
+    return index < static_cast<uint8_t>(
+            AiEntityCategory::Count)
+        ? (1UL << index)
+        : 0UL;
+}
+
+uint16_t AiPerceptionSystem::relationBit(
+    AiTeamRelation relation)
+{
+    const uint8_t index = static_cast<uint8_t>(relation);
+
+    return index < static_cast<uint8_t>(
+            AiTeamRelation::Count)
+        ? static_cast<uint16_t>(1U << index)
+        : 0U;
+}
+
+void AiPerceptionSystem::setDifficultyProfile(
+    const AiDifficultyProfile& profile)
+{
+    if (!AiDifficultyManager::validateProfile(profile))
+    {
+        setError(AiPerceptionError::InvalidPolicy);
+        return;
+    }
+
+    difficultyProfile_ = profile;
+    currentStatus_.difficultyLevel = profile.level;
+    currentStatus_.error = AiPerceptionError::None;
+
+    notifyStateChanged();
+}
+
+AiDifficultyProfile
+AiPerceptionSystem::difficultyProfile()
+{
+    return difficultyProfile_;
+}
+
+bool AiPerceptionSystem::setPolicy(
+    const AiPerceptionPolicy& value)
+{
+    if (!validatePolicy(value))
+    {
+        setError(AiPerceptionError::InvalidPolicy);
+        return false;
+    }
+
+    policy_ = value;
+    currentStatus_.error = AiPerceptionError::None;
+
+    notifyStateChanged();
+    return true;
+}
+
+AiPerceptionPolicy AiPerceptionSystem::policy()
+{
+    return policy_;
+}
+
+void AiPerceptionSystem::setLineOfSightCallback(
+    AiLineOfSightCallback callback,
+    void* context)
+{
+    lineOfSightCallback_ = callback;
+    lineOfSightContext_ = context;
+}
+
+void AiPerceptionSystem::setObserver(
+    AiPerceptionObserver observer)
+{
+    observer_ = observer;
+}
+
+AiPerceptionError AiPerceptionSystem::lastError()
+{
+    return currentStatus_.error;
+}
+
+const char* AiPerceptionSystem::categoryText(
+    AiEntityCategory value)
+{
+    switch (value)
+    {
+        case AiEntityCategory::Unknown:
+            return "UNKNOWN";
+
+        case AiEntityCategory::Player:
+            return "PLAYER";
+
+        case AiEntityCategory::Opponent:
+            return "OPPONENT";
+
+        case AiEntityCategory::Ally:
+            return "ALLY";
+
+        case AiEntityCategory::Ball:
+            return "BALL";
+
+        case AiEntityCategory::Projectile:
+            return "PROJECTILE";
+
+        case AiEntityCategory::Hazard:
+            return "HAZARD";
+
+        case AiEntityCategory::Pickup:
+            return "PICKUP";
+
+        case AiEntityCategory::Goal:
+            return "GOAL";
+
+        case AiEntityCategory::Cover:
+            return "COVER";
+
+        case AiEntityCategory::Platform:
+            return "PLATFORM";
+
+        case AiEntityCategory::Boundary:
+            return "BOUNDARY";
+
+        case AiEntityCategory::Trigger:
+            return "TRIGGER";
+
+        case AiEntityCategory::Count:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AiPerceptionSystem::relationText(
+    AiTeamRelation value)
+{
+    switch (value)
+    {
+        case AiTeamRelation::Unknown:
+            return "UNKNOWN";
+
+        case AiTeamRelation::Self:
+            return "SELF";
+
+        case AiTeamRelation::Ally:
+            return "ALLY";
+
+        case AiTeamRelation::Neutral:
+            return "NEUTRAL";
+
+        case AiTeamRelation::Opponent:
+            return "OPPONENT";
+
+        case AiTeamRelation::Count:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AiPerceptionSystem::visibilityText(
+    AiVisibilityState value)
+{
+    switch (value)
+    {
+        case AiVisibilityState::Unknown:
+            return "UNKNOWN";
+
+        case AiVisibilityState::Visible:
+            return "VISIBLE";
+
+        case AiVisibilityState::Peripheral:
+            return "PERIPHERAL";
+
+        case AiVisibilityState::Heard:
+            return "HEARD";
+
+        case AiVisibilityState::Contact:
+            return "CONTACT";
+
+        case AiVisibilityState::Occluded:
+            return "OCCLUDED";
+
+        case AiVisibilityState::Remembered:
+            return "REMEMBERED";
+
+        case AiVisibilityState::Predicted:
+            return "PREDICTED";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AiPerceptionSystem::errorText(
+    AiPerceptionError value)
+{
+    switch (value)
+    {
+        case AiPerceptionError::None:
+            return "NONE";
+
+        case AiPerceptionError::NotInitialized:
+            return "NOT_INITIALIZED";
+
+        case AiPerceptionError::InvalidPolicy:
+            return "INVALID_POLICY";
+
+        case AiPerceptionError::InvalidObserver:
+            return "INVALID_OBSERVER";
+
+        case AiPerceptionError::InvalidStimulus:
+            return "INVALID_STIMULUS";
+
+        case AiPerceptionError::FrameAlreadyOpen:
+            return "FRAME_ALREADY_OPEN";
+
+        case AiPerceptionError::FrameNotOpen:
+            return "FRAME_NOT_OPEN";
+
+        case AiPerceptionError::StimulusCapacityExceeded:
+            return "STIMULUS_CAPACITY_EXCEEDED";
+
+        case AiPerceptionError::ObservationCapacityExceeded:
+            return "OBSERVATION_CAPACITY_EXCEEDED";
+
+        case AiPerceptionError::InvalidQuery:
+            return "INVALID_QUERY";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool AiPerceptionSystem::validateObserver(
+    const AiPerceptionObserverState& observer)
+{
+    if (!observer.active ||
+        observer.entityId == AI_INVALID_ENTITY_ID ||
+        observer.visionArcPermille > AI_PERMILLE_MAX)
+    {
+        return false;
+    }
+
+    if (observer.visionRange > 0)
+    {
+        const bool forwardIsZero =
+            observer.forwardPermille.x == 0 &&
+            observer.forwardPermille.y == 0;
+
+        if (forwardIsZero)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool AiPerceptionSystem::validateStimulus(
+    const AiPerceptionStimulus& stimulus)
+{
+    const uint8_t category =
+        static_cast<uint8_t>(stimulus.category);
+
+    const uint8_t relation =
+        static_cast<uint8_t>(stimulus.relation);
+
+    if (stimulus.entityId == AI_INVALID_ENTITY_ID ||
+        category >= static_cast<uint8_t>(
+            AiEntityCategory::Count) ||
+        relation >= static_cast<uint8_t>(
+            AiTeamRelation::Count) ||
+        stimulus.emittedNoisePermille > AI_PERMILLE_MAX ||
+        stimulus.threatPermille > AI_PERMILLE_MAX ||
+        stimulus.valuePermille > AI_PERMILLE_MAX ||
+        (stimulus.sourceFlags & ~KNOWN_SOURCE_FLAGS) != 0U)
+    {
+        return false;
+    }
+
+    if (stimulus.active &&
+        stimulus.sourceFlags == AiPerceptionSourceNone)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool AiPerceptionSystem::validatePolicy(
+    const AiPerceptionPolicy& value)
+{
+    return
+        value.peripheralConfidencePermille <=
+            AI_PERMILLE_MAX &&
+        value.hearingConfidencePermille <=
+            AI_PERMILLE_MAX &&
+        value.contactConfidencePermille <=
+            AI_PERMILLE_MAX &&
+        value.minimumRetainedConfidencePermille <=
+            AI_PERMILLE_MAX &&
+        value.confidenceDecayPerSecondPermille <=
+            AI_PERMILLE_MAX &&
+        value.predictionConfidenceCostPermille <=
+            AI_PERMILLE_MAX;
+}
+
+bool AiPerceptionSystem::queryMatches(
+    const AiPerceptionObservation& observation,
+    const AiPerceptionQuery& query)
+{
+    if (observation.entityId == AI_INVALID_ENTITY_ID ||
+        observation.visibility == AiVisibilityState::Unknown ||
+        observation.confidencePermille <
+            query.minimumConfidencePermille)
+    {
+        return false;
+    }
+
+    if (query.categoryMask != 0 &&
+        (query.categoryMask & categoryBit(
+            observation.category)) == 0)
+    {
+        return false;
+    }
+
+    if (query.relationMask != 0 &&
+        (query.relationMask & relationBit(
+            observation.relation)) == 0)
+    {
+        return false;
+    }
+
+    if (query.maximumDistance != 0 &&
+        observation.distance > query.maximumDistance)
+    {
+        return false;
+    }
+
+    if (query.requireCurrentlyPerceived &&
+        !observation.currentlyPerceived)
+    {
+        return false;
+    }
+
+    if (query.requireTargetable &&
+        !observation.targetable)
+    {
+        return false;
+    }
+
+    if (!query.includeRemembered &&
+        (observation.visibility ==
+             AiVisibilityState::Remembered ||
+         observation.visibility ==
+             AiVisibilityState::Occluded))
+    {
+        return false;
+    }
+
+    if (!query.includePredicted &&
+        observation.visibility ==
+            AiVisibilityState::Predicted)
+    {
+        return false;
+    }
+
+    return true;
+}
+130 — Bölüm 3/3
+void AiPerceptionSystem::processStimulus(
+    const AiPerceptionStimulus& stimulus,
+    uint32_t nowMs)
+{
+    int index = findObservationIndex(stimulus.entityId);
+
+    if (!stimulus.active)
+    {
+        if (index >= 0)
+        {
+            removeObservationAt(
+                static_cast<size_t>(index));
+        }
+
+        return;
+    }
+
+    if (stimulus.entityId == observerState_.entityId)
+    {
+        return;
+    }
+
+    const uint32_t distance = pointDistance(
+        observerState_.position,
+        stimulus.position);
+
+    bool contact = false;
+    bool centralVision = false;
+    bool peripheralVision = false;
+    bool heard = false;
+    bool gameRule = false;
+    bool visualOccluded = false;
+
+    if ((stimulus.sourceFlags &
+         AiPerceptionSourceContact) != 0U &&
+        policy_.allowContact &&
+        observerState_.contactRange > 0 &&
+        distance <= observerState_.contactRange)
+    {
+        contact = true;
+    }
+
+    if ((stimulus.sourceFlags &
+         AiPerceptionSourceGameRule) != 0U)
+    {
+        gameRule = true;
+    }
+
+    if ((stimulus.sourceFlags &
+         AiPerceptionSourceVision) != 0U &&
+        observerState_.visionRange > 0 &&
+        distance <= observerState_.visionRange)
+    {
+        const bool centralArc = insideVisionArc(
+            observerState_,
+            stimulus.position,
+            observerState_.visionArcPermille);
+
+        const uint16_t expandedArc =
+            observerState_.visionArcPermille >= 750U
+                ? AI_PERMILLE_MAX
+                : static_cast<uint16_t>(
+                    observerState_.visionArcPermille + 250U);
+
+        const bool peripheralArc =
+            policy_.allowPeripheralVision &&
+            !centralArc &&
+            insideVisionArc(
+                observerState_,
+                stimulus.position,
+                expandedArc);
+
+        bool lineOfSight = true;
+
+        if (policy_.requireLineOfSightForVision &&
+            lineOfSightCallback_ != nullptr)
+        {
+            lineOfSight = lineOfSightCallback_(
+                observerState_.position,
+                stimulus.position,
+                lineOfSightContext_);
+        }
+
+        if (lineOfSight)
+        {
+            centralVision = centralArc;
+            peripheralVision = peripheralArc;
+        }
+        else if (centralArc || peripheralArc)
+        {
+            visualOccluded = true;
+        }
+    }
+
+    if ((stimulus.sourceFlags &
+         AiPerceptionSourceHearing) != 0U &&
+        policy_.allowHearing &&
+        observerState_.hearingRange > 0 &&
+        stimulus.emittedNoisePermille > 0)
+    {
+        const uint32_t effectiveHearingRange =
+            scaledRange(
+                observerState_.hearingRange,
+                stimulus.emittedNoisePermille);
+
+        heard = distance <= effectiveHearingRange;
+    }
+
+    const bool legallyPerceived =
+        contact ||
+        gameRule ||
+        centralVision ||
+        peripheralVision ||
+        heard;
+
+    if (!legallyPerceived)
+    {
+        if (index >= 0 &&
+            visualOccluded &&
+            policy_.rememberOccludedEntities)
+        {
+            AiPerceptionObservation& existing =
+                observations_[static_cast<size_t>(index)];
+
+            existing.currentlyPerceived = false;
+            existing.visibility =
+                AiVisibilityState::Occluded;
+        }
+
+        return;
+    }
+
+    if (index < 0)
+    {
+        if (currentStatus_.observationCount <
+            AI_PERCEPTION_MAX_TRACKED_ENTITIES)
+        {
+            index = static_cast<int>(
+                currentStatus_.observationCount);
+
+            ++currentStatus_.observationCount;
+        }
+        else
+        {
+            index = selectReplacementIndex();
+            currentStatus_.observationOverflowed = true;
+
+            if (index < 0)
+            {
+                setError(
+                    AiPerceptionError::
+                        ObservationCapacityExceeded);
+
+                return;
+            }
+        }
+
+        observations_[static_cast<size_t>(index)] = {};
+
+        observations_[static_cast<size_t>(index)].
+            entityId = stimulus.entityId;
+
+        observations_[static_cast<size_t>(index)].
+            firstPerceivedAtMs = nowMs;
+    }
+
+    AiPerceptionObservation& observation =
+        observations_[static_cast<size_t>(index)];
+
+    if (observation.firstPerceivedAtMs == 0)
+    {
+        observation.firstPerceivedAtMs = nowMs;
+    }
+
+    const bool bypassReactionDelay =
+        contact || gameRule;
+
+    const bool reactionComplete =
+        bypassReactionDelay ||
+        nowMs - observation.firstPerceivedAtMs >=
+            difficultyProfile_.reactionDelayMs;
+
+    observation.category = stimulus.category;
+    observation.relation = stimulus.relation;
+    observation.position = stimulus.position;
+    observation.velocity = stimulus.velocity;
+    observation.predictedPosition = stimulus.position;
+    observation.halfWidth = stimulus.halfWidth;
+    observation.halfHeight = stimulus.halfHeight;
+    observation.threatPermille =
+        stimulus.threatPermille;
+    observation.valuePermille =
+        stimulus.valuePermille;
+    observation.distance = distance;
+    observation.targetable = stimulus.targetable;
+    observation.collidable = stimulus.collidable;
+
+    uint16_t perceivedSources =
+        AiPerceptionSourceNone;
+
+    if (centralVision || peripheralVision)
+    {
+        perceivedSources |=
+            AiPerceptionSourceVision;
+    }
+
+    if (heard)
+    {
+        perceivedSources |=
+            AiPerceptionSourceHearing;
+    }
+
+    if (contact)
+    {
+        perceivedSources |=
+            AiPerceptionSourceContact;
+    }
+
+    if (gameRule)
+    {
+        perceivedSources |=
+            AiPerceptionSourceGameRule;
+    }
+
+    observation.sourceFlags = perceivedSources;
+
+    const uint32_t memoryDurationMs =
+        memoryDurationForSources(
+            perceivedSources,
+            policy_);
+
+    if (!reactionComplete)
+    {
+        observation.currentlyPerceived = false;
+        observation.visibility =
+            AiVisibilityState::Unknown;
+        observation.confidencePermille = 0;
+
+        observation.expiresAtMs =
+            nowMs +
+            difficultyProfile_.reactionDelayMs +
+            memoryDurationMs;
+
+        return;
+    }
+
+    if (contact)
+    {
+        observation.visibility =
+            AiVisibilityState::Contact;
+    }
+    else if (gameRule || centralVision)
+    {
+        observation.visibility =
+            AiVisibilityState::Visible;
+    }
+    else if (peripheralVision)
+    {
+        observation.visibility =
+            AiVisibilityState::Peripheral;
+    }
+    else
+    {
+        observation.visibility =
+            AiVisibilityState::Heard;
+    }
+
+    observation.currentlyPerceived = true;
+    observation.lastPerceivedAtMs = nowMs;
+
+    observation.expiresAtMs =
+        nowMs + memoryDurationMs;
+
+    observation.confidencePermille =
+        baseConfidenceForObservation(
+            observation,
+            policy_,
+            difficultyProfile_);
+
+    ++currentStatus_.observationSequence;
+}
+
+void AiPerceptionSystem::decayAndPredict(
+    uint32_t nowMs)
+{
+    size_t index = 0;
+
+    while (index <
+        currentStatus_.observationCount)
+    {
+        AiPerceptionObservation& observation =
+            observations_[index];
+
+        if (observation.entityId ==
+                AI_INVALID_ENTITY_ID ||
+            (observation.expiresAtMs != 0 &&
+             timeReached(
+                 nowMs,
+                 observation.expiresAtMs)))
+        {
+            removeObservationAt(index);
+            continue;
+        }
+
+        observation.currentlyPerceived = false;
+
+        if (observation.lastPerceivedAtMs == 0)
+        {
+            observation.visibility =
+                AiVisibilityState::Unknown;
+
+            observation.confidencePermille = 0;
+
+            ++index;
+            continue;
+        }
+
+        const uint32_t elapsedMs =
+            nowMs -
+            observation.lastPerceivedAtMs;
+
+        const uint16_t baseConfidence =
+            baseConfidenceForObservation(
+                observation,
+                policy_,
+                difficultyProfile_);
+
+        const uint64_t decayAmount =
+            static_cast<uint64_t>(
+                policy_.
+                    confidenceDecayPerSecondPermille) *
+            elapsedMs /
+            1000UL;
+
+        uint16_t confidence =
+            decayAmount >= baseConfidence
+                ? 0U
+                : static_cast<uint16_t>(
+                    baseConfidence - decayAmount);
+
+        observation.predictedPosition =
+            observation.position;
+
+        const uint32_t predictionLimitMs =
+            policy_.maximumPredictionMs <
+                    difficultyProfile_.
+                        predictionHorizonMs
+                ? policy_.maximumPredictionMs
+                : difficultyProfile_.
+                    predictionHorizonMs;
+
+        const uint32_t predictionHorizonMs =
+            elapsedMs < predictionLimitMs
+                ? elapsedMs
+                : predictionLimitMs;
+
+        const bool canPredict =
+            policy_.enablePrediction &&
+            predictionHorizonMs > 0 &&
+            difficultyProfile_.
+                    predictionStrengthPermille >
+                0 &&
+            (observation.velocity.x != 0 ||
+             observation.velocity.y != 0);
+
+        if (canPredict)
+        {
+            observation.predictedPosition.x =
+                predictedCoordinate(
+                    observation.position.x,
+                    observation.velocity.x,
+                    predictionHorizonMs,
+                    difficultyProfile_.
+                        predictionStrengthPermille);
+
+            observation.predictedPosition.y =
+                predictedCoordinate(
+                    observation.position.y,
+                    observation.velocity.y,
+                    predictionHorizonMs,
+                    difficultyProfile_.
+                        predictionStrengthPermille);
+
+            confidence = multipliedPermille(
+                confidence,
+                static_cast<uint16_t>(
+                    AI_PERMILLE_MAX -
+                    policy_.
+                        predictionConfidenceCostPermille));
+
+            observation.visibility =
+                AiVisibilityState::Predicted;
+
+            observation.sourceFlags |=
+                AiPerceptionSourcePrediction;
+        }
+        else if (
+            observation.visibility ==
+                AiVisibilityState::Occluded)
+        {
+            observation.visibility =
+                AiVisibilityState::Occluded;
+        }
+        else
+        {
+            observation.visibility =
+                AiVisibilityState::Remembered;
+
+            observation.sourceFlags &=
+                static_cast<uint16_t>(
+                    ~AiPerceptionSourcePrediction);
+        }
+
+        observation.confidencePermille =
+            confidence;
+
+        observation.distance = pointDistance(
+            observerState_.position,
+            observation.predictedPosition);
+
+        if (confidence <
+            policy_.
+                minimumRetainedConfidencePermille)
+        {
+            removeObservationAt(index);
+            continue;
+        }
+
+        ++index;
+    }
+
+    refreshCounts();
+}
+
+int AiPerceptionSystem::findObservationIndex(
+    uint16_t entityId)
+{
+    if (entityId == AI_INVALID_ENTITY_ID)
+    {
+        return -1;
+    }
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        if (observations_[i].entityId ==
+            entityId)
+        {
+            return static_cast<int>(i);
+        }
+    }
+
+    return -1;
+}
+
+int AiPerceptionSystem::selectReplacementIndex()
+{
+    if (currentStatus_.observationCount == 0)
+    {
+        return -1;
+    }
+
+    size_t selected = 0;
+
+    for (size_t i = 1;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        const AiPerceptionObservation& candidate =
+            observations_[i];
+
+        const AiPerceptionObservation& current =
+            observations_[selected];
+
+        if (candidate.confidencePermille <
+                current.confidencePermille ||
+            (candidate.confidencePermille ==
+                 current.confidencePermille &&
+             candidate.lastPerceivedAtMs <
+                 current.lastPerceivedAtMs))
+        {
+            selected = i;
+        }
+    }
+
+    return static_cast<int>(selected);
+}
+
+void AiPerceptionSystem::removeObservationAt(
+    size_t index)
+{
+    if (index >= currentStatus_.observationCount)
+    {
+        return;
+    }
+
+    for (size_t i = index + 1;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        observations_[i - 1U] =
+            observations_[i];
+    }
+
+    if (currentStatus_.observationCount > 0)
+    {
+        --currentStatus_.observationCount;
+
+        observations_[
+            currentStatus_.observationCount] = {};
+    }
+}
+
+void AiPerceptionSystem::refreshCounts()
+{
+    uint16_t perceivedCount = 0;
+    uint16_t rememberedCount = 0;
+
+    for (size_t i = 0;
+         i < currentStatus_.observationCount;
+         ++i)
+    {
+        if (observations_[i].currentlyPerceived)
+        {
+            ++perceivedCount;
+        }
+        else if (
+            observations_[i].visibility !=
+                AiVisibilityState::Unknown)
+        {
+            ++rememberedCount;
+        }
+    }
+
+    currentStatus_.currentlyPerceivedCount =
+        perceivedCount;
+
+    currentStatus_.rememberedCount =
+        rememberedCount;
+}
+
+void AiPerceptionSystem::setError(
+    AiPerceptionError error)
+{
+    currentStatus_.error = error;
+
+    notifyStateChanged();
+}
+
+void AiPerceptionSystem::notifyStateChanged()
+{
+    if (observer_ != nullptr)
+    {
+        observer_(currentStatus_);
+    }
+}
+}
+
 
 

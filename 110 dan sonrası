@@ -1,1 +1,276 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "../core/002_core_types.h"
+
+//====================================================
+// ESP32 GAME STATION
+// EXCLUSIVE FOREGROUND RUNTIME COORDINATOR
+// 111_runtime_module_manager.h
+//====================================================
+//
+// Responsibilities:
+// - Allows only one heavy foreground module at a time.
+// - Coordinates built-in games, emulators and PDF sessions.
+// - Keeps background music independent from foreground life.
+// - Applies per-mode music and ducking policy.
+// - Checks internal RAM, PSRAM and DMA headroom before launch.
+// - Provides one owner for foreground update/render/cleanup.
+//
+// Dependency rule:
+// - This header depends only on core value types.
+// - GameSession, PdfReader, AudioManager and heap-cap APIs are
+//   included only by the implementation file.
+// - No upper-layer header is included here, preventing cycles.
+//====================================================
+
+namespace egs
+{
+enum class RuntimeModuleKind : uint8_t
+{
+    None = 0,
+    BuiltinGame,
+    Emulator,
+    PdfReader,
+    MediaViewer,
+    SystemTool
+};
+
+enum class RuntimeModuleState : uint8_t
+{
+    Stopped = 0,
+    Starting,
+    Running,
+    Stopping,
+    Failed
+};
+
+enum class RuntimeModuleError : uint8_t
+{
+    None = 0,
+    NotInitialized,
+    InvalidContent,
+    AlreadyBusy,
+    UnsupportedModule,
+    InsufficientInternalRam,
+    InsufficientPsram,
+    InsufficientDmaMemory,
+    StartFailed,
+    StopFailed
+};
+
+enum class BackgroundMusicPolicy : uint8_t
+{
+    FollowPreference = 0,
+    Continue,
+    Pause,
+    Stop
+};
+
+struct RuntimeMemoryBudget
+{
+    size_t requiredInternalBytes = 0;
+    size_t requiredPsramBytes = 0;
+    size_t requiredDmaBytes = 0;
+
+    size_t reservedInternalBytes = 0;
+    size_t reservedPsramBytes = 0;
+};
+
+struct RuntimeMusicPreferences
+{
+    bool menuMusic = true;
+    bool builtinGameMusic = true;
+    bool pdfReaderMusic = true;
+    bool emulatorMusic = true;
+    bool snesMusic = false;
+    bool automaticDucking = true;
+};
+
+struct RuntimeAudioPolicy
+{
+    BackgroundMusicPolicy backgroundMusic =
+        BackgroundMusicPolicy::FollowPreference;
+
+    bool foregroundAudioEnabled = true;
+    bool uiEffectsEnabled = true;
+    bool duckBackgroundMusic = true;
+
+    uint8_t duckedMusicPercent = 45;
+};
+
+struct RuntimeModuleStatus
+{
+    bool initialized = false;
+    bool foregroundActive = false;
+    bool stopRequested = false;
+    bool memoryBudgetAccepted = false;
+    bool backgroundMusicAllowed = true;
+
+    RuntimeModuleKind kind = RuntimeModuleKind::None;
+    RuntimeModuleState state = RuntimeModuleState::Stopped;
+    EngineKind engine = EngineKind::None;
+    RuntimeModuleError error = RuntimeModuleError::None;
+
+    RuntimeMemoryBudget memory = {};
+    RuntimeAudioPolicy audio = {};
+
+    uint32_t startedAtMs = 0;
+    uint32_t stoppedAtMs = 0;
+    uint32_t transitionSequence = 0;
+};
+
+using RuntimeModuleStateCallback = void (*)(
+    RuntimeModuleState previousState,
+    RuntimeModuleState currentState,
+    const RuntimeModuleStatus& status);
+
+class RuntimeModuleManager final
+{
+public:
+    // Headroom kept free so the system, input, audio mixer and
+    // shutdown path remain operational while a heavy module runs.
+    static constexpr size_t DEFAULT_INTERNAL_RESERVE_BYTES =
+        48UL * 1024UL;
+
+    static constexpr size_t DEFAULT_PSRAM_RESERVE_BYTES =
+        256UL * 1024UL;
+
+    static constexpr uint8_t DEFAULT_DUCKED_MUSIC_PERCENT = 45;
+
+    //================================================
+    // LIFECYCLE
+    //================================================
+
+    static bool begin();
+    static void update(uint32_t nowMs);
+    static void render();
+    static void end();
+
+    static bool ready();
+    static RuntimeModuleStatus status();
+
+    //================================================
+    // FOREGROUND MODULE CONTROL
+    //================================================
+
+    // Classifies the content and starts the correct foreground
+    // backend. Only one foreground module can be active.
+    static RuntimeResult launch(const ContentItem& item);
+
+    static RuntimeResult launchBuiltinGame(
+        const ContentItem& item);
+
+    static RuntimeResult launchEmulator(
+        const ContentItem& item);
+
+    static RuntimeResult openPdf(
+        const ContentItem& item);
+
+    static RuntimeResult closeForeground();
+
+    static bool foregroundActive();
+    static RuntimeModuleKind activeKind();
+    static EngineKind activeEngine();
+    static const ContentItem* activeContent();
+
+    //================================================
+    // MEMORY ADMISSION CONTROL
+    //================================================
+
+    static RuntimeMemoryBudget defaultMemoryBudget(
+        RuntimeModuleKind kind,
+        EngineKind engine = EngineKind::None);
+
+    static bool memoryAvailable(
+        const RuntimeMemoryBudget& budget,
+        RuntimeModuleError* error = nullptr);
+
+    static RuntimeMemoryBudget activeMemoryBudget();
+
+    //================================================
+    // BACKGROUND MUSIC POLICY
+    //================================================
+
+    static void setMusicPreferences(
+        const RuntimeMusicPreferences& preferences);
+
+    static RuntimeMusicPreferences musicPreferences();
+
+    static void setAudioPolicyOverride(
+        const RuntimeAudioPolicy* policy);
+
+    static RuntimeAudioPolicy activeAudioPolicy();
+
+    static bool backgroundMusicAllowed();
+    static bool backgroundMusicShouldDuck();
+    static uint8_t duckedMusicPercent();
+
+    //================================================
+    // CALLBACKS AND DIAGNOSTICS
+    //================================================
+
+    static void setStateCallback(
+        RuntimeModuleStateCallback callback);
+
+    static RuntimeModuleState state();
+    static RuntimeModuleError lastError();
+
+    static const char* kindText(RuntimeModuleKind value);
+    static const char* stateText(RuntimeModuleState value);
+    static const char* errorText(RuntimeModuleError value);
+
+private:
+    static RuntimeModuleStatus currentStatus_;
+    static RuntimeMusicPreferences musicPreferences_;
+    static RuntimeAudioPolicy audioPolicyOverride_;
+    static bool audioPolicyOverrideActive_;
+    static RuntimeModuleStateCallback stateCallback_;
+    static ContentItem activeContent_;
+
+    static RuntimeModuleKind classifyContent(
+        const ContentItem& item);
+
+    static bool validateContent(
+        const ContentItem& item,
+        RuntimeModuleKind expectedKind);
+
+    static RuntimeResult startGameSession(
+        const ContentItem& item,
+        RuntimeModuleKind kind);
+
+    static RuntimeResult startPdfSession(
+        const ContentItem& item);
+
+    static bool stopActiveBackend();
+
+    static RuntimeAudioPolicy resolveAudioPolicy(
+        RuntimeModuleKind kind,
+        EngineKind engine);
+
+    static bool preferenceAllowsMusic(
+        RuntimeModuleKind kind,
+        EngineKind engine);
+
+    static void applyAudioPolicy();
+    static void clearActiveModule();
+
+    static void transitionTo(
+        RuntimeModuleState newState);
+
+    static RuntimeResult fail(
+        RuntimeModuleError error,
+        RuntimeResult result);
+};
+
+static_assert(
+    RuntimeModuleManager::DEFAULT_DUCKED_MUSIC_PERCENT <= 100,
+    "Ducked music percentage must be between 0 and 100");
+
+static_assert(
+    RuntimeModuleManager::DEFAULT_INTERNAL_RESERVE_BYTES > 0,
+    "Runtime manager must preserve internal RAM headroom");
+}
 

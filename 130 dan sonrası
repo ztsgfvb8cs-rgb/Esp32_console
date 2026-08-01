@@ -26945,6 +26945,5003 @@ void Mp3Decoder::notifyStateChanged() const
     }
 }
 }
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "../core/002_core_types.h"
+#include "../core/005_memory_manager.h"
+#include "../drivers/141_i2s_audio_backend.h"
+#include "143_pcm_ring_buffer.h"
+#include "145_wav_decoder.h"
+#include "147_mp3_decoder.h"
+
+//====================================================
+// ESP32 GAME STATION
+// BACKGROUND MUSIC / EFFECT STREAM ENGINE CONTRACT
+// 149_audio_stream_engine.h
+//====================================================
+//
+// Responsibilities:
+// - Plays WAV/MP3 background music while menus or games keep updating.
+// - Owns two music decks so tracks may crossfade without an audible gap.
+// - Owns bounded effect voices that may overlap with background music.
+// - Decodes compressed sources into per-stream PCM ring buffers.
+// - Resamples and converts mono/stereo sources into one fixed I2S format.
+// - Mixes music/effects, applies volume, pan, fades, ducking and limiting.
+// - Buffers mixed PCM before bounded non-blocking I2S submission.
+// - Preserves persistent music across game/runtime transitions.
+// - Reports underruns, decoder stalls, voice stealing and output failures.
+//
+// Update rule:
+// - update(nowMs) must be called frequently from the main runtime loop or a
+//   dedicated audio task. It performs bounded decode, mix and output work.
+// - Public command functions and update() must be called from one owner task.
+// - Decoder/I2S observer callbacks must not re-enter AudioStreamEngine.
+// - No API in this contract waits for a complete song or effect to finish.
+//
+// Mixing rule:
+// - The hardware output format remains fixed while the engine is running.
+// - Every source is decoded in its native sample rate and channel layout.
+// - Optional linear resampling converts supported sources to output rate.
+// - Mono may be duplicated to stereo; stereo may be averaged to mono.
+// - Mix accumulation uses wider signed values and saturates to int16_t.
+//
+// Music rule:
+// - Two music decks permit gapless replacement and timed crossfades.
+// - Looping seeks the active decoder to the beginning without closing it.
+// - Persistent music is not stopped by notifyGameTransition().
+// - Pause preserves decoder, PCM and playback position.
+//
+// Effect rule:
+// - Effect voices are bounded at compile time and configuration time.
+// - When all voices are occupied, an explicit stealing policy is applied.
+// - Priority prevents important effects from being replaced by weaker ones.
+// - Effect pan is meaningful for stereo output and ignored for mono output.
+//
+// Memory rule:
+// - Compressed decoder windows and source PCM normally use PSRAM.
+// - I2S DMA allocation remains owned by I2sAudioBackend in internal RAM.
+// - Mixed scratch memory should prefer internal RAM for predictable latency.
+// - begin() is transactional: partial allocation must be released on failure.
+//
+// Integration rule:
+// - File 150 implements this contract.
+// - Files 145-148 decode WAV/MP3 into source PCM buffers.
+// - Files 143-144 provide source and mixed-output ring buffers.
+// - Files 141-142 submit final signed 16-bit PCM to ESP32-S3 I2S.
+// - Files 151-152 bridge legacy AudioPlayer/AudioOutput APIs to this engine.
+//====================================================
+
+namespace egs
+{
+inline constexpr uint8_t AUDIO_STREAM_VOLUME_MIN = 0U;
+inline constexpr uint8_t AUDIO_STREAM_VOLUME_MAX = 100U;
+inline constexpr uint8_t AUDIO_STREAM_DEFAULT_MASTER_VOLUME = 80U;
+inline constexpr uint8_t AUDIO_STREAM_DEFAULT_MUSIC_VOLUME = 65U;
+inline constexpr uint8_t AUDIO_STREAM_DEFAULT_EFFECT_VOLUME = 80U;
+
+inline constexpr int8_t AUDIO_STREAM_PAN_LEFT = -100;
+inline constexpr int8_t AUDIO_STREAM_PAN_CENTER = 0;
+inline constexpr int8_t AUDIO_STREAM_PAN_RIGHT = 100;
+
+inline constexpr uint8_t AUDIO_STREAM_MUSIC_DECK_COUNT = 2U;
+inline constexpr uint8_t AUDIO_STREAM_MAX_EFFECT_VOICES = 4U;
+inline constexpr uint8_t AUDIO_STREAM_DEFAULT_EFFECT_VOICES = 3U;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_MUSIC_BUFFER_FRAMES =
+    32UL * 1024UL;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_EFFECT_BUFFER_FRAMES =
+    8UL * 1024UL;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_OUTPUT_BUFFER_FRAMES =
+    16UL * 1024UL;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_MIX_FRAMES_PER_UPDATE = 512U;
+inline constexpr size_t AUDIO_STREAM_MAX_MIX_FRAMES_PER_UPDATE = 2048U;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_DECODE_FRAMES_PER_UPDATE =
+    2304U;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_SUBMIT_FRAMES_PER_UPDATE =
+    512U;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_MUSIC_PREBUFFER_FRAMES =
+    4096U;
+
+inline constexpr size_t AUDIO_STREAM_DEFAULT_EFFECT_PREBUFFER_FRAMES =
+    256U;
+
+inline constexpr uint32_t AUDIO_STREAM_DEFAULT_FADE_MS = 500U;
+inline constexpr uint32_t AUDIO_STREAM_DEFAULT_CROSSFADE_MS = 1000U;
+inline constexpr uint32_t AUDIO_STREAM_MAX_FADE_MS = 60000U;
+
+inline constexpr uint8_t AUDIO_STREAM_DEFAULT_DUCK_PERCENT = 35U;
+inline constexpr uint16_t AUDIO_STREAM_DEFAULT_DUCK_ATTACK_MS = 40U;
+inline constexpr uint16_t AUDIO_STREAM_DEFAULT_DUCK_RELEASE_MS = 250U;
+
+inline constexpr uint32_t AUDIO_STREAM_DEFAULT_OUTPUT_TIMEOUT_MS = 0U;
+
+inline constexpr size_t AUDIO_STREAM_PATH_CAPACITY =
+    ContentItem::PATH_CAPACITY;
+
+enum class AudioStreamCodec : uint8_t
+{
+    Auto = 0,
+    Wav,
+    Mp3
+};
+
+enum class AudioStreamBus : uint8_t
+{
+    Music = 0,
+    Effects
+};
+
+enum class AudioStreamEngineState : uint8_t
+{
+    Stopped = 0,
+    Initializing,
+    Ready,
+    Playing,
+    Paused,
+    Draining,
+    Failed
+};
+
+enum class AudioStreamPlaybackState : uint8_t
+{
+    Empty = 0,
+    Opening,
+    Parsing,
+    Prebuffering,
+    Playing,
+    Paused,
+    FadingIn,
+    FadingOut,
+    Seeking,
+    Ended,
+    Failed
+};
+
+enum class AudioStreamLoopMode : uint8_t
+{
+    None = 0,
+    Track
+};
+
+enum class AudioStreamFadeCurve : uint8_t
+{
+    Linear = 0,
+    EqualPower
+};
+
+enum class AudioEffectStealPolicy : uint8_t
+{
+    RejectNew = 0,
+    ReplaceOldest,
+    ReplaceLowestPriority
+};
+
+enum class AudioStreamEventType : uint8_t
+{
+    None = 0,
+    EngineStarted,
+    EngineStopped,
+    MusicStarted,
+    MusicLooped,
+    MusicCrossfadeStarted,
+    MusicCrossfadeCompleted,
+    MusicStopped,
+    EffectStarted,
+    EffectStopped,
+    EffectVoiceStolen,
+    SourceUnderrun,
+    OutputUnderrun,
+    DecoderError,
+    OutputError
+};
+
+enum class AudioStreamError : uint8_t
+{
+    None = 0,
+    AlreadyInitialized,
+    NotInitialized,
+    InvalidConfiguration,
+    InvalidPath,
+    UnsupportedExtension,
+    UnsupportedCodec,
+    MemoryManagerNotReady,
+    SourceBufferAllocationFailed,
+    OutputBufferAllocationFailed,
+    MixScratchAllocationFailed,
+    DecoderOpenFailed,
+    DecoderParseFailed,
+    DecoderFailed,
+    DecoderWouldBlock,
+    SourceFormatUnsupported,
+    ResamplingDisabled,
+    ChannelConversionDisabled,
+    OutputBackendInitializationFailed,
+    OutputBackendNotReady,
+    OutputFormatRejected,
+    OutputWriteFailed,
+    OutputUnderrun,
+    MusicDeckUnavailable,
+    MusicNotActive,
+    EffectVoiceUnavailable,
+    InvalidVoiceHandle,
+    InvalidVolume,
+    InvalidPan,
+    InvalidFade,
+    InvalidSeek,
+    Busy,
+    InternalError
+};
+
+struct AudioVoiceHandle
+{
+    uint8_t slot = UINT8_MAX;
+    uint32_t generation = 0U;
+
+    explicit operator bool() const
+    {
+        return
+            slot < AUDIO_STREAM_MAX_EFFECT_VOICES &&
+            generation != 0U;
+    }
+};
+
+struct AudioMusicRequest
+{
+    const char* path = nullptr;
+    AudioStreamCodec codec = AudioStreamCodec::Auto;
+    AudioStreamLoopMode loopMode = AudioStreamLoopMode::Track;
+
+    uint8_t volume = AUDIO_STREAM_VOLUME_MAX;
+    uint32_t startMilliseconds = 0U;
+    uint32_t fadeInMilliseconds = AUDIO_STREAM_DEFAULT_FADE_MS;
+
+    // Persistent music survives notifyGameTransition().
+    bool persistent = true;
+
+    // When false, requesting the already-active path leaves playback intact.
+    bool restartIfAlreadyPlaying = false;
+
+    // Overrides the engine prebuffer only when greater than zero.
+    size_t prebufferFrames = 0U;
+};
+
+struct AudioEffectRequest
+{
+    const char* path = nullptr;
+    AudioStreamCodec codec = AudioStreamCodec::Auto;
+    AudioStreamLoopMode loopMode = AudioStreamLoopMode::None;
+
+    uint8_t volume = AUDIO_STREAM_VOLUME_MAX;
+    int8_t pan = AUDIO_STREAM_PAN_CENTER;
+    uint8_t priority = 128U;
+
+    uint32_t startMilliseconds = 0U;
+    uint32_t fadeInMilliseconds = 0U;
+
+    // A looping effect must be stopped explicitly or stolen by policy.
+    bool persistentAcrossGameTransition = false;
+
+    size_t prebufferFrames = 0U;
+};
+
+struct AudioStreamEngineConfig
+{
+    I2sAudioBackendConfig output = {};
+
+    WavDecoderConfig wavDecoder = {};
+    Mp3DecoderConfig mp3Decoder = {};
+
+    size_t musicBufferCapacityFrames =
+        AUDIO_STREAM_DEFAULT_MUSIC_BUFFER_FRAMES;
+
+    size_t effectBufferCapacityFrames =
+        AUDIO_STREAM_DEFAULT_EFFECT_BUFFER_FRAMES;
+
+    size_t outputBufferCapacityFrames =
+        AUDIO_STREAM_DEFAULT_OUTPUT_BUFFER_FRAMES;
+
+    MemoryPreference musicBufferPreference =
+        MemoryPreference::PsramPreferred;
+
+    MemoryPreference effectBufferPreference =
+        MemoryPreference::PsramPreferred;
+
+    MemoryPreference outputBufferPreference =
+        MemoryPreference::PsramPreferred;
+
+    MemoryPreference mixScratchPreference =
+        MemoryPreference::InternalOnly;
+
+    size_t mixFramesPerUpdate =
+        AUDIO_STREAM_DEFAULT_MIX_FRAMES_PER_UPDATE;
+
+    size_t decodeFramesPerStreamPerUpdate =
+        AUDIO_STREAM_DEFAULT_DECODE_FRAMES_PER_UPDATE;
+
+    size_t submitFramesPerUpdate =
+        AUDIO_STREAM_DEFAULT_SUBMIT_FRAMES_PER_UPDATE;
+
+    size_t musicPrebufferFrames =
+        AUDIO_STREAM_DEFAULT_MUSIC_PREBUFFER_FRAMES;
+
+    size_t effectPrebufferFrames =
+        AUDIO_STREAM_DEFAULT_EFFECT_PREBUFFER_FRAMES;
+
+    uint8_t effectVoiceCount =
+        AUDIO_STREAM_DEFAULT_EFFECT_VOICES;
+
+    AudioEffectStealPolicy effectStealPolicy =
+        AudioEffectStealPolicy::ReplaceLowestPriority;
+
+    AudioStreamFadeCurve fadeCurve =
+        AudioStreamFadeCurve::EqualPower;
+
+    uint8_t masterVolume =
+        AUDIO_STREAM_DEFAULT_MASTER_VOLUME;
+
+    uint8_t musicVolume =
+        AUDIO_STREAM_DEFAULT_MUSIC_VOLUME;
+
+    uint8_t effectVolume =
+        AUDIO_STREAM_DEFAULT_EFFECT_VOLUME;
+
+    bool enableLinearResampling = true;
+    bool enableChannelConversion = true;
+    bool enableSoftLimiter = true;
+
+    bool enableEffectDucking = true;
+    uint8_t effectDuckPercent =
+        AUDIO_STREAM_DEFAULT_DUCK_PERCENT;
+
+    uint16_t duckAttackMilliseconds =
+        AUDIO_STREAM_DEFAULT_DUCK_ATTACK_MS;
+
+    uint16_t duckReleaseMilliseconds =
+        AUDIO_STREAM_DEFAULT_DUCK_RELEASE_MS;
+
+    bool prebufferMusicBeforeAudibleStart = true;
+    bool prebufferEffectsBeforeAudibleStart = false;
+
+    bool writeSilenceOnOutputUnderrun = true;
+    bool automaticallyStartOutput = true;
+    bool clearBuffersOnStop = true;
+
+    uint32_t outputWriteTimeoutMs =
+        AUDIO_STREAM_DEFAULT_OUTPUT_TIMEOUT_MS;
+};
+
+struct AudioStreamChannelStatus
+{
+    bool occupied = false;
+    bool audible = false;
+    bool persistent = false;
+    bool loopEnabled = false;
+    bool decoderOpen = false;
+    bool decoderReady = false;
+    bool sourceEof = false;
+    bool resampling = false;
+    bool channelConverting = false;
+
+    AudioStreamBus bus = AudioStreamBus::Music;
+    AudioStreamCodec codec = AudioStreamCodec::Auto;
+
+    AudioStreamPlaybackState state =
+        AudioStreamPlaybackState::Empty;
+
+    AudioStreamError error =
+        AudioStreamError::None;
+
+    char path[AUDIO_STREAM_PATH_CAPACITY] = {};
+
+    I2sAudioFormat sourceFormat = {};
+    I2sAudioFormat outputFormat = {};
+
+    uint8_t localVolume = AUDIO_STREAM_VOLUME_MAX;
+    uint8_t effectiveVolume = 0U;
+    int8_t pan = AUDIO_STREAM_PAN_CENTER;
+    uint8_t priority = 0U;
+
+    uint32_t fadeStartedAtMs = 0U;
+    uint32_t fadeDurationMs = 0U;
+    uint16_t fadeGainQ15 = 0U;
+
+    uint64_t sourcePcmFrame = 0U;
+    uint64_t mixedOutputFrame = 0U;
+
+    uint32_t durationMilliseconds = 0U;
+    uint32_t positionMilliseconds = 0U;
+
+    size_t bufferedSourceFrames = 0U;
+    size_t sourceBufferCapacityFrames = 0U;
+
+    uint32_t decodeCount = 0U;
+    uint32_t mixCount = 0U;
+    uint32_t loopCount = 0U;
+    uint32_t underrunCount = 0U;
+    uint32_t errorCount = 0U;
+
+    uint32_t startedAtMs = 0U;
+    uint32_t generation = 0U;
+};
+
+struct AudioStreamEvent
+{
+    AudioStreamEventType type =
+        AudioStreamEventType::None;
+
+    AudioStreamBus bus = AudioStreamBus::Music;
+    AudioVoiceHandle voice = {};
+
+    AudioStreamError error =
+        AudioStreamError::None;
+
+    char path[AUDIO_STREAM_PATH_CAPACITY] = {};
+    uint32_t timestampMs = 0U;
+};
+
+struct AudioStreamEngineStatus
+{
+    bool initialized = false;
+    bool outputReady = false;
+    bool playing = false;
+    bool paused = false;
+    bool muted = false;
+    bool musicActive = false;
+    bool crossfading = false;
+    bool effectDuckingActive = false;
+
+    AudioStreamEngineState state =
+        AudioStreamEngineState::Stopped;
+
+    AudioStreamError error =
+        AudioStreamError::None;
+
+    I2sAudioFormat outputFormat = {};
+    AudioRoute route = AudioRoute::Muted;
+
+    uint8_t masterVolume = 0U;
+    uint8_t musicVolume = 0U;
+    uint8_t effectVolume = 0U;
+    uint8_t activeEffectVoices = 0U;
+    uint8_t configuredEffectVoices = 0U;
+
+    AudioStreamChannelStatus music = {};
+    AudioStreamChannelStatus incomingMusic = {};
+
+    AudioStreamChannelStatus effects[
+        AUDIO_STREAM_MAX_EFFECT_VOICES] = {};
+
+    PcmRingBufferStatus outputBuffer = {};
+    I2sAudioBackendStatus outputBackend = {};
+
+    size_t mixFramesPerUpdate = 0U;
+    size_t lastMixedFrames = 0U;
+    size_t lastSubmittedFrames = 0U;
+
+    uint64_t totalMixedFrames = 0U;
+    uint64_t totalSubmittedFrames = 0U;
+    uint64_t totalSilenceFrames = 0U;
+    uint64_t totalDroppedFrames = 0U;
+
+    uint32_t updateCount = 0U;
+    uint32_t musicStartCount = 0U;
+    uint32_t musicLoopCount = 0U;
+    uint32_t crossfadeCount = 0U;
+    uint32_t effectStartCount = 0U;
+    uint32_t effectStealCount = 0U;
+    uint32_t sourceUnderrunCount = 0U;
+    uint32_t outputUnderrunCount = 0U;
+    uint32_t decoderErrorCount = 0U;
+    uint32_t outputErrorCount = 0U;
+
+    uint32_t startedAtMs = 0U;
+    uint32_t lastUpdateAtMs = 0U;
+    uint32_t lastOutputAtMs = 0U;
+    uint32_t generation = 0U;
+};
+
+using AudioStreamEngineObserver = void (*)(
+    const AudioStreamEngineStatus& status);
+
+using AudioStreamEventObserver = void (*)(
+    const AudioStreamEvent& event);
+
+class AudioStreamEngine final
+{
+public:
+    //================================================
+    // ENGINE LIFECYCLE
+    //================================================
+
+    static AudioStreamEngineConfig defaultConfig();
+
+    static RuntimeResult begin(
+        const AudioStreamEngineConfig& config =
+            AudioStreamEngineConfig{});
+
+    static void end();
+
+    static bool ready();
+
+    // Performs bounded source decode, resampling, mixing and I2S output.
+    static RuntimeResult update(uint32_t nowMs);
+
+    static RuntimeResult pauseAll();
+    static RuntimeResult resumeAll();
+
+    static RuntimeResult stopAll(
+        uint32_t fadeOutMilliseconds = 0U);
+
+    // Stops non-persistent effects and optionally non-persistent music.
+    // Games may call this during launch/exit without interrupting menu music.
+    static RuntimeResult notifyGameTransition(
+        bool stopNonPersistentMusic = true,
+        uint32_t fadeOutMilliseconds =
+            AUDIO_STREAM_DEFAULT_FADE_MS);
+
+    //================================================
+    // BACKGROUND MUSIC
+    //================================================
+
+    static RuntimeResult playMusic(
+        const AudioMusicRequest& request);
+
+    static RuntimeResult playMusic(
+        const char* path,
+        bool loop = true,
+        uint32_t fadeInMilliseconds =
+            AUDIO_STREAM_DEFAULT_FADE_MS);
+
+    // Starts the new track on the inactive deck while fading the active deck.
+    static RuntimeResult crossfadeMusic(
+        const AudioMusicRequest& request,
+        uint32_t crossfadeMilliseconds =
+            AUDIO_STREAM_DEFAULT_CROSSFADE_MS);
+
+    static RuntimeResult crossfadeMusic(
+        const char* path,
+        uint32_t crossfadeMilliseconds =
+            AUDIO_STREAM_DEFAULT_CROSSFADE_MS,
+        bool loop = true);
+
+    static RuntimeResult pauseMusic();
+    static RuntimeResult resumeMusic();
+
+    static RuntimeResult stopMusic(
+        uint32_t fadeOutMilliseconds = 0U);
+
+    static RuntimeResult seekMusicMilliseconds(
+        uint32_t milliseconds,
+        bool accurate = true);
+
+    static RuntimeResult setMusicPersistent(
+        bool persistent);
+
+    static bool musicPlaying();
+    static bool musicPaused();
+    static const char* currentMusicPath();
+    static uint32_t musicPositionMilliseconds();
+    static uint32_t musicDurationMilliseconds();
+
+    //================================================
+    // SOUND EFFECTS
+    //================================================
+
+    static RuntimeResult playEffect(
+        const AudioEffectRequest& request,
+        AudioVoiceHandle& handle);
+
+    static RuntimeResult playEffect(
+        const char* path,
+        uint8_t volume = AUDIO_STREAM_VOLUME_MAX,
+        int8_t pan = AUDIO_STREAM_PAN_CENTER,
+        uint8_t priority = 128U);
+
+    static RuntimeResult stopEffect(
+        AudioVoiceHandle handle,
+        uint32_t fadeOutMilliseconds = 0U);
+
+    static RuntimeResult stopAllEffects(
+        uint32_t fadeOutMilliseconds = 0U,
+        bool includePersistent = true);
+
+    static bool effectActive(
+        AudioVoiceHandle handle);
+
+    static uint8_t activeEffectVoiceCount();
+
+    //================================================
+    // VOLUME, ROUTING AND OUTPUT POLICY
+    //================================================
+
+    static RuntimeResult setMasterVolume(uint8_t volume);
+    static RuntimeResult setMusicVolume(uint8_t volume);
+    static RuntimeResult setEffectVolume(uint8_t volume);
+
+    static uint8_t masterVolume();
+    static uint8_t musicVolume();
+    static uint8_t effectVolume();
+
+    static RuntimeResult setMuted(bool muted);
+    static bool muted();
+
+    static RuntimeResult setRoute(AudioRoute route);
+    static AudioRoute route();
+
+    static RuntimeResult setEffectDucking(
+        bool enabled,
+        uint8_t duckPercent =
+            AUDIO_STREAM_DEFAULT_DUCK_PERCENT,
+        uint16_t attackMilliseconds =
+            AUDIO_STREAM_DEFAULT_DUCK_ATTACK_MS,
+        uint16_t releaseMilliseconds =
+            AUDIO_STREAM_DEFAULT_DUCK_RELEASE_MS);
+
+    //================================================
+    // STATUS AND DIAGNOSTICS
+    //================================================
+
+    static AudioStreamEngineStatus status();
+
+    static AudioStreamChannelStatus musicStatus();
+
+    static RuntimeResult effectStatus(
+        AudioVoiceHandle handle,
+        AudioStreamChannelStatus& result);
+
+    static void resetCounters();
+
+    static void setObserver(
+        AudioStreamEngineObserver observer);
+
+    static void setEventObserver(
+        AudioStreamEventObserver observer);
+
+    static AudioStreamError lastError();
+    static void clearError();
+
+    static bool validConfig(
+        const AudioStreamEngineConfig& config);
+
+    static bool validMusicRequest(
+        const AudioMusicRequest& request);
+
+    static bool validEffectRequest(
+        const AudioEffectRequest& request);
+
+    static AudioStreamCodec codecFromPath(
+        const char* path);
+
+    static const char* codecText(
+        AudioStreamCodec value);
+
+    static const char* engineStateText(
+        AudioStreamEngineState value);
+
+    static const char* playbackStateText(
+        AudioStreamPlaybackState value);
+
+    static const char* eventText(
+        AudioStreamEventType value);
+
+    static const char* errorText(
+        AudioStreamError value);
+
+private:
+    struct FadeState
+    {
+        bool active = false;
+        bool stopWhenComplete = false;
+
+        uint16_t startGainQ15 = 0U;
+        uint16_t targetGainQ15 = 0U;
+        uint16_t currentGainQ15 = 0U;
+
+        uint32_t startedAtMs = 0U;
+        uint32_t durationMs = 0U;
+    };
+
+    struct ResamplerState
+    {
+        bool primed = false;
+        uint8_t sourceChannels = 0U;
+
+        uint64_t phaseQ32 = 0U;
+        uint64_t stepQ32 = 0U;
+
+        int16_t previousLeft = 0;
+        int16_t previousRight = 0;
+        int16_t nextLeft = 0;
+        int16_t nextRight = 0;
+    };
+
+    struct StreamSlot
+    {
+        bool occupied = false;
+        bool persistent = false;
+        bool decoderReady = false;
+        bool sourceEof = false;
+        bool paused = false;
+
+        AudioStreamBus bus = AudioStreamBus::Music;
+        AudioStreamCodec codec = AudioStreamCodec::Auto;
+        AudioStreamLoopMode loopMode = AudioStreamLoopMode::None;
+        AudioStreamPlaybackState state =
+            AudioStreamPlaybackState::Empty;
+        AudioStreamError error = AudioStreamError::None;
+
+        char path[AUDIO_STREAM_PATH_CAPACITY] = {};
+
+        uint8_t localVolume = AUDIO_STREAM_VOLUME_MAX;
+        int8_t pan = AUDIO_STREAM_PAN_CENTER;
+        uint8_t priority = 0U;
+
+        uint32_t startedAtMs = 0U;
+        uint32_t requestedStartMilliseconds = 0U;
+        size_t requestedPrebufferFrames = 0U;
+        uint32_t generation = 0U;
+
+        uint64_t mixedOutputFrame = 0U;
+        uint32_t decodeCount = 0U;
+        uint32_t mixCount = 0U;
+        uint32_t loopCount = 0U;
+        uint32_t underrunCount = 0U;
+        uint32_t errorCount = 0U;
+
+        I2sAudioFormat sourceFormat = {};
+
+        WavDecoder wav = {};
+        Mp3Decoder mp3 = {};
+        PcmRingBuffer pcm = {};
+
+        FadeState fade = {};
+        ResamplerState resampler = {};
+    };
+
+    struct EffectVoice
+    {
+        StreamSlot stream = {};
+        AudioVoiceHandle handle = {};
+        uint32_t allocationOrder = 0U;
+    };
+
+    static AudioStreamEngineConfig config_;
+    static AudioStreamEngineStatus currentStatus_;
+
+    static StreamSlot musicDecks_[
+        AUDIO_STREAM_MUSIC_DECK_COUNT];
+
+    static EffectVoice effectVoices_[
+        AUDIO_STREAM_MAX_EFFECT_VOICES];
+
+    static uint8_t activeMusicDeck_;
+    static uint8_t incomingMusicDeck_;
+
+    static PcmRingBuffer outputBuffer_;
+
+    static MemoryBlock mixAccumulator_;
+    static MemoryBlock mixOutputScratch_;
+    static MemoryBlock sourceFrameScratch_;
+
+    static AudioStreamEngineObserver observer_;
+    static AudioStreamEventObserver eventObserver_;
+
+    static uint32_t effectAllocationCounter_;
+    static uint16_t musicDuckGainQ15_;
+    static uint16_t musicDuckTargetQ15_;
+    static uint32_t musicDuckChangedAtMs_;
+
+    static RuntimeResult allocateEngineBuffers();
+    static void releaseEngineBuffers();
+
+    static RuntimeResult initializeOutput();
+    static void shutdownOutput();
+
+    static RuntimeResult openStream(
+        StreamSlot& stream,
+        const char* path,
+        AudioStreamCodec codec,
+        AudioStreamBus bus,
+        AudioStreamLoopMode loopMode,
+        uint8_t volume,
+        int8_t pan,
+        uint8_t priority,
+        bool persistent,
+        uint32_t startMilliseconds,
+        uint32_t fadeInMilliseconds,
+        size_t prebufferFrames,
+        uint32_t nowMs);
+
+    static void closeStream(
+        StreamSlot& stream,
+        bool clearPcm);
+
+    static RuntimeResult pumpStreamDecoder(
+        StreamSlot& stream,
+        uint32_t nowMs,
+        size_t frameBudget);
+
+    static RuntimeResult parseStreamHeader(
+        StreamSlot& stream,
+        uint32_t nowMs);
+
+    static RuntimeResult seekStream(
+        StreamSlot& stream,
+        uint32_t milliseconds,
+        bool accurate);
+
+    static RuntimeResult loopStream(
+        StreamSlot& stream,
+        uint32_t nowMs);
+
+    static RuntimeResult prepareStreamPcm(
+        StreamSlot& stream);
+
+    static RuntimeResult mixAvailableStreams(
+        uint32_t nowMs,
+        size_t frameBudget,
+        size_t& mixedFrames);
+
+    static RuntimeResult mixStreamIntoAccumulator(
+        StreamSlot& stream,
+        uint32_t nowMs,
+        int32_t* accumulator,
+        size_t outputFrames,
+        uint16_t busGainQ15,
+        size_t& contributedFrames);
+
+    static RuntimeResult writeMixedFrames(
+        const int32_t* accumulator,
+        size_t frameCount,
+        size_t& writtenFrames);
+
+    static RuntimeResult submitOutputFrames(
+        size_t frameBudget,
+        size_t& submittedFrames);
+
+    static RuntimeResult updateFade(
+        StreamSlot& stream,
+        uint32_t nowMs);
+
+    static void updateDucking(uint32_t nowMs);
+
+    static RuntimeResult selectEffectVoice(
+        const AudioEffectRequest& request,
+        uint8_t& selectedSlot,
+        bool& stoleVoice);
+
+    static StreamSlot* activeMusic();
+    static const StreamSlot* activeMusicConst();
+
+    static StreamSlot* incomingMusic();
+    static const StreamSlot* incomingMusicConst();
+
+    static bool validHandle(AudioVoiceHandle handle);
+
+    static AudioStreamChannelStatus channelStatus(
+        const StreamSlot& stream);
+
+    static uint16_t volumeToQ15(uint8_t volume);
+
+    static uint16_t fadeGainQ15(
+        const FadeState& fade,
+        uint32_t nowMs,
+        AudioStreamFadeCurve curve);
+
+    static RuntimeResult setError(
+        AudioStreamError error,
+        RuntimeResult result);
+
+    static void emitEvent(
+        AudioStreamEventType type,
+        const StreamSlot* stream,
+        AudioVoiceHandle voice,
+        AudioStreamError error,
+        uint32_t nowMs);
+
+    static void refreshStatus();
+    static void notifyStateChanged();
+};
+
+static_assert(
+    AUDIO_STREAM_MUSIC_DECK_COUNT == 2U,
+    "Crossfade implementation requires exactly two music decks");
+
+static_assert(
+    AUDIO_STREAM_DEFAULT_EFFECT_VOICES > 0U &&
+        AUDIO_STREAM_DEFAULT_EFFECT_VOICES <=
+            AUDIO_STREAM_MAX_EFFECT_VOICES,
+    "Default effect voice count is invalid");
+
+static_assert(
+    AUDIO_STREAM_DEFAULT_MIX_FRAMES_PER_UPDATE > 0U &&
+        AUDIO_STREAM_DEFAULT_MIX_FRAMES_PER_UPDATE <=
+            AUDIO_STREAM_MAX_MIX_FRAMES_PER_UPDATE,
+    "Audio mix frame limits are invalid");
+
+static_assert(
+    AUDIO_STREAM_VOLUME_MAX == 100U,
+    "Audio volume conversion assumes a 0-100 scale");
+
+static_assert(
+    I2S_AUDIO_SUPPORTED_BITS_PER_SAMPLE == 16U,
+    "Audio stream engine requires signed 16-bit I2S output");
+}
+
+#include "149_audio_stream_engine.h"
+
+#include <limits.h>
+#include <math.h>
+#include <new>
+#include <string.h>
+
+namespace egs
+{
+namespace
+{
+constexpr uint16_t Q15_ONE = 32767U;
+constexpr uint64_t Q32_ONE = 1ULL << 32U;
+constexpr uint64_t RESAMPLER_NEEDS_NEXT = UINT64_MAX - 1ULL;
+constexpr uint64_t RESAMPLER_FINAL_FRAME = UINT64_MAX;
+constexpr int32_t SOFT_LIMIT_KNEE = 24576;
+constexpr int32_t SOFT_LIMIT_SPAN = INT16_MAX - SOFT_LIMIT_KNEE;
+constexpr size_t SOURCE_FRAME_SCRATCH_SAMPLES =
+    static_cast<size_t>(I2S_AUDIO_MAX_CHANNEL_COUNT) * 2U;
+
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX ? 1U : current + 1U;
+}
+
+uint32_t saturatingIncrement32(uint32_t value)
+{
+    return value == UINT32_MAX ? UINT32_MAX : value + 1U;
+}
+
+uint64_t saturatingAdd64(uint64_t first, uint64_t second)
+{
+    return second > UINT64_MAX - first ? UINT64_MAX : first + second;
+}
+
+size_t minimumSize(size_t first, size_t second)
+{
+    return first < second ? first : second;
+}
+
+size_t maximumSize(size_t first, size_t second)
+{
+    return first > second ? first : second;
+}
+
+bool validMemoryPreference(MemoryPreference preference)
+{
+    switch (preference)
+    {
+        case MemoryPreference::InternalOnly:
+        case MemoryPreference::PsramPreferred:
+        case MemoryPreference::PsramOnly:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool validRoute(AudioRoute route)
+{
+    switch (route)
+    {
+        case AudioRoute::Speaker:
+        case AudioRoute::Headphones:
+        case AudioRoute::Muted:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool validCodec(AudioStreamCodec codec)
+{
+    switch (codec)
+    {
+        case AudioStreamCodec::Auto:
+        case AudioStreamCodec::Wav:
+        case AudioStreamCodec::Mp3:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool validLoopMode(AudioStreamLoopMode mode)
+{
+    switch (mode)
+    {
+        case AudioStreamLoopMode::None:
+        case AudioStreamLoopMode::Track:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool validFadeCurve(AudioStreamFadeCurve curve)
+{
+    switch (curve)
+    {
+        case AudioStreamFadeCurve::Linear:
+        case AudioStreamFadeCurve::EqualPower:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool validStealPolicy(AudioEffectStealPolicy policy)
+{
+    switch (policy)
+    {
+        case AudioEffectStealPolicy::RejectNew:
+        case AudioEffectStealPolicy::ReplaceOldest:
+        case AudioEffectStealPolicy::ReplaceLowestPriority:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+size_t boundedStringLength(const char* text, size_t capacity)
+{
+    if (text == nullptr)
+    {
+        return 0U;
+    }
+
+    size_t length = 0U;
+
+    while (length < capacity && text[length] != '\0')
+    {
+        ++length;
+    }
+
+    return length;
+}
+
+char lowercaseAscii(char value)
+{
+    return value >= 'A' && value <= 'Z'
+        ? static_cast<char>(value - 'A' + 'a')
+        : value;
+}
+
+bool pathEquals(const char* first, const char* second)
+{
+    if (first == nullptr || second == nullptr)
+    {
+        return false;
+    }
+
+    return strcmp(first, second) == 0;
+}
+
+uint16_t multiplyQ15(uint16_t first, uint16_t second)
+{
+    const uint32_t product =
+        static_cast<uint32_t>(first) * second;
+
+    return static_cast<uint16_t>(
+        (product + (Q15_ONE / 2U)) / Q15_ONE);
+}
+
+int16_t clampInt16(int64_t value)
+{
+    if (value > INT16_MAX)
+    {
+        return INT16_MAX;
+    }
+
+    if (value < INT16_MIN)
+    {
+        return INT16_MIN;
+    }
+
+    return static_cast<int16_t>(value);
+}
+
+int16_t softLimitSample(int64_t value, bool enabled)
+{
+    if (!enabled)
+    {
+        return clampInt16(value);
+    }
+
+    const bool negative = value < 0;
+    uint64_t magnitude = negative
+        ? static_cast<uint64_t>(-(value + 1)) + 1ULL
+        : static_cast<uint64_t>(value);
+
+    if (magnitude <= static_cast<uint64_t>(SOFT_LIMIT_KNEE))
+    {
+        return static_cast<int16_t>(value);
+    }
+
+    const uint64_t excess =
+        magnitude - static_cast<uint64_t>(SOFT_LIMIT_KNEE);
+
+    const uint64_t compressed =
+        static_cast<uint64_t>(SOFT_LIMIT_KNEE) +
+        (excess * static_cast<uint64_t>(SOFT_LIMIT_SPAN)) /
+            (excess + static_cast<uint64_t>(SOFT_LIMIT_SPAN));
+
+    const int64_t signedValue = negative
+        ? -static_cast<int64_t>(compressed)
+        : static_cast<int64_t>(compressed);
+
+    return clampInt16(signedValue);
+}
+
+AudioStreamError decoderOpenError(RuntimeResult result)
+{
+    switch (result)
+    {
+        case RuntimeResult::Unsupported:
+            return AudioStreamError::UnsupportedCodec;
+
+        case RuntimeResult::OutOfMemory:
+            return AudioStreamError::SourceBufferAllocationFailed;
+
+        default:
+            return AudioStreamError::DecoderOpenFailed;
+    }
+}
+
+AudioStreamError decoderRuntimeError(RuntimeResult result)
+{
+    switch (result)
+    {
+        case RuntimeResult::NotReady:
+        case RuntimeResult::Busy:
+            return AudioStreamError::DecoderWouldBlock;
+
+        case RuntimeResult::Unsupported:
+            return AudioStreamError::SourceFormatUnsupported;
+
+        default:
+            return AudioStreamError::DecoderFailed;
+    }
+}
+
+bool temporaryResult(RuntimeResult result)
+{
+    return
+        result == RuntimeResult::NotReady ||
+        result == RuntimeResult::Busy;
+}
+}
+
+AudioStreamEngineConfig AudioStreamEngine::config_ = {};
+AudioStreamEngineStatus AudioStreamEngine::currentStatus_ = {};
+
+AudioStreamEngine::StreamSlot AudioStreamEngine::musicDecks_[
+    AUDIO_STREAM_MUSIC_DECK_COUNT] = {};
+
+AudioStreamEngine::EffectVoice AudioStreamEngine::effectVoices_[
+    AUDIO_STREAM_MAX_EFFECT_VOICES] = {};
+
+uint8_t AudioStreamEngine::activeMusicDeck_ = 0U;
+uint8_t AudioStreamEngine::incomingMusicDeck_ = 1U;
+
+PcmRingBuffer AudioStreamEngine::outputBuffer_ = {};
+
+MemoryBlock AudioStreamEngine::mixAccumulator_ = {};
+MemoryBlock AudioStreamEngine::mixOutputScratch_ = {};
+MemoryBlock AudioStreamEngine::sourceFrameScratch_ = {};
+
+AudioStreamEngineObserver AudioStreamEngine::observer_ = nullptr;
+AudioStreamEventObserver AudioStreamEngine::eventObserver_ = nullptr;
+
+uint32_t AudioStreamEngine::effectAllocationCounter_ = 0U;
+uint16_t AudioStreamEngine::musicDuckGainQ15_ = Q15_ONE;
+uint16_t AudioStreamEngine::musicDuckTargetQ15_ = Q15_ONE;
+uint32_t AudioStreamEngine::musicDuckChangedAtMs_ = 0U;
+
+AudioStreamEngineConfig AudioStreamEngine::defaultConfig()
+{
+    AudioStreamEngineConfig config;
+    config.output = I2sAudioBackend::defaultConfig();
+    return config;
+}
+
+RuntimeResult AudioStreamEngine::begin(
+    const AudioStreamEngineConfig& config)
+{
+    if (currentStatus_.initialized)
+    {
+        return setError(
+            AudioStreamError::AlreadyInitialized,
+            RuntimeResult::Busy);
+    }
+
+    if (!validConfig(config))
+    {
+        return setError(
+            AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            AudioStreamError::MemoryManagerNotReady,
+            RuntimeResult::NotReady);
+    }
+
+    const uint32_t generation =
+        nextGeneration(currentStatus_.generation);
+
+    config_ = config;
+    currentStatus_ = {};
+    currentStatus_.state = AudioStreamEngineState::Initializing;
+    currentStatus_.outputFormat = config_.output.format;
+    currentStatus_.route = config_.output.initialRoute;
+    currentStatus_.masterVolume = config_.masterVolume;
+    currentStatus_.musicVolume = config_.musicVolume;
+    currentStatus_.effectVolume = config_.effectVolume;
+    currentStatus_.configuredEffectVoices = config_.effectVoiceCount;
+    currentStatus_.mixFramesPerUpdate = config_.mixFramesPerUpdate;
+    currentStatus_.generation = generation;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        closeStream(musicDecks_[index], true);
+        musicDecks_[index].bus = AudioStreamBus::Music;
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MAX_EFFECT_VOICES;
+         ++index)
+    {
+        closeStream(effectVoices_[index].stream, true);
+        effectVoices_[index].stream.bus = AudioStreamBus::Effects;
+        effectVoices_[index].handle = {};
+        effectVoices_[index].allocationOrder = 0U;
+    }
+
+    activeMusicDeck_ = 0U;
+    incomingMusicDeck_ = 1U;
+    effectAllocationCounter_ = 0U;
+    musicDuckGainQ15_ = Q15_ONE;
+    musicDuckTargetQ15_ = Q15_ONE;
+    musicDuckChangedAtMs_ = 0U;
+
+    const RuntimeResult bufferResult =
+        allocateEngineBuffers();
+
+    if (bufferResult != RuntimeResult::Ok)
+    {
+        releaseEngineBuffers();
+        config_ = {};
+        currentStatus_.state = AudioStreamEngineState::Failed;
+        return bufferResult;
+    }
+
+    const RuntimeResult outputResult =
+        initializeOutput();
+
+    if (outputResult != RuntimeResult::Ok)
+    {
+        shutdownOutput();
+        releaseEngineBuffers();
+        config_ = {};
+        currentStatus_.state = AudioStreamEngineState::Failed;
+        return outputResult;
+    }
+
+    currentStatus_.initialized = true;
+    currentStatus_.outputReady = I2sAudioBackend::ready();
+    currentStatus_.muted = I2sAudioBackend::muted();
+    currentStatus_.state = AudioStreamEngineState::Ready;
+    currentStatus_.error = AudioStreamError::None;
+    currentStatus_.startedAtMs = 0U;
+
+    emitEvent(
+        AudioStreamEventType::EngineStarted,
+        nullptr,
+        {},
+        AudioStreamError::None,
+        0U);
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::end()
+{
+    if (!currentStatus_.initialized &&
+        currentStatus_.state == AudioStreamEngineState::Stopped)
+    {
+        return;
+    }
+
+    const uint32_t generation =
+        nextGeneration(currentStatus_.generation);
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        closeStream(musicDecks_[index], true);
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MAX_EFFECT_VOICES;
+         ++index)
+    {
+        closeStream(effectVoices_[index].stream, true);
+        effectVoices_[index].handle = {};
+        effectVoices_[index].allocationOrder = 0U;
+    }
+
+    shutdownOutput();
+    releaseEngineBuffers();
+
+    emitEvent(
+        AudioStreamEventType::EngineStopped,
+        nullptr,
+        {},
+        AudioStreamError::None,
+        currentStatus_.lastUpdateAtMs);
+
+    config_ = {};
+    currentStatus_ = {};
+    currentStatus_.state = AudioStreamEngineState::Stopped;
+    currentStatus_.generation = generation;
+
+    activeMusicDeck_ = 0U;
+    incomingMusicDeck_ = 1U;
+    effectAllocationCounter_ = 0U;
+    musicDuckGainQ15_ = Q15_ONE;
+    musicDuckTargetQ15_ = Q15_ONE;
+    musicDuckChangedAtMs_ = 0U;
+}
+
+bool AudioStreamEngine::ready()
+{
+    return
+        currentStatus_.initialized &&
+        currentStatus_.state != AudioStreamEngineState::Failed &&
+        outputBuffer_.ready() &&
+        I2sAudioBackend::ready();
+}
+
+RuntimeResult AudioStreamEngine::update(uint32_t nowMs)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    currentStatus_.lastUpdateAtMs = nowMs;
+    currentStatus_.updateCount =
+        saturatingIncrement32(currentStatus_.updateCount);
+
+    if (currentStatus_.startedAtMs == 0U)
+    {
+        currentStatus_.startedAtMs = nowMs;
+    }
+
+    if (currentStatus_.state == AudioStreamEngineState::Paused)
+    {
+        refreshStatus();
+        notifyStateChanged();
+        return RuntimeResult::Ok;
+    }
+
+    RuntimeResult terminalResult = RuntimeResult::Ok;
+
+    size_t submittedBefore = 0U;
+    const RuntimeResult firstSubmit =
+        submitOutputFrames(
+            config_.submitFramesPerUpdate,
+            submittedBefore);
+
+    if (firstSubmit != RuntimeResult::Ok &&
+        !temporaryResult(firstSubmit))
+    {
+        terminalResult = firstSubmit;
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied || stream.paused)
+        {
+            continue;
+        }
+
+        const RuntimeResult fadeResult =
+            updateFade(stream, nowMs);
+
+        if (fadeResult != RuntimeResult::Ok &&
+            !temporaryResult(fadeResult))
+        {
+            terminalResult = fadeResult;
+        }
+
+        if (!stream.occupied)
+        {
+            continue;
+        }
+
+        const RuntimeResult pumpResult =
+            pumpStreamDecoder(
+                stream,
+                nowMs,
+                config_.decodeFramesPerStreamPerUpdate);
+
+        if (pumpResult != RuntimeResult::Ok &&
+            !temporaryResult(pumpResult))
+        {
+            terminalResult = pumpResult;
+        }
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        StreamSlot& stream = effectVoices_[index].stream;
+
+        if (!stream.occupied || stream.paused)
+        {
+            continue;
+        }
+
+        const RuntimeResult fadeResult =
+            updateFade(stream, nowMs);
+
+        if (fadeResult != RuntimeResult::Ok &&
+            !temporaryResult(fadeResult))
+        {
+            terminalResult = fadeResult;
+        }
+
+        if (!stream.occupied)
+        {
+            effectVoices_[index].handle = {};
+            continue;
+        }
+
+        const RuntimeResult pumpResult =
+            pumpStreamDecoder(
+                stream,
+                nowMs,
+                config_.decodeFramesPerStreamPerUpdate);
+
+        if (pumpResult != RuntimeResult::Ok &&
+            !temporaryResult(pumpResult))
+        {
+            terminalResult = pumpResult;
+        }
+    }
+
+    updateDucking(nowMs);
+
+    size_t mixedFrames = 0U;
+    const RuntimeResult mixResult =
+        mixAvailableStreams(
+            nowMs,
+            config_.mixFramesPerUpdate,
+            mixedFrames);
+
+    if (mixResult != RuntimeResult::Ok &&
+        !temporaryResult(mixResult))
+    {
+        terminalResult = mixResult;
+    }
+
+    size_t submittedAfter = 0U;
+    const size_t remainingSubmitBudget =
+        submittedBefore >= config_.submitFramesPerUpdate
+            ? 0U
+            : config_.submitFramesPerUpdate - submittedBefore;
+
+    const RuntimeResult secondSubmit =
+        submitOutputFrames(
+            remainingSubmitBudget,
+            submittedAfter);
+
+    if (secondSubmit != RuntimeResult::Ok &&
+        !temporaryResult(secondSubmit))
+    {
+        terminalResult = secondSubmit;
+    }
+
+    currentStatus_.lastMixedFrames = mixedFrames;
+    currentStatus_.lastSubmittedFrames =
+        submittedBefore + submittedAfter;
+
+    StreamSlot* const oldMusic = activeMusic();
+    StreamSlot* const newMusic = incomingMusic();
+
+    if ((oldMusic == nullptr || !oldMusic->occupied) &&
+        newMusic != nullptr && newMusic->occupied)
+    {
+        activeMusicDeck_ = incomingMusicDeck_;
+        incomingMusicDeck_ =
+            activeMusicDeck_ == 0U ? 1U : 0U;
+
+        emitEvent(
+            AudioStreamEventType::MusicCrossfadeCompleted,
+            activeMusic(),
+            {},
+            AudioStreamError::None,
+            nowMs);
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        EffectVoice& voice = effectVoices_[index];
+
+        if (voice.stream.occupied &&
+            voice.stream.state == AudioStreamPlaybackState::Ended)
+        {
+            emitEvent(
+                AudioStreamEventType::EffectStopped,
+                &voice.stream,
+                voice.handle,
+                AudioStreamError::None,
+                nowMs);
+
+            closeStream(
+                voice.stream,
+                config_.clearBuffersOnStop);
+
+            voice.handle = {};
+            voice.allocationOrder = 0U;
+        }
+        else if (!voice.stream.occupied && voice.handle)
+        {
+            voice.handle = {};
+            voice.allocationOrder = 0U;
+        }
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    if (terminalResult == RuntimeResult::Ok ||
+        mixedFrames > 0U ||
+        submittedBefore + submittedAfter > 0U)
+    {
+        currentStatus_.error = AudioStreamError::None;
+        return RuntimeResult::Ok;
+    }
+
+    return terminalResult;
+}
+
+RuntimeResult AudioStreamEngine::pauseAll()
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        if (musicDecks_[index].occupied)
+        {
+            musicDecks_[index].paused = true;
+            musicDecks_[index].state =
+                AudioStreamPlaybackState::Paused;
+        }
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        if (effectVoices_[index].stream.occupied)
+        {
+            effectVoices_[index].stream.paused = true;
+            effectVoices_[index].stream.state =
+                AudioStreamPlaybackState::Paused;
+        }
+    }
+
+    const RuntimeResult result =
+        I2sAudioBackend::pause();
+
+    if (result != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputWriteFailed,
+            result);
+    }
+
+    currentStatus_.state = AudioStreamEngineState::Paused;
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::resumeAll()
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    const RuntimeResult result =
+        I2sAudioBackend::resume();
+
+    if (result != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputWriteFailed,
+            result);
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (stream.occupied && stream.paused)
+        {
+            stream.paused = false;
+            stream.state = stream.fade.active
+                ? (stream.fade.targetGainQ15 <
+                       stream.fade.startGainQ15
+                    ? AudioStreamPlaybackState::FadingOut
+                    : AudioStreamPlaybackState::FadingIn)
+                : AudioStreamPlaybackState::Playing;
+        }
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        StreamSlot& stream = effectVoices_[index].stream;
+
+        if (stream.occupied && stream.paused)
+        {
+            stream.paused = false;
+            stream.state = stream.fade.active
+                ? AudioStreamPlaybackState::FadingIn
+                : AudioStreamPlaybackState::Playing;
+        }
+    }
+
+    currentStatus_.state = AudioStreamEngineState::Playing;
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::stopAll(
+    uint32_t fadeOutMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (fadeOutMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            AudioStreamError::InvalidFade,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const RuntimeResult musicResult =
+        stopMusic(fadeOutMilliseconds);
+
+    const RuntimeResult effectResult =
+        stopAllEffects(fadeOutMilliseconds, true);
+
+    if (fadeOutMilliseconds == 0U)
+    {
+        outputBuffer_.reset(
+            config_.clearBuffersOnStop
+                ? PcmRingBufferClearMode::Clear
+                : PcmRingBufferClearMode::Preserve);
+
+        currentStatus_.state = AudioStreamEngineState::Ready;
+    }
+    else
+    {
+        currentStatus_.state = AudioStreamEngineState::Draining;
+    }
+
+    if (musicResult != RuntimeResult::Ok &&
+        musicResult != RuntimeResult::NotReady)
+    {
+        return musicResult;
+    }
+
+    return effectResult;
+}
+
+RuntimeResult AudioStreamEngine::notifyGameTransition(
+    bool stopNonPersistentMusic,
+    uint32_t fadeOutMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (fadeOutMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            AudioStreamError::InvalidFade,
+            RuntimeResult::InvalidArgument);
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied || stream.persistent ||
+            !stopNonPersistentMusic)
+        {
+            continue;
+        }
+
+        if (fadeOutMilliseconds == 0U)
+        {
+            closeStream(stream, config_.clearBuffersOnStop);
+        }
+        else
+        {
+            stream.fade.active = true;
+            stream.fade.stopWhenComplete = true;
+            stream.fade.startGainQ15 = stream.fade.currentGainQ15;
+            stream.fade.targetGainQ15 = 0U;
+            stream.fade.startedAtMs = currentStatus_.lastUpdateAtMs;
+            stream.fade.durationMs = fadeOutMilliseconds;
+            stream.state = AudioStreamPlaybackState::FadingOut;
+        }
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        EffectVoice& voice = effectVoices_[index];
+
+        if (!voice.stream.occupied || voice.stream.persistent)
+        {
+            continue;
+        }
+
+        stopEffect(voice.handle, fadeOutMilliseconds);
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::playMusic(
+    const AudioMusicRequest& request)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validMusicRequest(request))
+    {
+        return setError(
+            AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    StreamSlot* current = activeMusic();
+
+    if (current != nullptr && current->occupied &&
+        pathEquals(current->path, request.path) &&
+        !request.restartIfAlreadyPlaying)
+    {
+        current->persistent = request.persistent;
+        current->localVolume = request.volume;
+        currentStatus_.error = AudioStreamError::None;
+        refreshStatus();
+        return RuntimeResult::Ok;
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        closeStream(
+            musicDecks_[index],
+            config_.clearBuffersOnStop);
+    }
+
+    activeMusicDeck_ = 0U;
+    incomingMusicDeck_ = 1U;
+
+    const RuntimeResult result =
+        openStream(
+            musicDecks_[activeMusicDeck_],
+            request.path,
+            request.codec,
+            AudioStreamBus::Music,
+            request.loopMode,
+            request.volume,
+            AUDIO_STREAM_PAN_CENTER,
+            255U,
+            request.persistent,
+            request.startMilliseconds,
+            request.fadeInMilliseconds,
+            request.prebufferFrames,
+            currentStatus_.lastUpdateAtMs);
+
+    if (result != RuntimeResult::Ok)
+    {
+        return result;
+    }
+
+    currentStatus_.musicStartCount =
+        saturatingIncrement32(currentStatus_.musicStartCount);
+
+    emitEvent(
+        AudioStreamEventType::MusicStarted,
+        &musicDecks_[activeMusicDeck_],
+        {},
+        AudioStreamError::None,
+        currentStatus_.lastUpdateAtMs);
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::playMusic(
+    const char* path,
+    bool loop,
+    uint32_t fadeInMilliseconds)
+{
+    AudioMusicRequest request;
+    request.path = path;
+    request.loopMode = loop
+        ? AudioStreamLoopMode::Track
+        : AudioStreamLoopMode::None;
+    request.fadeInMilliseconds = fadeInMilliseconds;
+
+    return playMusic(request);
+}
+
+RuntimeResult AudioStreamEngine::crossfadeMusic(
+    const AudioMusicRequest& request,
+    uint32_t crossfadeMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validMusicRequest(request) ||
+        crossfadeMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            crossfadeMilliseconds > AUDIO_STREAM_MAX_FADE_MS
+                ? AudioStreamError::InvalidFade
+                : AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    StreamSlot* current = activeMusic();
+
+    if (current == nullptr || !current->occupied)
+    {
+        AudioMusicRequest directRequest = request;
+        directRequest.fadeInMilliseconds = crossfadeMilliseconds;
+        return playMusic(directRequest);
+    }
+
+    if (pathEquals(current->path, request.path) &&
+        !request.restartIfAlreadyPlaying)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    incomingMusicDeck_ =
+        activeMusicDeck_ == 0U ? 1U : 0U;
+
+    StreamSlot& incoming =
+        musicDecks_[incomingMusicDeck_];
+
+    closeStream(incoming, config_.clearBuffersOnStop);
+
+    const RuntimeResult result =
+        openStream(
+            incoming,
+            request.path,
+            request.codec,
+            AudioStreamBus::Music,
+            request.loopMode,
+            request.volume,
+            AUDIO_STREAM_PAN_CENTER,
+            255U,
+            request.persistent,
+            request.startMilliseconds,
+            crossfadeMilliseconds,
+            request.prebufferFrames,
+            currentStatus_.lastUpdateAtMs);
+
+    if (result != RuntimeResult::Ok)
+    {
+        return result;
+    }
+
+    current->fade.active = true;
+    current->fade.stopWhenComplete = true;
+    current->fade.startGainQ15 = current->fade.currentGainQ15;
+    current->fade.targetGainQ15 = 0U;
+    current->fade.startedAtMs = currentStatus_.lastUpdateAtMs;
+    current->fade.durationMs = crossfadeMilliseconds;
+    current->state = AudioStreamPlaybackState::FadingOut;
+
+    currentStatus_.crossfadeCount =
+        saturatingIncrement32(currentStatus_.crossfadeCount);
+
+    emitEvent(
+        AudioStreamEventType::MusicCrossfadeStarted,
+        &incoming,
+        {},
+        AudioStreamError::None,
+        currentStatus_.lastUpdateAtMs);
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::crossfadeMusic(
+    const char* path,
+    uint32_t crossfadeMilliseconds,
+    bool loop)
+{
+    AudioMusicRequest request;
+    request.path = path;
+    request.loopMode = loop
+        ? AudioStreamLoopMode::Track
+        : AudioStreamLoopMode::None;
+
+    return crossfadeMusic(request, crossfadeMilliseconds);
+}
+
+RuntimeResult AudioStreamEngine::pauseMusic()
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    bool found = false;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied)
+        {
+            continue;
+        }
+
+        found = true;
+        stream.paused = true;
+        stream.state = AudioStreamPlaybackState::Paused;
+    }
+
+    if (!found)
+    {
+        return setError(
+            AudioStreamError::MusicNotActive,
+            RuntimeResult::NotReady);
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::resumeMusic()
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    bool found = false;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied)
+        {
+            continue;
+        }
+
+        found = true;
+        stream.paused = false;
+        stream.state = stream.fade.active
+            ? (stream.fade.targetGainQ15 < stream.fade.startGainQ15
+                ? AudioStreamPlaybackState::FadingOut
+                : AudioStreamPlaybackState::FadingIn)
+            : AudioStreamPlaybackState::Playing;
+    }
+
+    if (!found)
+    {
+        return setError(
+            AudioStreamError::MusicNotActive,
+            RuntimeResult::NotReady);
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::stopMusic(
+    uint32_t fadeOutMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (fadeOutMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            AudioStreamError::InvalidFade,
+            RuntimeResult::InvalidArgument);
+    }
+
+    bool found = false;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied)
+        {
+            continue;
+        }
+
+        found = true;
+
+        if (fadeOutMilliseconds == 0U)
+        {
+            emitEvent(
+                AudioStreamEventType::MusicStopped,
+                &stream,
+                {},
+                AudioStreamError::None,
+                currentStatus_.lastUpdateAtMs);
+
+            closeStream(stream, config_.clearBuffersOnStop);
+        }
+        else
+        {
+            stream.fade.active = true;
+            stream.fade.stopWhenComplete = true;
+            stream.fade.startGainQ15 = stream.fade.currentGainQ15;
+            stream.fade.targetGainQ15 = 0U;
+            stream.fade.startedAtMs = currentStatus_.lastUpdateAtMs;
+            stream.fade.durationMs = fadeOutMilliseconds;
+            stream.state = AudioStreamPlaybackState::FadingOut;
+        }
+    }
+
+    if (!found)
+    {
+        return setError(
+            AudioStreamError::MusicNotActive,
+            RuntimeResult::NotReady);
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::seekMusicMilliseconds(
+    uint32_t milliseconds,
+    bool accurate)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    StreamSlot* stream = activeMusic();
+
+    if (stream == nullptr || !stream->occupied)
+    {
+        return setError(
+            AudioStreamError::MusicNotActive,
+            RuntimeResult::NotReady);
+    }
+
+    return seekStream(*stream, milliseconds, accurate);
+}
+
+RuntimeResult AudioStreamEngine::setMusicPersistent(bool persistent)
+{
+    StreamSlot* stream = activeMusic();
+
+    if (!ready() || stream == nullptr || !stream->occupied)
+    {
+        return setError(
+            ready()
+                ? AudioStreamError::MusicNotActive
+                : AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    stream->persistent = persistent;
+    refreshStatus();
+    return RuntimeResult::Ok;
+}
+
+bool AudioStreamEngine::musicPlaying()
+{
+    const StreamSlot* stream = activeMusicConst();
+
+    return
+        ready() &&
+        stream != nullptr &&
+        stream->occupied &&
+        !stream->paused &&
+        stream->state != AudioStreamPlaybackState::Ended &&
+        stream->state != AudioStreamPlaybackState::Failed;
+}
+
+bool AudioStreamEngine::musicPaused()
+{
+    const StreamSlot* stream = activeMusicConst();
+    return stream != nullptr && stream->occupied && stream->paused;
+}
+
+const char* AudioStreamEngine::currentMusicPath()
+{
+    const StreamSlot* stream = activeMusicConst();
+    return stream != nullptr && stream->occupied ? stream->path : "";
+}
+
+uint32_t AudioStreamEngine::musicPositionMilliseconds()
+{
+    const StreamSlot* stream = activeMusicConst();
+
+    if (stream == nullptr || !stream->occupied)
+    {
+        return 0U;
+    }
+
+    return stream->codec == AudioStreamCodec::Wav
+        ? stream->wav.currentMilliseconds()
+        : stream->mp3.currentMilliseconds();
+}
+
+uint32_t AudioStreamEngine::musicDurationMilliseconds()
+{
+    const StreamSlot* stream = activeMusicConst();
+
+    if (stream == nullptr || !stream->occupied)
+    {
+        return 0U;
+    }
+
+    return stream->codec == AudioStreamCodec::Wav
+        ? stream->wav.durationMilliseconds()
+        : stream->mp3.durationMilliseconds();
+}
+
+RuntimeResult AudioStreamEngine::playEffect(
+    const AudioEffectRequest& request,
+    AudioVoiceHandle& handle)
+{
+    handle = {};
+
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validEffectRequest(request))
+    {
+        return setError(
+            AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    uint8_t selectedSlot = UINT8_MAX;
+    bool stoleVoice = false;
+
+    const RuntimeResult selectResult =
+        selectEffectVoice(
+            request,
+            selectedSlot,
+            stoleVoice);
+
+    if (selectResult != RuntimeResult::Ok)
+    {
+        return selectResult;
+    }
+
+    EffectVoice& voice = effectVoices_[selectedSlot];
+    const uint32_t oldGeneration = voice.handle.generation;
+
+    if (voice.stream.occupied)
+    {
+        if (stoleVoice)
+        {
+            emitEvent(
+                AudioStreamEventType::EffectVoiceStolen,
+                &voice.stream,
+                voice.handle,
+                AudioStreamError::None,
+                currentStatus_.lastUpdateAtMs);
+
+            currentStatus_.effectStealCount =
+                saturatingIncrement32(
+                    currentStatus_.effectStealCount);
+        }
+
+        closeStream(voice.stream, config_.clearBuffersOnStop);
+    }
+
+    voice.handle.slot = selectedSlot;
+    voice.handle.generation = nextGeneration(oldGeneration);
+    effectAllocationCounter_ =
+        saturatingIncrement32(effectAllocationCounter_);
+    voice.allocationOrder = effectAllocationCounter_;
+
+    const RuntimeResult openResult =
+        openStream(
+            voice.stream,
+            request.path,
+            request.codec,
+            AudioStreamBus::Effects,
+            request.loopMode,
+            request.volume,
+            request.pan,
+            request.priority,
+            request.persistentAcrossGameTransition,
+            request.startMilliseconds,
+            request.fadeInMilliseconds,
+            request.prebufferFrames,
+            currentStatus_.lastUpdateAtMs);
+
+    if (openResult != RuntimeResult::Ok)
+    {
+        voice.handle = {};
+        voice.allocationOrder = 0U;
+        return openResult;
+    }
+
+    handle = voice.handle;
+
+    currentStatus_.effectStartCount =
+        saturatingIncrement32(currentStatus_.effectStartCount);
+
+    emitEvent(
+        AudioStreamEventType::EffectStarted,
+        &voice.stream,
+        voice.handle,
+        AudioStreamError::None,
+        currentStatus_.lastUpdateAtMs);
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::playEffect(
+    const char* path,
+    uint8_t volume,
+    int8_t pan,
+    uint8_t priority)
+{
+    AudioEffectRequest request;
+    request.path = path;
+    request.volume = volume;
+    request.pan = pan;
+    request.priority = priority;
+
+    AudioVoiceHandle ignoredHandle;
+    return playEffect(request, ignoredHandle);
+}
+
+RuntimeResult AudioStreamEngine::stopEffect(
+    AudioVoiceHandle handle,
+    uint32_t fadeOutMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validHandle(handle))
+    {
+        return setError(
+            AudioStreamError::InvalidVoiceHandle,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (fadeOutMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            AudioStreamError::InvalidFade,
+            RuntimeResult::InvalidArgument);
+    }
+
+    EffectVoice& voice = effectVoices_[handle.slot];
+
+    if (fadeOutMilliseconds == 0U)
+    {
+        emitEvent(
+            AudioStreamEventType::EffectStopped,
+            &voice.stream,
+            voice.handle,
+            AudioStreamError::None,
+            currentStatus_.lastUpdateAtMs);
+
+        closeStream(voice.stream, config_.clearBuffersOnStop);
+        voice.handle = {};
+        voice.allocationOrder = 0U;
+    }
+    else
+    {
+        voice.stream.fade.active = true;
+        voice.stream.fade.stopWhenComplete = true;
+        voice.stream.fade.startGainQ15 =
+            voice.stream.fade.currentGainQ15;
+        voice.stream.fade.targetGainQ15 = 0U;
+        voice.stream.fade.startedAtMs =
+            currentStatus_.lastUpdateAtMs;
+        voice.stream.fade.durationMs = fadeOutMilliseconds;
+        voice.stream.state = AudioStreamPlaybackState::FadingOut;
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::stopAllEffects(
+    uint32_t fadeOutMilliseconds,
+    bool includePersistent)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (fadeOutMilliseconds > AUDIO_STREAM_MAX_FADE_MS)
+    {
+        return setError(
+            AudioStreamError::InvalidFade,
+            RuntimeResult::InvalidArgument);
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        EffectVoice& voice = effectVoices_[index];
+
+        if (!voice.stream.occupied ||
+            (!includePersistent && voice.stream.persistent))
+        {
+            continue;
+        }
+
+        stopEffect(voice.handle, fadeOutMilliseconds);
+    }
+
+    return RuntimeResult::Ok;
+}
+
+bool AudioStreamEngine::effectActive(AudioVoiceHandle handle)
+{
+    return ready() && validHandle(handle);
+}
+
+uint8_t AudioStreamEngine::activeEffectVoiceCount()
+{
+    uint8_t count = 0U;
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        if (effectVoices_[index].stream.occupied)
+        {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+RuntimeResult AudioStreamEngine::setMasterVolume(uint8_t volume)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (volume > AUDIO_STREAM_VOLUME_MAX)
+    {
+        return setError(
+            AudioStreamError::InvalidVolume,
+            RuntimeResult::InvalidArgument);
+    }
+
+    config_.masterVolume = volume;
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::setMusicVolume(uint8_t volume)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (volume > AUDIO_STREAM_VOLUME_MAX)
+    {
+        return setError(
+            AudioStreamError::InvalidVolume,
+            RuntimeResult::InvalidArgument);
+    }
+
+    config_.musicVolume = volume;
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::setEffectVolume(uint8_t volume)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (volume > AUDIO_STREAM_VOLUME_MAX)
+    {
+        return setError(
+            AudioStreamError::InvalidVolume,
+            RuntimeResult::InvalidArgument);
+    }
+
+    config_.effectVolume = volume;
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+uint8_t AudioStreamEngine::masterVolume()
+{
+    return config_.masterVolume;
+}
+
+uint8_t AudioStreamEngine::musicVolume()
+{
+    return config_.musicVolume;
+}
+
+uint8_t AudioStreamEngine::effectVolume()
+{
+    return config_.effectVolume;
+}
+
+RuntimeResult AudioStreamEngine::setMuted(bool mutedValue)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    const RuntimeResult result =
+        I2sAudioBackend::setMuted(mutedValue);
+
+    if (result != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputWriteFailed,
+            result);
+    }
+
+    currentStatus_.muted = mutedValue;
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+bool AudioStreamEngine::muted()
+{
+    return ready() && I2sAudioBackend::muted();
+}
+
+RuntimeResult AudioStreamEngine::setRoute(AudioRoute routeValue)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (!validRoute(routeValue))
+    {
+        return setError(
+            AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const RuntimeResult result =
+        I2sAudioBackend::setRoute(routeValue);
+
+    if (result != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputWriteFailed,
+            result);
+    }
+
+    refreshStatus();
+    notifyStateChanged();
+    return RuntimeResult::Ok;
+}
+
+AudioRoute AudioStreamEngine::route()
+{
+    return ready() ? I2sAudioBackend::route() : AudioRoute::Muted;
+}
+
+RuntimeResult AudioStreamEngine::setEffectDucking(
+    bool enabled,
+    uint8_t duckPercent,
+    uint16_t attackMilliseconds,
+    uint16_t releaseMilliseconds)
+{
+    if (!ready())
+    {
+        return setError(
+            AudioStreamError::NotInitialized,
+            RuntimeResult::NotReady);
+    }
+
+    if (duckPercent > 100U)
+    {
+        return setError(
+            AudioStreamError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    config_.enableEffectDucking = enabled;
+    config_.effectDuckPercent = duckPercent;
+    config_.duckAttackMilliseconds = attackMilliseconds;
+    config_.duckReleaseMilliseconds = releaseMilliseconds;
+
+    if (!enabled)
+    {
+        musicDuckTargetQ15_ = Q15_ONE;
+    }
+
+    updateDucking(currentStatus_.lastUpdateAtMs);
+    refreshStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+AudioStreamEngineStatus AudioStreamEngine::status()
+{
+    refreshStatus();
+    return currentStatus_;
+}
+
+AudioStreamChannelStatus AudioStreamEngine::musicStatus()
+{
+    const StreamSlot* stream = activeMusicConst();
+    return stream != nullptr ? channelStatus(*stream) : AudioStreamChannelStatus{};
+}
+
+RuntimeResult AudioStreamEngine::effectStatus(
+    AudioVoiceHandle handle,
+    AudioStreamChannelStatus& result)
+{
+    result = {};
+
+    if (!ready())
+    {
+        return RuntimeResult::NotReady;
+    }
+
+    if (!validHandle(handle))
+    {
+        return RuntimeResult::InvalidArgument;
+    }
+
+    result = channelStatus(effectVoices_[handle.slot].stream);
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::resetCounters()
+{
+    currentStatus_.lastMixedFrames = 0U;
+    currentStatus_.lastSubmittedFrames = 0U;
+    currentStatus_.totalMixedFrames = 0U;
+    currentStatus_.totalSubmittedFrames = 0U;
+    currentStatus_.totalSilenceFrames = 0U;
+    currentStatus_.totalDroppedFrames = 0U;
+    currentStatus_.updateCount = 0U;
+    currentStatus_.musicStartCount = 0U;
+    currentStatus_.musicLoopCount = 0U;
+    currentStatus_.crossfadeCount = 0U;
+    currentStatus_.effectStartCount = 0U;
+    currentStatus_.effectStealCount = 0U;
+    currentStatus_.sourceUnderrunCount = 0U;
+    currentStatus_.outputUnderrunCount = 0U;
+    currentStatus_.decoderErrorCount = 0U;
+    currentStatus_.outputErrorCount = 0U;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        musicDecks_[index].decodeCount = 0U;
+        musicDecks_[index].mixCount = 0U;
+        musicDecks_[index].loopCount = 0U;
+        musicDecks_[index].underrunCount = 0U;
+        musicDecks_[index].errorCount = 0U;
+    }
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MAX_EFFECT_VOICES;
+         ++index)
+    {
+        effectVoices_[index].stream.decodeCount = 0U;
+        effectVoices_[index].stream.mixCount = 0U;
+        effectVoices_[index].stream.loopCount = 0U;
+        effectVoices_[index].stream.underrunCount = 0U;
+        effectVoices_[index].stream.errorCount = 0U;
+    }
+
+    outputBuffer_.clearError();
+    I2sAudioBackend::resetCounters();
+    refreshStatus();
+}
+
+void AudioStreamEngine::setObserver(
+    AudioStreamEngineObserver observer)
+{
+    observer_ = observer;
+}
+
+void AudioStreamEngine::setEventObserver(
+    AudioStreamEventObserver observer)
+{
+    eventObserver_ = observer;
+}
+
+AudioStreamError AudioStreamEngine::lastError()
+{
+    return currentStatus_.error;
+}
+
+void AudioStreamEngine::clearError()
+{
+    currentStatus_.error = AudioStreamError::None;
+}
+
+bool AudioStreamEngine::validConfig(
+    const AudioStreamEngineConfig& config)
+{
+    const I2sAudioFormat& format = config.output.format;
+
+    return
+        I2sAudioBackend::validConfig(config.output) &&
+        WavDecoder::validConfig(config.wavDecoder) &&
+        Mp3Decoder::validConfig(config.mp3Decoder) &&
+        PcmRingBuffer::validFormat(format) &&
+        format.bitsPerSample == I2S_AUDIO_SUPPORTED_BITS_PER_SAMPLE &&
+        config.musicBufferCapacityFrames >=
+            PCM_RING_BUFFER_MINIMUM_CAPACITY_FRAMES &&
+        config.musicBufferCapacityFrames <=
+            PCM_RING_BUFFER_MAXIMUM_CAPACITY_FRAMES &&
+        config.effectBufferCapacityFrames >=
+            PCM_RING_BUFFER_MINIMUM_CAPACITY_FRAMES &&
+        config.effectBufferCapacityFrames <=
+            PCM_RING_BUFFER_MAXIMUM_CAPACITY_FRAMES &&
+        config.outputBufferCapacityFrames >=
+            PCM_RING_BUFFER_MINIMUM_CAPACITY_FRAMES &&
+        config.outputBufferCapacityFrames <=
+            PCM_RING_BUFFER_MAXIMUM_CAPACITY_FRAMES &&
+        validMemoryPreference(config.musicBufferPreference) &&
+        validMemoryPreference(config.effectBufferPreference) &&
+        validMemoryPreference(config.outputBufferPreference) &&
+        validMemoryPreference(config.mixScratchPreference) &&
+        config.mixFramesPerUpdate > 0U &&
+        config.mixFramesPerUpdate <= AUDIO_STREAM_MAX_MIX_FRAMES_PER_UPDATE &&
+        config.decodeFramesPerStreamPerUpdate > 0U &&
+        config.submitFramesPerUpdate > 0U &&
+        config.musicPrebufferFrames <= config.musicBufferCapacityFrames &&
+        config.effectPrebufferFrames <= config.effectBufferCapacityFrames &&
+        config.effectVoiceCount > 0U &&
+        config.effectVoiceCount <= AUDIO_STREAM_MAX_EFFECT_VOICES &&
+        validStealPolicy(config.effectStealPolicy) &&
+        validFadeCurve(config.fadeCurve) &&
+        config.masterVolume <= AUDIO_STREAM_VOLUME_MAX &&
+        config.musicVolume <= AUDIO_STREAM_VOLUME_MAX &&
+        config.effectVolume <= AUDIO_STREAM_VOLUME_MAX &&
+        config.effectDuckPercent <= 100U;
+}
+
+bool AudioStreamEngine::validMusicRequest(
+    const AudioMusicRequest& request)
+{
+    const size_t pathLength =
+        boundedStringLength(request.path, AUDIO_STREAM_PATH_CAPACITY);
+
+    return
+        request.path != nullptr &&
+        pathLength > 0U &&
+        pathLength < AUDIO_STREAM_PATH_CAPACITY &&
+        validCodec(request.codec) &&
+        validLoopMode(request.loopMode) &&
+        request.volume <= AUDIO_STREAM_VOLUME_MAX &&
+        request.fadeInMilliseconds <= AUDIO_STREAM_MAX_FADE_MS;
+}
+
+bool AudioStreamEngine::validEffectRequest(
+    const AudioEffectRequest& request)
+{
+    const size_t pathLength =
+        boundedStringLength(request.path, AUDIO_STREAM_PATH_CAPACITY);
+
+    return
+        request.path != nullptr &&
+        pathLength > 0U &&
+        pathLength < AUDIO_STREAM_PATH_CAPACITY &&
+        validCodec(request.codec) &&
+        validLoopMode(request.loopMode) &&
+        request.volume <= AUDIO_STREAM_VOLUME_MAX &&
+        request.pan >= AUDIO_STREAM_PAN_LEFT &&
+        request.pan <= AUDIO_STREAM_PAN_RIGHT &&
+        request.fadeInMilliseconds <= AUDIO_STREAM_MAX_FADE_MS;
+}
+
+AudioStreamCodec AudioStreamEngine::codecFromPath(
+    const char* path)
+{
+    if (path == nullptr)
+    {
+        return AudioStreamCodec::Auto;
+    }
+
+    const size_t length =
+        boundedStringLength(path, AUDIO_STREAM_PATH_CAPACITY);
+
+    if (length < 4U || length >= AUDIO_STREAM_PATH_CAPACITY)
+    {
+        return AudioStreamCodec::Auto;
+    }
+
+    size_t end = length;
+
+    while (end > 0U && path[end - 1U] != '/' && path[end - 1U] != '.')
+    {
+        --end;
+    }
+
+    if (end == 0U || path[end - 1U] != '.')
+    {
+        return AudioStreamCodec::Auto;
+    }
+
+    const size_t extensionLength = length - end;
+
+    if (extensionLength == 3U &&
+        lowercaseAscii(path[end]) == 'w' &&
+        lowercaseAscii(path[end + 1U]) == 'a' &&
+        lowercaseAscii(path[end + 2U]) == 'v')
+    {
+        return AudioStreamCodec::Wav;
+    }
+
+    if (extensionLength == 3U &&
+        lowercaseAscii(path[end]) == 'm' &&
+        lowercaseAscii(path[end + 1U]) == 'p' &&
+        lowercaseAscii(path[end + 2U]) == '3')
+    {
+        return AudioStreamCodec::Mp3;
+    }
+
+    return AudioStreamCodec::Auto;
+}
+
+const char* AudioStreamEngine::codecText(AudioStreamCodec value)
+{
+    switch (value)
+    {
+        case AudioStreamCodec::Auto:
+            return "AUTO";
+        case AudioStreamCodec::Wav:
+            return "WAV";
+        case AudioStreamCodec::Mp3:
+            return "MP3";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AudioStreamEngine::engineStateText(
+    AudioStreamEngineState value)
+{
+    switch (value)
+    {
+        case AudioStreamEngineState::Stopped:
+            return "STOPPED";
+        case AudioStreamEngineState::Initializing:
+            return "INITIALIZING";
+        case AudioStreamEngineState::Ready:
+            return "READY";
+        case AudioStreamEngineState::Playing:
+            return "PLAYING";
+        case AudioStreamEngineState::Paused:
+            return "PAUSED";
+        case AudioStreamEngineState::Draining:
+            return "DRAINING";
+        case AudioStreamEngineState::Failed:
+            return "FAILED";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AudioStreamEngine::playbackStateText(
+    AudioStreamPlaybackState value)
+{
+    switch (value)
+    {
+        case AudioStreamPlaybackState::Empty:
+            return "EMPTY";
+        case AudioStreamPlaybackState::Opening:
+            return "OPENING";
+        case AudioStreamPlaybackState::Parsing:
+            return "PARSING";
+        case AudioStreamPlaybackState::Prebuffering:
+            return "PREBUFFERING";
+        case AudioStreamPlaybackState::Playing:
+            return "PLAYING";
+        case AudioStreamPlaybackState::Paused:
+            return "PAUSED";
+        case AudioStreamPlaybackState::FadingIn:
+            return "FADING_IN";
+        case AudioStreamPlaybackState::FadingOut:
+            return "FADING_OUT";
+        case AudioStreamPlaybackState::Seeking:
+            return "SEEKING";
+        case AudioStreamPlaybackState::Ended:
+            return "ENDED";
+        case AudioStreamPlaybackState::Failed:
+            return "FAILED";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AudioStreamEngine::eventText(
+    AudioStreamEventType value)
+{
+    switch (value)
+    {
+        case AudioStreamEventType::None:
+            return "NONE";
+        case AudioStreamEventType::EngineStarted:
+            return "ENGINE_STARTED";
+        case AudioStreamEventType::EngineStopped:
+            return "ENGINE_STOPPED";
+        case AudioStreamEventType::MusicStarted:
+            return "MUSIC_STARTED";
+        case AudioStreamEventType::MusicLooped:
+            return "MUSIC_LOOPED";
+        case AudioStreamEventType::MusicCrossfadeStarted:
+            return "MUSIC_CROSSFADE_STARTED";
+        case AudioStreamEventType::MusicCrossfadeCompleted:
+            return "MUSIC_CROSSFADE_COMPLETED";
+        case AudioStreamEventType::MusicStopped:
+            return "MUSIC_STOPPED";
+        case AudioStreamEventType::EffectStarted:
+            return "EFFECT_STARTED";
+        case AudioStreamEventType::EffectStopped:
+            return "EFFECT_STOPPED";
+        case AudioStreamEventType::EffectVoiceStolen:
+            return "EFFECT_VOICE_STOLEN";
+        case AudioStreamEventType::SourceUnderrun:
+            return "SOURCE_UNDERRUN";
+        case AudioStreamEventType::OutputUnderrun:
+            return "OUTPUT_UNDERRUN";
+        case AudioStreamEventType::DecoderError:
+            return "DECODER_ERROR";
+        case AudioStreamEventType::OutputError:
+            return "OUTPUT_ERROR";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* AudioStreamEngine::errorText(AudioStreamError value)
+{
+    switch (value)
+    {
+        case AudioStreamError::None:
+            return "NONE";
+        case AudioStreamError::AlreadyInitialized:
+            return "ALREADY_INITIALIZED";
+        case AudioStreamError::NotInitialized:
+            return "NOT_INITIALIZED";
+        case AudioStreamError::InvalidConfiguration:
+            return "INVALID_CONFIGURATION";
+        case AudioStreamError::InvalidPath:
+            return "INVALID_PATH";
+        case AudioStreamError::UnsupportedExtension:
+            return "UNSUPPORTED_EXTENSION";
+        case AudioStreamError::UnsupportedCodec:
+            return "UNSUPPORTED_CODEC";
+        case AudioStreamError::MemoryManagerNotReady:
+            return "MEMORY_MANAGER_NOT_READY";
+        case AudioStreamError::SourceBufferAllocationFailed:
+            return "SOURCE_BUFFER_ALLOCATION_FAILED";
+        case AudioStreamError::OutputBufferAllocationFailed:
+            return "OUTPUT_BUFFER_ALLOCATION_FAILED";
+        case AudioStreamError::MixScratchAllocationFailed:
+            return "MIX_SCRATCH_ALLOCATION_FAILED";
+        case AudioStreamError::DecoderOpenFailed:
+            return "DECODER_OPEN_FAILED";
+        case AudioStreamError::DecoderParseFailed:
+            return "DECODER_PARSE_FAILED";
+        case AudioStreamError::DecoderFailed:
+            return "DECODER_FAILED";
+        case AudioStreamError::DecoderWouldBlock:
+            return "DECODER_WOULD_BLOCK";
+        case AudioStreamError::SourceFormatUnsupported:
+            return "SOURCE_FORMAT_UNSUPPORTED";
+        case AudioStreamError::ResamplingDisabled:
+            return "RESAMPLING_DISABLED";
+        case AudioStreamError::ChannelConversionDisabled:
+            return "CHANNEL_CONVERSION_DISABLED";
+        case AudioStreamError::OutputBackendInitializationFailed:
+            return "OUTPUT_BACKEND_INITIALIZATION_FAILED";
+        case AudioStreamError::OutputBackendNotReady:
+            return "OUTPUT_BACKEND_NOT_READY";
+        case AudioStreamError::OutputFormatRejected:
+            return "OUTPUT_FORMAT_REJECTED";
+        case AudioStreamError::OutputWriteFailed:
+            return "OUTPUT_WRITE_FAILED";
+        case AudioStreamError::OutputUnderrun:
+            return "OUTPUT_UNDERRUN";
+        case AudioStreamError::MusicDeckUnavailable:
+            return "MUSIC_DECK_UNAVAILABLE";
+        case AudioStreamError::MusicNotActive:
+            return "MUSIC_NOT_ACTIVE";
+        case AudioStreamError::EffectVoiceUnavailable:
+            return "EFFECT_VOICE_UNAVAILABLE";
+        case AudioStreamError::InvalidVoiceHandle:
+            return "INVALID_VOICE_HANDLE";
+        case AudioStreamError::InvalidVolume:
+            return "INVALID_VOLUME";
+        case AudioStreamError::InvalidPan:
+            return "INVALID_PAN";
+        case AudioStreamError::InvalidFade:
+            return "INVALID_FADE";
+        case AudioStreamError::InvalidSeek:
+            return "INVALID_SEEK";
+        case AudioStreamError::Busy:
+            return "BUSY";
+        case AudioStreamError::InternalError:
+            return "INTERNAL_ERROR";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+RuntimeResult AudioStreamEngine::allocateEngineBuffers()
+{
+    const size_t outputChannels =
+        config_.output.format.channelCount;
+
+    if (outputChannels == 0U ||
+        config_.mixFramesPerUpdate >
+            SIZE_MAX / outputChannels)
+    {
+        return setError(
+            AudioStreamError::MixScratchAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    const size_t mixSamples =
+        config_.mixFramesPerUpdate * outputChannels;
+
+    if (mixSamples > SIZE_MAX / sizeof(int32_t) ||
+        mixSamples > SIZE_MAX / sizeof(int16_t))
+    {
+        return setError(
+            AudioStreamError::MixScratchAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    PcmRingBufferConfig outputConfig;
+    outputConfig.format = config_.output.format;
+    outputConfig.capacityFrames = config_.outputBufferCapacityFrames;
+    outputConfig.preference = config_.outputBufferPreference;
+    outputConfig.overflowPolicy =
+        PcmRingBufferOverflowPolicy::RejectNewFrames;
+    outputConfig.underflowPolicy =
+        PcmRingBufferUnderflowPolicy::ReturnAvailableFrames;
+    outputConfig.lowWatermarkFrames = minimumSize(
+        config_.submitFramesPerUpdate,
+        config_.outputBufferCapacityFrames);
+    outputConfig.highWatermarkFrames =
+        config_.outputBufferCapacityFrames -
+        config_.outputBufferCapacityFrames / 4U;
+    outputConfig.allowPartialWrites = true;
+    outputConfig.allowPartialReads = true;
+    outputConfig.clearBackingStore = true;
+    outputConfig.clearConsumedFrames = false;
+    outputConfig.clearOnReset = config_.clearBuffersOnStop;
+
+    const RuntimeResult outputResult =
+        outputBuffer_.begin(outputConfig);
+
+    if (outputResult != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputBufferAllocationFailed,
+            outputResult);
+    }
+
+    mixAccumulator_ = MemoryManager::allocate(
+        mixSamples * sizeof(int32_t),
+        config_.mixScratchPreference,
+        true);
+
+    mixOutputScratch_ = MemoryManager::allocate(
+        mixSamples * sizeof(int16_t),
+        config_.mixScratchPreference,
+        true);
+
+    sourceFrameScratch_ = MemoryManager::allocate(
+        SOURCE_FRAME_SCRATCH_SAMPLES * sizeof(int16_t),
+        config_.mixScratchPreference,
+        true);
+
+    if (!mixAccumulator_ ||
+        !mixOutputScratch_ ||
+        !sourceFrameScratch_)
+    {
+        return setError(
+            AudioStreamError::MixScratchAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::releaseEngineBuffers()
+{
+    outputBuffer_.end();
+
+    if (sourceFrameScratch_)
+    {
+        MemoryManager::release(sourceFrameScratch_);
+    }
+
+    if (mixOutputScratch_)
+    {
+        MemoryManager::release(mixOutputScratch_);
+    }
+
+    if (mixAccumulator_)
+    {
+        MemoryManager::release(mixAccumulator_);
+    }
+}
+
+RuntimeResult AudioStreamEngine::initializeOutput()
+{
+    if (!I2sAudioBackend::begin(config_.output))
+    {
+        return setError(
+            AudioStreamError::OutputBackendInitializationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    if (!I2sAudioBackend::ready())
+    {
+        return setError(
+            AudioStreamError::OutputBackendNotReady,
+            RuntimeResult::NotReady);
+    }
+
+    if (config_.automaticallyStartOutput)
+    {
+        const I2sAudioBackendStatus backendStatus =
+            I2sAudioBackend::status();
+
+        if (!backendStatus.transmitting)
+        {
+            const RuntimeResult result = I2sAudioBackend::start();
+
+            if (result != RuntimeResult::Ok)
+            {
+                return setError(
+                    AudioStreamError::OutputBackendInitializationFailed,
+                    result);
+            }
+        }
+    }
+
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::shutdownOutput()
+{
+    if (I2sAudioBackend::ready())
+    {
+        I2sAudioBackend::stop();
+    }
+
+    I2sAudioBackend::end();
+}
+
+RuntimeResult AudioStreamEngine::openStream(
+    StreamSlot& stream,
+    const char* path,
+    AudioStreamCodec codec,
+    AudioStreamBus bus,
+    AudioStreamLoopMode loopMode,
+    uint8_t volume,
+    int8_t pan,
+    uint8_t priority,
+    bool persistent,
+    uint32_t startMilliseconds,
+    uint32_t fadeInMilliseconds,
+    size_t prebufferFrames,
+    uint32_t nowMs)
+{
+    const size_t pathLength =
+        boundedStringLength(path, AUDIO_STREAM_PATH_CAPACITY);
+
+    if (path == nullptr || pathLength == 0U ||
+        pathLength >= AUDIO_STREAM_PATH_CAPACITY)
+    {
+        return setError(
+            AudioStreamError::InvalidPath,
+            RuntimeResult::InvalidArgument);
+    }
+
+    AudioStreamCodec resolvedCodec = codec;
+
+    if (resolvedCodec == AudioStreamCodec::Auto)
+    {
+        resolvedCodec = codecFromPath(path);
+    }
+
+    if (resolvedCodec == AudioStreamCodec::Auto)
+    {
+        return setError(
+            AudioStreamError::UnsupportedExtension,
+            RuntimeResult::Unsupported);
+    }
+
+    const uint32_t generation =
+        nextGeneration(stream.generation);
+
+    closeStream(stream, config_.clearBuffersOnStop);
+
+    stream.occupied = true;
+    stream.persistent = persistent;
+    stream.decoderReady = false;
+    stream.sourceEof = false;
+    stream.paused = false;
+    stream.bus = bus;
+    stream.codec = resolvedCodec;
+    stream.loopMode = loopMode;
+    stream.state = AudioStreamPlaybackState::Opening;
+    stream.error = AudioStreamError::None;
+    stream.localVolume = volume;
+    stream.pan = pan;
+    stream.priority = priority;
+    stream.startedAtMs = nowMs;
+    stream.requestedStartMilliseconds = startMilliseconds;
+    stream.requestedPrebufferFrames = prebufferFrames;
+    stream.generation = generation;
+
+    memcpy(stream.path, path, pathLength);
+    stream.path[pathLength] = '\0';
+
+    stream.fade.active = fadeInMilliseconds > 0U;
+    stream.fade.stopWhenComplete = false;
+    stream.fade.startGainQ15 =
+        fadeInMilliseconds > 0U ? 0U : Q15_ONE;
+    stream.fade.targetGainQ15 = Q15_ONE;
+    stream.fade.currentGainQ15 = stream.fade.startGainQ15;
+    stream.fade.startedAtMs = nowMs;
+    stream.fade.durationMs = fadeInMilliseconds;
+
+    RuntimeResult openResult = RuntimeResult::Unsupported;
+
+    if (resolvedCodec == AudioStreamCodec::Wav)
+    {
+        openResult = stream.wav.open(path, config_.wavDecoder);
+    }
+    else if (resolvedCodec == AudioStreamCodec::Mp3)
+    {
+        openResult = stream.mp3.open(path, config_.mp3Decoder);
+    }
+
+    if (openResult != RuntimeResult::Ok)
+    {
+        const AudioStreamError openError =
+            decoderOpenError(openResult);
+
+        stream.error = openError;
+        stream.state = AudioStreamPlaybackState::Failed;
+        stream.errorCount = saturatingIncrement32(stream.errorCount);
+
+        emitEvent(
+            AudioStreamEventType::DecoderError,
+            &stream,
+            {},
+            openError,
+            nowMs);
+
+        closeStream(stream, true);
+
+        return setError(openError, openResult);
+    }
+
+    stream.state = AudioStreamPlaybackState::Parsing;
+    currentStatus_.state = AudioStreamEngineState::Playing;
+
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::closeStream(
+    StreamSlot& stream,
+    bool clearPcm)
+{
+    const uint32_t generation =
+        nextGeneration(stream.generation);
+    const AudioStreamBus bus = stream.bus;
+
+    stream.wav.close();
+    stream.mp3.close();
+
+    if (stream.pcm.ready() && clearPcm)
+    {
+        stream.pcm.reset(PcmRingBufferClearMode::Clear);
+    }
+
+    stream.pcm.end();
+
+    stream.~StreamSlot();
+    new (&stream) StreamSlot();
+
+    stream.bus = bus;
+    stream.generation = generation;
+}
+
+RuntimeResult AudioStreamEngine::pumpStreamDecoder(
+    StreamSlot& stream,
+    uint32_t nowMs,
+    size_t frameBudget)
+{
+    if (!stream.occupied || stream.paused)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    if (!stream.decoderReady)
+    {
+        const RuntimeResult parseResult =
+            parseStreamHeader(stream, nowMs);
+
+        if (parseResult != RuntimeResult::Ok)
+        {
+            return parseResult;
+        }
+    }
+
+    if (!stream.pcm.ready())
+    {
+        return setError(
+            AudioStreamError::SourceBufferAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    if (stream.sourceEof)
+    {
+        if (stream.pcm.empty() && !stream.resampler.primed)
+        {
+            if (stream.loopMode == AudioStreamLoopMode::Track)
+            {
+                return loopStream(stream, nowMs);
+            }
+
+            stream.state = AudioStreamPlaybackState::Ended;
+
+            if (stream.bus == AudioStreamBus::Effects)
+            {
+                stream.state = AudioStreamPlaybackState::Ended;
+            }
+            else if (!stream.fade.active)
+            {
+                emitEvent(
+                    AudioStreamEventType::MusicStopped,
+                    &stream,
+                    {},
+                    AudioStreamError::None,
+                    nowMs);
+
+                closeStream(stream, config_.clearBuffersOnStop);
+            }
+        }
+
+        return RuntimeResult::Ok;
+    }
+
+    if (stream.pcm.writableFrames() == 0U)
+    {
+        return RuntimeResult::Busy;
+    }
+
+    size_t decodedFrames = 0U;
+    const size_t decodeBudget = minimumSize(
+        frameBudget,
+        stream.pcm.writableFrames());
+
+    RuntimeResult result = RuntimeResult::Unsupported;
+
+    if (stream.codec == AudioStreamCodec::Wav)
+    {
+        result = stream.wav.decode(
+            stream.pcm,
+            nowMs,
+            decodeBudget,
+            decodedFrames);
+
+        stream.sourceEof = stream.wav.eof();
+    }
+    else if (stream.codec == AudioStreamCodec::Mp3)
+    {
+        result = stream.mp3.decode(
+            stream.pcm,
+            nowMs,
+            decodeBudget,
+            decodedFrames);
+
+        stream.sourceEof = stream.mp3.eof();
+    }
+
+    if (decodedFrames > 0U)
+    {
+        stream.decodeCount =
+            saturatingIncrement32(stream.decodeCount);
+        stream.error = AudioStreamError::None;
+    }
+
+    const size_t prebuffer =
+        stream.requestedPrebufferFrames > 0U
+            ? stream.requestedPrebufferFrames
+            : (stream.bus == AudioStreamBus::Music
+                ? config_.musicPrebufferFrames
+                : config_.effectPrebufferFrames);
+
+    if (stream.state == AudioStreamPlaybackState::Prebuffering &&
+        (stream.pcm.availableFrames() >= prebuffer || stream.sourceEof))
+    {
+        stream.state = stream.fade.active
+            ? AudioStreamPlaybackState::FadingIn
+            : AudioStreamPlaybackState::Playing;
+    }
+
+    if (result == RuntimeResult::Ok)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    if (temporaryResult(result))
+    {
+        if (stream.sourceEof)
+        {
+            return RuntimeResult::Ok;
+        }
+
+        stream.error = AudioStreamError::DecoderWouldBlock;
+        return result;
+    }
+
+    stream.error = decoderRuntimeError(result);
+    stream.errorCount = saturatingIncrement32(stream.errorCount);
+    stream.state = AudioStreamPlaybackState::Failed;
+    currentStatus_.decoderErrorCount =
+        saturatingIncrement32(currentStatus_.decoderErrorCount);
+
+    emitEvent(
+        AudioStreamEventType::DecoderError,
+        &stream,
+        {},
+        stream.error,
+        nowMs);
+
+    return setError(stream.error, result);
+}
+
+RuntimeResult AudioStreamEngine::parseStreamHeader(
+    StreamSlot& stream,
+    uint32_t nowMs)
+{
+    if (!stream.occupied)
+    {
+        return RuntimeResult::NotReady;
+    }
+
+    RuntimeResult result = RuntimeResult::Unsupported;
+    bool decoderReady = false;
+
+    if (stream.codec == AudioStreamCodec::Wav)
+    {
+        result = stream.wav.parseHeader(
+            nowMs,
+            config_.wavDecoder.sourceReadChunkBytes);
+        decoderReady = stream.wav.ready();
+
+        if (decoderReady)
+        {
+            stream.sourceFormat = stream.wav.outputFormat();
+        }
+    }
+    else if (stream.codec == AudioStreamCodec::Mp3)
+    {
+        result = stream.mp3.parseHeader(
+            nowMs,
+            config_.mp3Decoder.sourceReadChunkBytes);
+        decoderReady = stream.mp3.ready();
+
+        if (decoderReady)
+        {
+            stream.sourceFormat = stream.mp3.outputFormat();
+        }
+    }
+
+    if (!decoderReady)
+    {
+        if (temporaryResult(result))
+        {
+            stream.state = AudioStreamPlaybackState::Parsing;
+            return result;
+        }
+
+        stream.error = AudioStreamError::DecoderParseFailed;
+        stream.state = AudioStreamPlaybackState::Failed;
+        stream.errorCount = saturatingIncrement32(stream.errorCount);
+        currentStatus_.decoderErrorCount =
+            saturatingIncrement32(currentStatus_.decoderErrorCount);
+
+        emitEvent(
+            AudioStreamEventType::DecoderError,
+            &stream,
+            {},
+            stream.error,
+            nowMs);
+
+        return setError(stream.error, result);
+    }
+
+    const RuntimeResult pcmResult =
+        prepareStreamPcm(stream);
+
+    if (pcmResult != RuntimeResult::Ok)
+    {
+        stream.state = AudioStreamPlaybackState::Failed;
+        return pcmResult;
+    }
+
+    stream.decoderReady = true;
+
+    if (stream.requestedStartMilliseconds > 0U)
+    {
+        const RuntimeResult seekResult =
+            seekStream(
+                stream,
+                stream.requestedStartMilliseconds,
+                true);
+
+        if (seekResult != RuntimeResult::Ok)
+        {
+            return seekResult;
+        }
+
+        stream.requestedStartMilliseconds = 0U;
+    }
+
+    const size_t prebuffer =
+        stream.requestedPrebufferFrames > 0U
+            ? stream.requestedPrebufferFrames
+            : (stream.bus == AudioStreamBus::Music
+                ? config_.musicPrebufferFrames
+                : config_.effectPrebufferFrames);
+
+    const bool requirePrebuffer =
+        stream.bus == AudioStreamBus::Music
+            ? config_.prebufferMusicBeforeAudibleStart
+            : config_.prebufferEffectsBeforeAudibleStart;
+
+    stream.state = requirePrebuffer && prebuffer > 0U
+        ? AudioStreamPlaybackState::Prebuffering
+        : (stream.fade.active
+            ? AudioStreamPlaybackState::FadingIn
+            : AudioStreamPlaybackState::Playing);
+
+    stream.error = AudioStreamError::None;
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::seekStream(
+    StreamSlot& stream,
+    uint32_t milliseconds,
+    bool accurate)
+{
+    if (!stream.occupied || !stream.decoderReady)
+    {
+        return setError(
+            AudioStreamError::InvalidSeek,
+            RuntimeResult::NotReady);
+    }
+
+    stream.state = AudioStreamPlaybackState::Seeking;
+
+    RuntimeResult result = RuntimeResult::Unsupported;
+
+    if (stream.codec == AudioStreamCodec::Wav)
+    {
+        (void)accurate;
+        result = stream.wav.seekMilliseconds(milliseconds);
+    }
+    else if (stream.codec == AudioStreamCodec::Mp3)
+    {
+        result = stream.mp3.seekMilliseconds(milliseconds, accurate);
+    }
+
+    if (result != RuntimeResult::Ok)
+    {
+        stream.error = AudioStreamError::InvalidSeek;
+        return setError(stream.error, result);
+    }
+
+    stream.pcm.reset(
+        config_.clearBuffersOnStop
+            ? PcmRingBufferClearMode::Clear
+            : PcmRingBufferClearMode::Preserve);
+
+    stream.resampler = {};
+    stream.sourceEof = false;
+
+    const bool requirePrebuffer =
+        stream.bus == AudioStreamBus::Music
+            ? config_.prebufferMusicBeforeAudibleStart
+            : config_.prebufferEffectsBeforeAudibleStart;
+
+    stream.state = requirePrebuffer
+        ? AudioStreamPlaybackState::Prebuffering
+        : AudioStreamPlaybackState::Playing;
+
+    stream.error = AudioStreamError::None;
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::loopStream(
+    StreamSlot& stream,
+    uint32_t nowMs)
+{
+    RuntimeResult result = RuntimeResult::Unsupported;
+
+    if (stream.codec == AudioStreamCodec::Wav)
+    {
+        result = stream.wav.rewind();
+    }
+    else if (stream.codec == AudioStreamCodec::Mp3)
+    {
+        result = stream.mp3.rewind();
+    }
+
+    if (result != RuntimeResult::Ok)
+    {
+        stream.error = AudioStreamError::InvalidSeek;
+        stream.state = AudioStreamPlaybackState::Failed;
+        return setError(stream.error, result);
+    }
+
+    stream.pcm.reset(
+        config_.clearBuffersOnStop
+            ? PcmRingBufferClearMode::Clear
+            : PcmRingBufferClearMode::Preserve);
+
+    stream.resampler = {};
+    stream.sourceEof = false;
+    stream.loopCount = saturatingIncrement32(stream.loopCount);
+    currentStatus_.musicLoopCount =
+        stream.bus == AudioStreamBus::Music
+            ? saturatingIncrement32(currentStatus_.musicLoopCount)
+            : currentStatus_.musicLoopCount;
+
+    const bool requirePrebuffer =
+        stream.bus == AudioStreamBus::Music
+            ? config_.prebufferMusicBeforeAudibleStart
+            : config_.prebufferEffectsBeforeAudibleStart;
+
+    stream.state = requirePrebuffer
+        ? AudioStreamPlaybackState::Prebuffering
+        : AudioStreamPlaybackState::Playing;
+
+    if (stream.bus == AudioStreamBus::Music)
+    {
+        emitEvent(
+            AudioStreamEventType::MusicLooped,
+            &stream,
+            {},
+            AudioStreamError::None,
+            nowMs);
+    }
+
+    return RuntimeResult::Ok;
+}
+RuntimeResult AudioStreamEngine::prepareStreamPcm(
+    StreamSlot& stream)
+{
+    if (!PcmRingBuffer::validFormat(stream.sourceFormat))
+    {
+        return setError(
+            AudioStreamError::SourceFormatUnsupported,
+            RuntimeResult::Unsupported);
+    }
+
+    const I2sAudioFormat outputFormat = config_.output.format;
+
+    if (stream.sourceFormat.sampleRateHz != outputFormat.sampleRateHz &&
+        !config_.enableLinearResampling)
+    {
+        return setError(
+            AudioStreamError::ResamplingDisabled,
+            RuntimeResult::Unsupported);
+    }
+
+    if (stream.sourceFormat.channelCount != outputFormat.channelCount &&
+        !config_.enableChannelConversion)
+    {
+        return setError(
+            AudioStreamError::ChannelConversionDisabled,
+            RuntimeResult::Unsupported);
+    }
+
+    if (stream.pcm.ready())
+    {
+        stream.pcm.end();
+    }
+
+    const size_t capacity =
+        stream.bus == AudioStreamBus::Music
+            ? config_.musicBufferCapacityFrames
+            : config_.effectBufferCapacityFrames;
+
+    PcmRingBufferConfig pcmConfig;
+    pcmConfig.format = stream.sourceFormat;
+    pcmConfig.capacityFrames = capacity;
+    pcmConfig.preference =
+        stream.bus == AudioStreamBus::Music
+            ? config_.musicBufferPreference
+            : config_.effectBufferPreference;
+    pcmConfig.overflowPolicy =
+        PcmRingBufferOverflowPolicy::RejectNewFrames;
+    pcmConfig.underflowPolicy =
+        PcmRingBufferUnderflowPolicy::ReturnAvailableFrames;
+    pcmConfig.lowWatermarkFrames = capacity / 4U;
+    pcmConfig.highWatermarkFrames = capacity - capacity / 4U;
+    pcmConfig.allowPartialWrites = true;
+    pcmConfig.allowPartialReads = true;
+    pcmConfig.clearBackingStore = true;
+    pcmConfig.clearConsumedFrames = false;
+    pcmConfig.clearOnReset = config_.clearBuffersOnStop;
+
+    const RuntimeResult result = stream.pcm.begin(pcmConfig);
+
+    if (result != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::SourceBufferAllocationFailed,
+            result);
+    }
+
+    stream.resampler = {};
+    stream.resampler.sourceChannels =
+        stream.sourceFormat.channelCount;
+    stream.resampler.stepQ32 =
+        (static_cast<uint64_t>(stream.sourceFormat.sampleRateHz) << 32U) /
+        outputFormat.sampleRateHz;
+
+    if (stream.resampler.stepQ32 == 0U)
+    {
+        stream.resampler.stepQ32 = 1U;
+    }
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult AudioStreamEngine::mixAvailableStreams(
+    uint32_t nowMs,
+    size_t frameBudget,
+    size_t& mixedFrames)
+{
+    mixedFrames = 0U;
+
+    if (frameBudget == 0U || outputBuffer_.writableFrames() == 0U)
+    {
+        return RuntimeResult::Busy;
+    }
+
+    const size_t outputFrames = minimumSize(
+        frameBudget,
+        outputBuffer_.writableFrames());
+
+    const size_t outputChannels =
+        config_.output.format.channelCount;
+
+    int32_t* const accumulator =
+        static_cast<int32_t*>(mixAccumulator_.data);
+
+    memset(
+        accumulator,
+        0,
+        outputFrames * outputChannels * sizeof(int32_t));
+
+    const uint16_t masterGain =
+        volumeToQ15(config_.masterVolume);
+
+    uint16_t musicBusGain = multiplyQ15(
+        masterGain,
+        volumeToQ15(config_.musicVolume));
+
+    musicBusGain = multiplyQ15(
+        musicBusGain,
+        musicDuckGainQ15_);
+
+    const uint16_t effectBusGain = multiplyQ15(
+        masterGain,
+        volumeToQ15(config_.effectVolume));
+
+    bool anyPlaying = false;
+    size_t maximumContribution = 0U;
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MUSIC_DECK_COUNT;
+         ++index)
+    {
+        StreamSlot& stream = musicDecks_[index];
+
+        if (!stream.occupied || stream.paused ||
+            stream.state == AudioStreamPlaybackState::Prebuffering ||
+            stream.state == AudioStreamPlaybackState::Parsing ||
+            stream.state == AudioStreamPlaybackState::Opening ||
+            stream.state == AudioStreamPlaybackState::Failed)
+        {
+            continue;
+        }
+
+        anyPlaying = true;
+        size_t contributed = 0U;
+
+        const RuntimeResult result =
+            mixStreamIntoAccumulator(
+                stream,
+                nowMs,
+                accumulator,
+                outputFrames,
+                musicBusGain,
+                contributed);
+
+        maximumContribution = maximumSize(maximumContribution, contributed);
+
+        if (result != RuntimeResult::Ok && !temporaryResult(result))
+        {
+            return result;
+        }
+    }
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        StreamSlot& stream = effectVoices_[index].stream;
+
+        if (!stream.occupied || stream.paused ||
+            stream.state == AudioStreamPlaybackState::Prebuffering ||
+            stream.state == AudioStreamPlaybackState::Parsing ||
+            stream.state == AudioStreamPlaybackState::Opening ||
+            stream.state == AudioStreamPlaybackState::Failed)
+        {
+            continue;
+        }
+
+        anyPlaying = true;
+        size_t contributed = 0U;
+
+        const RuntimeResult result =
+            mixStreamIntoAccumulator(
+                stream,
+                nowMs,
+                accumulator,
+                outputFrames,
+                effectBusGain,
+                contributed);
+
+        maximumContribution = maximumSize(maximumContribution, contributed);
+
+        if (result != RuntimeResult::Ok && !temporaryResult(result))
+        {
+            return result;
+        }
+    }
+
+    if (!anyPlaying)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    const size_t framesToWrite =
+        maximumContribution > 0U
+            ? maximumContribution
+            : outputFrames;
+
+    if (maximumContribution == 0U)
+    {
+        currentStatus_.sourceUnderrunCount =
+            saturatingIncrement32(currentStatus_.sourceUnderrunCount);
+        currentStatus_.totalSilenceFrames =
+            saturatingAdd64(
+                currentStatus_.totalSilenceFrames,
+                framesToWrite);
+
+        emitEvent(
+            AudioStreamEventType::SourceUnderrun,
+            nullptr,
+            {},
+            AudioStreamError::DecoderWouldBlock,
+            nowMs);
+    }
+
+    size_t writtenFrames = 0U;
+    const RuntimeResult writeResult =
+        writeMixedFrames(
+            accumulator,
+            framesToWrite,
+            writtenFrames);
+
+    mixedFrames = writtenFrames;
+    currentStatus_.totalMixedFrames =
+        saturatingAdd64(
+            currentStatus_.totalMixedFrames,
+            writtenFrames);
+
+    return writeResult;
+}
+
+RuntimeResult AudioStreamEngine::mixStreamIntoAccumulator(
+    StreamSlot& stream,
+    uint32_t nowMs,
+    int32_t* accumulator,
+    size_t outputFrames,
+    uint16_t busGainQ15,
+    size_t& contributedFrames)
+{
+    contributedFrames = 0U;
+
+    if (!stream.occupied || stream.paused ||
+        accumulator == nullptr || outputFrames == 0U)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    updateFade(stream, nowMs);
+
+    if (!stream.occupied)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    const uint16_t streamGain = multiplyQ15(
+        busGainQ15,
+        volumeToQ15(stream.localVolume));
+
+    const uint16_t finalGain = multiplyQ15(
+        streamGain,
+        stream.fade.currentGainQ15);
+
+    const uint8_t sourceChannels =
+        stream.sourceFormat.channelCount;
+
+    const uint8_t outputChannels =
+        config_.output.format.channelCount;
+
+    if (sourceChannels < 1U || sourceChannels > 2U ||
+        outputChannels < 1U || outputChannels > 2U)
+    {
+        return setError(
+            AudioStreamError::SourceFormatUnsupported,
+            RuntimeResult::Unsupported);
+    }
+
+    int16_t* const frameScratch =
+        static_cast<int16_t*>(sourceFrameScratch_.data);
+
+    auto readOneSourceFrame = [&](int16_t& left, int16_t& right) -> bool
+    {
+        size_t sourceRead = 0U;
+        size_t produced = 0U;
+
+        const RuntimeResult result = stream.pcm.read(
+            frameScratch,
+            1U,
+            sourceRead,
+            produced);
+
+        if (result != RuntimeResult::Ok || sourceRead != 1U)
+        {
+            return false;
+        }
+
+        left = frameScratch[0];
+        right = sourceChannels == 1U
+            ? frameScratch[0]
+            : frameScratch[1];
+
+        return true;
+    };
+
+    if (!stream.resampler.primed)
+    {
+        const size_t available = stream.pcm.availableFrames();
+
+        if (available < 2U && !(stream.sourceEof && available > 0U))
+        {
+            stream.underrunCount =
+                saturatingIncrement32(stream.underrunCount);
+            return RuntimeResult::NotReady;
+        }
+
+        if (!readOneSourceFrame(
+                stream.resampler.previousLeft,
+                stream.resampler.previousRight))
+        {
+            return RuntimeResult::NotReady;
+        }
+
+        if (readOneSourceFrame(
+                stream.resampler.nextLeft,
+                stream.resampler.nextRight))
+        {
+            stream.resampler.phaseQ32 = 0U;
+        }
+        else
+        {
+            stream.resampler.nextLeft =
+                stream.resampler.previousLeft;
+            stream.resampler.nextRight =
+                stream.resampler.previousRight;
+            stream.resampler.phaseQ32 = RESAMPLER_FINAL_FRAME;
+        }
+
+        stream.resampler.primed = true;
+        stream.resampler.sourceChannels = sourceChannels;
+    }
+
+    if (stream.resampler.phaseQ32 == RESAMPLER_NEEDS_NEXT)
+    {
+        if (!readOneSourceFrame(
+                stream.resampler.nextLeft,
+                stream.resampler.nextRight))
+        {
+            if (stream.sourceEof)
+            {
+                stream.resampler.nextLeft =
+                    stream.resampler.previousLeft;
+                stream.resampler.nextRight =
+                    stream.resampler.previousRight;
+                stream.resampler.phaseQ32 = RESAMPLER_FINAL_FRAME;
+            }
+            else
+            {
+                return RuntimeResult::NotReady;
+            }
+        }
+        else
+        {
+            stream.resampler.phaseQ32 = 0U;
+        }
+    }
+
+    for (size_t outputIndex = 0U;
+         outputIndex < outputFrames;
+         ++outputIndex)
+    {
+        int32_t left = stream.resampler.previousLeft;
+        int32_t right = stream.resampler.previousRight;
+        const bool finalFrame =
+            stream.resampler.phaseQ32 == RESAMPLER_FINAL_FRAME;
+
+        if (!finalFrame)
+        {
+            const uint64_t fraction =
+                stream.resampler.phaseQ32 & 0xFFFFFFFFULL;
+
+            left += static_cast<int32_t>(
+                (static_cast<int64_t>(
+                     stream.resampler.nextLeft -
+                     stream.resampler.previousLeft) *
+                 static_cast<int64_t>(fraction)) >> 32U);
+
+            right += static_cast<int32_t>(
+                (static_cast<int64_t>(
+                     stream.resampler.nextRight -
+                     stream.resampler.previousRight) *
+                 static_cast<int64_t>(fraction)) >> 32U);
+        }
+
+        if (outputChannels == 1U)
+        {
+            const int32_t mono = (left + right) / 2;
+            accumulator[outputIndex] += static_cast<int32_t>(
+                (static_cast<int64_t>(mono) * finalGain) / Q15_ONE);
+        }
+        else
+        {
+            uint16_t leftPanGain = Q15_ONE;
+            uint16_t rightPanGain = Q15_ONE;
+
+            if (stream.pan < 0)
+            {
+                rightPanGain = static_cast<uint16_t>(
+                    (static_cast<uint32_t>(Q15_ONE) *
+                     static_cast<uint32_t>(100 + stream.pan)) /
+                    100U);
+            }
+            else if (stream.pan > 0)
+            {
+                leftPanGain = static_cast<uint16_t>(
+                    (static_cast<uint32_t>(Q15_ONE) *
+                     static_cast<uint32_t>(100 - stream.pan)) /
+                    100U);
+            }
+
+            const uint16_t leftGain =
+                multiplyQ15(finalGain, leftPanGain);
+            const uint16_t rightGain =
+                multiplyQ15(finalGain, rightPanGain);
+
+            accumulator[outputIndex * 2U] += static_cast<int32_t>(
+                (static_cast<int64_t>(left) * leftGain) / Q15_ONE);
+
+            accumulator[outputIndex * 2U + 1U] += static_cast<int32_t>(
+                (static_cast<int64_t>(right) * rightGain) / Q15_ONE);
+        }
+
+        ++contributedFrames;
+        ++stream.mixedOutputFrame;
+
+        if (finalFrame)
+        {
+            stream.resampler = {};
+            stream.resampler.stepQ32 =
+                (static_cast<uint64_t>(stream.sourceFormat.sampleRateHz) << 32U) /
+                config_.output.format.sampleRateHz;
+            break;
+        }
+
+        if (stream.resampler.phaseQ32 >
+            UINT64_MAX - stream.resampler.stepQ32)
+        {
+            stream.resampler.phaseQ32 = RESAMPLER_NEEDS_NEXT;
+            break;
+        }
+
+        stream.resampler.phaseQ32 +=
+            stream.resampler.stepQ32;
+
+        bool sourceUnavailable = false;
+
+        while (stream.resampler.phaseQ32 >= Q32_ONE)
+        {
+            stream.resampler.phaseQ32 -= Q32_ONE;
+            stream.resampler.previousLeft =
+                stream.resampler.nextLeft;
+            stream.resampler.previousRight =
+                stream.resampler.nextRight;
+
+            if (!readOneSourceFrame(
+                    stream.resampler.nextLeft,
+                    stream.resampler.nextRight))
+            {
+                if (stream.sourceEof)
+                {
+                    stream.resampler.nextLeft =
+                        stream.resampler.previousLeft;
+                    stream.resampler.nextRight =
+                        stream.resampler.previousRight;
+                    stream.resampler.phaseQ32 = RESAMPLER_FINAL_FRAME;
+                }
+                else
+                {
+                    stream.resampler.phaseQ32 = RESAMPLER_NEEDS_NEXT;
+                }
+
+                sourceUnavailable = true;
+                break;
+            }
+        }
+
+        if (sourceUnavailable)
+        {
+            break;
+        }
+    }
+
+    if (contributedFrames > 0U)
+    {
+        stream.mixCount = saturatingIncrement32(stream.mixCount);
+        stream.error = AudioStreamError::None;
+    }
+    else if (!stream.sourceEof)
+    {
+        stream.underrunCount =
+            saturatingIncrement32(stream.underrunCount);
+        currentStatus_.sourceUnderrunCount =
+            saturatingIncrement32(currentStatus_.sourceUnderrunCount);
+    }
+
+    if (stream.sourceEof && stream.pcm.empty() &&
+        !stream.resampler.primed)
+    {
+        if (stream.loopMode == AudioStreamLoopMode::Track)
+        {
+            loopStream(stream, nowMs);
+        }
+        else
+        {
+            stream.state = AudioStreamPlaybackState::Ended;
+
+            if (stream.bus == AudioStreamBus::Effects)
+            {
+                stream.state = AudioStreamPlaybackState::Ended;
+            }
+        }
+    }
+
+    return contributedFrames > 0U
+        ? RuntimeResult::Ok
+        : RuntimeResult::NotReady;
+}
+
+RuntimeResult AudioStreamEngine::writeMixedFrames(
+    const int32_t* accumulator,
+    size_t frameCount,
+    size_t& writtenFrames)
+{
+    writtenFrames = 0U;
+
+    if (accumulator == nullptr || frameCount == 0U)
+    {
+        return frameCount == 0U
+            ? RuntimeResult::Ok
+            : RuntimeResult::InvalidArgument;
+    }
+
+    const size_t channels =
+        config_.output.format.channelCount;
+
+    int16_t* const output =
+        static_cast<int16_t*>(mixOutputScratch_.data);
+
+    for (size_t sampleIndex = 0U;
+         sampleIndex < frameCount * channels;
+         ++sampleIndex)
+    {
+        output[sampleIndex] = softLimitSample(
+            accumulator[sampleIndex],
+            config_.enableSoftLimiter);
+    }
+
+    return outputBuffer_.write(
+        output,
+        frameCount,
+        writtenFrames);
+}
+
+RuntimeResult AudioStreamEngine::submitOutputFrames(
+    size_t frameBudget,
+    size_t& submittedFrames)
+{
+    submittedFrames = 0U;
+
+    if (frameBudget == 0U || outputBuffer_.empty())
+    {
+        return RuntimeResult::Ok;
+    }
+
+    if (!I2sAudioBackend::ready())
+    {
+        return setError(
+            AudioStreamError::OutputBackendNotReady,
+            RuntimeResult::NotReady);
+    }
+
+    const size_t requested = minimumSize(
+        frameBudget,
+        outputBuffer_.availableFrames());
+
+    PcmReadableSpans spans;
+    const RuntimeResult reserveResult =
+        outputBuffer_.readableSpans(
+            requested,
+            spans,
+            true);
+
+    if (reserveResult != RuntimeResult::Ok)
+    {
+        return reserveResult;
+    }
+
+    size_t totalWritten = 0U;
+    RuntimeResult terminalResult = RuntimeResult::Ok;
+
+    const PcmConstSpan spanList[2] = {
+        spans.first,
+        spans.second
+    };
+
+    for (size_t index = 0U; index < 2U; ++index)
+    {
+        const PcmConstSpan& span = spanList[index];
+
+        if (span.frameCount == 0U)
+        {
+            continue;
+        }
+
+        size_t written = 0U;
+        const RuntimeResult writeResult =
+            I2sAudioBackend::write(
+                span.samples,
+                span.frameCount,
+                written,
+                config_.outputWriteTimeoutMs);
+
+        totalWritten += written;
+
+        if (writeResult != RuntimeResult::Ok ||
+            written < span.frameCount)
+        {
+            terminalResult = writeResult == RuntimeResult::Ok
+                ? RuntimeResult::Busy
+                : writeResult;
+            break;
+        }
+    }
+
+    RuntimeResult consumeResult = RuntimeResult::Ok;
+
+    if (totalWritten > 0U)
+    {
+        consumeResult = outputBuffer_.consumeRead(
+            totalWritten,
+            PcmRingBufferClearMode::Preserve);
+    }
+    else
+    {
+        consumeResult = outputBuffer_.cancelRead();
+    }
+
+    if (consumeResult != RuntimeResult::Ok)
+    {
+        return setError(
+            AudioStreamError::OutputWriteFailed,
+            consumeResult);
+    }
+
+    submittedFrames = totalWritten;
+    currentStatus_.totalSubmittedFrames =
+        saturatingAdd64(
+            currentStatus_.totalSubmittedFrames,
+            totalWritten);
+
+    if (totalWritten > 0U)
+    {
+        currentStatus_.lastOutputAtMs =
+            currentStatus_.lastUpdateAtMs;
+    }
+
+    if (terminalResult != RuntimeResult::Ok)
+    {
+        currentStatus_.outputErrorCount =
+            saturatingIncrement32(currentStatus_.outputErrorCount);
+
+        if (totalWritten == 0U)
+        {
+            emitEvent(
+                AudioStreamEventType::OutputError,
+                nullptr,
+                {},
+                AudioStreamError::OutputWriteFailed,
+                currentStatus_.lastUpdateAtMs);
+
+            return setError(
+                AudioStreamError::OutputWriteFailed,
+                terminalResult);
+        }
+    }
+
+    return totalWritten > 0U
+        ? RuntimeResult::Ok
+        : terminalResult;
+}
+
+RuntimeResult AudioStreamEngine::updateFade(
+    StreamSlot& stream,
+    uint32_t nowMs)
+{
+    if (!stream.occupied || !stream.fade.active)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    stream.fade.currentGainQ15 =
+        fadeGainQ15(stream.fade, nowMs, config_.fadeCurve);
+
+    const uint32_t elapsed =
+        nowMs - stream.fade.startedAtMs;
+
+    if (stream.fade.durationMs == 0U ||
+        elapsed >= stream.fade.durationMs)
+    {
+        stream.fade.currentGainQ15 =
+            stream.fade.targetGainQ15;
+        const bool stop = stream.fade.stopWhenComplete;
+        stream.fade.active = false;
+
+        if (stop)
+        {
+            const AudioStreamBus bus = stream.bus;
+
+            if (bus == AudioStreamBus::Effects)
+            {
+                stream.state = AudioStreamPlaybackState::Ended;
+                return RuntimeResult::Ok;
+            }
+
+            emitEvent(
+                AudioStreamEventType::MusicStopped,
+                &stream,
+                {},
+                AudioStreamError::None,
+                nowMs);
+
+            closeStream(stream, config_.clearBuffersOnStop);
+            return RuntimeResult::Ok;
+        }
+
+        stream.state = AudioStreamPlaybackState::Playing;
+    }
+    else
+    {
+        stream.state = stream.fade.targetGainQ15 <
+                stream.fade.startGainQ15
+            ? AudioStreamPlaybackState::FadingOut
+            : AudioStreamPlaybackState::FadingIn;
+    }
+
+    return RuntimeResult::Ok;
+}
+
+void AudioStreamEngine::updateDucking(uint32_t nowMs)
+{
+    bool effectAudible = false;
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        const StreamSlot& stream =
+            effectVoices_[index].stream;
+
+        if (stream.occupied && !stream.paused &&
+            stream.state != AudioStreamPlaybackState::Opening &&
+            stream.state != AudioStreamPlaybackState::Parsing &&
+            stream.state != AudioStreamPlaybackState::Prebuffering &&
+            stream.fade.currentGainQ15 > 0U)
+        {
+            effectAudible = true;
+            break;
+        }
+    }
+
+    const uint16_t requestedTarget =
+        config_.enableEffectDucking && effectAudible
+            ? static_cast<uint16_t>(
+                (static_cast<uint32_t>(Q15_ONE) *
+                 (100U - config_.effectDuckPercent)) /
+                100U)
+            : Q15_ONE;
+
+    if (requestedTarget != musicDuckTargetQ15_)
+    {
+        musicDuckTargetQ15_ = requestedTarget;
+        musicDuckChangedAtMs_ = nowMs;
+    }
+
+    if (musicDuckGainQ15_ == musicDuckTargetQ15_)
+    {
+        return;
+    }
+
+    const uint32_t duration =
+        musicDuckTargetQ15_ < musicDuckGainQ15_
+            ? config_.duckAttackMilliseconds
+            : config_.duckReleaseMilliseconds;
+
+    if (duration == 0U)
+    {
+        musicDuckGainQ15_ = musicDuckTargetQ15_;
+        return;
+    }
+
+    const uint32_t elapsed =
+        musicDuckChangedAtMs_ == 0U
+            ? 0U
+            : nowMs - musicDuckChangedAtMs_;
+
+    const uint32_t effectiveElapsed = elapsed == 0U ? 1U : elapsed;
+    musicDuckChangedAtMs_ = nowMs;
+
+    const uint32_t difference =
+        musicDuckGainQ15_ > musicDuckTargetQ15_
+            ? musicDuckGainQ15_ - musicDuckTargetQ15_
+            : musicDuckTargetQ15_ - musicDuckGainQ15_;
+
+    uint32_t step =
+        (difference * effectiveElapsed) / duration;
+
+    if (step == 0U)
+    {
+        step = 1U;
+    }
+
+    if (musicDuckTargetQ15_ < musicDuckGainQ15_)
+    {
+        musicDuckGainQ15_ = step >= difference
+            ? musicDuckTargetQ15_
+            : static_cast<uint16_t>(musicDuckGainQ15_ - step);
+    }
+    else
+    {
+        musicDuckGainQ15_ = step >= difference
+            ? musicDuckTargetQ15_
+            : static_cast<uint16_t>(musicDuckGainQ15_ + step);
+    }
+}
+
+RuntimeResult AudioStreamEngine::selectEffectVoice(
+    const AudioEffectRequest& request,
+    uint8_t& selectedSlot,
+    bool& stoleVoice)
+{
+    selectedSlot = UINT8_MAX;
+    stoleVoice = false;
+
+    for (uint8_t index = 0U;
+         index < config_.effectVoiceCount;
+         ++index)
+    {
+        if (!effectVoices_[index].stream.occupied)
+        {
+            selectedSlot = index;
+            return RuntimeResult::Ok;
+        }
+    }
+
+    if (config_.effectStealPolicy ==
+        AudioEffectStealPolicy::RejectNew)
+    {
+        return setError(
+            AudioStreamError::EffectVoiceUnavailable,
+            RuntimeResult::Busy);
+    }
+
+    uint8_t candidate = 0U;
+
+    if (config_.effectStealPolicy ==
+        AudioEffectStealPolicy::ReplaceOldest)
+    {
+        uint32_t oldestOrder =
+            effectVoices_[0].allocationOrder;
+
+        for (uint8_t index = 1U;
+             index < config_.effectVoiceCount;
+             ++index)
+        {
+            if (effectVoices_[index].allocationOrder < oldestOrder)
+            {
+                oldestOrder = effectVoices_[index].allocationOrder;
+                candidate = index;
+            }
+        }
+    }
+    else
+    {
+        uint8_t lowestPriority =
+            effectVoices_[0].stream.priority;
+        uint32_t oldestOrder =
+            effectVoices_[0].allocationOrder;
+
+        for (uint8_t index = 1U;
+             index < config_.effectVoiceCount;
+             ++index)
+        {
+            const EffectVoice& voice = effectVoices_[index];
+
+            if (voice.stream.priority < lowestPriority ||
+                (voice.stream.priority == lowestPriority &&
+                 voice.allocationOrder < oldestOrder))
+            {
+                lowestPriority = voice.stream.priority;
+                oldestOrder = voice.allocationOrder;
+                candidate = index;
+            }
+        }
+
+        if (request.priority < lowestPriority)
+        {
+            return setError(
+                AudioStreamError::EffectVoiceUnavailable,
+                RuntimeResult::Busy);
+        }
+    }
+
+    selectedSlot = candidate;
+    stoleVoice = true;
+    return RuntimeResult::Ok;
+}
+
+AudioStreamEngine::StreamSlot* AudioStreamEngine::activeMusic()
+{
+    return activeMusicDeck_ < AUDIO_STREAM_MUSIC_DECK_COUNT
+        ? &musicDecks_[activeMusicDeck_]
+        : nullptr;
+}
+
+const AudioStreamEngine::StreamSlot*
+AudioStreamEngine::activeMusicConst()
+{
+    return activeMusicDeck_ < AUDIO_STREAM_MUSIC_DECK_COUNT
+        ? &musicDecks_[activeMusicDeck_]
+        : nullptr;
+}
+
+AudioStreamEngine::StreamSlot* AudioStreamEngine::incomingMusic()
+{
+    return incomingMusicDeck_ < AUDIO_STREAM_MUSIC_DECK_COUNT
+        ? &musicDecks_[incomingMusicDeck_]
+        : nullptr;
+}
+
+const AudioStreamEngine::StreamSlot*
+AudioStreamEngine::incomingMusicConst()
+{
+    return incomingMusicDeck_ < AUDIO_STREAM_MUSIC_DECK_COUNT
+        ? &musicDecks_[incomingMusicDeck_]
+        : nullptr;
+}
+
+bool AudioStreamEngine::validHandle(AudioVoiceHandle handle)
+{
+    if (!handle || handle.slot >= config_.effectVoiceCount)
+    {
+        return false;
+    }
+
+    const EffectVoice& voice = effectVoices_[handle.slot];
+
+    return
+        voice.stream.occupied &&
+        voice.handle.generation == handle.generation;
+}
+
+AudioStreamChannelStatus AudioStreamEngine::channelStatus(
+    const StreamSlot& stream)
+{
+    AudioStreamChannelStatus result;
+
+    result.occupied = stream.occupied;
+    result.audible =
+        stream.occupied &&
+        !stream.paused &&
+        stream.fade.currentGainQ15 > 0U &&
+        (stream.state == AudioStreamPlaybackState::Playing ||
+         stream.state == AudioStreamPlaybackState::FadingIn ||
+         stream.state == AudioStreamPlaybackState::FadingOut);
+    result.persistent = stream.persistent;
+    result.loopEnabled =
+        stream.loopMode == AudioStreamLoopMode::Track;
+    result.decoderOpen = stream.codec == AudioStreamCodec::Wav
+        ? stream.wav.open()
+        : stream.mp3.open();
+    result.decoderReady = stream.decoderReady;
+    result.sourceEof = stream.sourceEof;
+    result.resampling =
+        stream.sourceFormat.sampleRateHz != 0U &&
+        stream.sourceFormat.sampleRateHz !=
+            config_.output.format.sampleRateHz;
+    result.channelConverting =
+        stream.sourceFormat.channelCount != 0U &&
+        stream.sourceFormat.channelCount !=
+            config_.output.format.channelCount;
+    result.bus = stream.bus;
+    result.codec = stream.codec;
+    result.state = stream.state;
+    result.error = stream.error;
+
+    memcpy(result.path, stream.path, sizeof(result.path));
+
+    result.sourceFormat = stream.sourceFormat;
+    result.outputFormat = config_.output.format;
+    result.localVolume = stream.localVolume;
+    result.pan = stream.pan;
+    result.priority = stream.priority;
+    result.fadeStartedAtMs = stream.fade.startedAtMs;
+    result.fadeDurationMs = stream.fade.durationMs;
+    result.fadeGainQ15 = stream.fade.currentGainQ15;
+    result.sourcePcmFrame = stream.codec == AudioStreamCodec::Wav
+        ? stream.wav.currentFrame()
+        : stream.mp3.currentPcmFrame();
+    result.mixedOutputFrame = stream.mixedOutputFrame;
+    result.durationMilliseconds = stream.codec == AudioStreamCodec::Wav
+        ? stream.wav.durationMilliseconds()
+        : stream.mp3.durationMilliseconds();
+    result.positionMilliseconds = stream.codec == AudioStreamCodec::Wav
+        ? stream.wav.currentMilliseconds()
+        : stream.mp3.currentMilliseconds();
+    result.bufferedSourceFrames = stream.pcm.availableFrames();
+    result.sourceBufferCapacityFrames = stream.pcm.capacityFrames();
+    result.decodeCount = stream.decodeCount;
+    result.mixCount = stream.mixCount;
+    result.loopCount = stream.loopCount;
+    result.underrunCount = stream.underrunCount;
+    result.errorCount = stream.errorCount;
+    result.startedAtMs = stream.startedAtMs;
+    result.generation = stream.generation;
+
+    uint16_t effectiveGain = volumeToQ15(config_.masterVolume);
+    effectiveGain = multiplyQ15(
+        effectiveGain,
+        volumeToQ15(stream.bus == AudioStreamBus::Music
+            ? config_.musicVolume
+            : config_.effectVolume));
+    effectiveGain = multiplyQ15(
+        effectiveGain,
+        volumeToQ15(stream.localVolume));
+    effectiveGain = multiplyQ15(
+        effectiveGain,
+        stream.fade.currentGainQ15);
+
+    if (stream.bus == AudioStreamBus::Music)
+    {
+        effectiveGain = multiplyQ15(
+            effectiveGain,
+            musicDuckGainQ15_);
+    }
+
+    result.effectiveVolume = static_cast<uint8_t>(
+        (static_cast<uint32_t>(effectiveGain) * 100U) / Q15_ONE);
+
+    return result;
+}
+
+uint16_t AudioStreamEngine::volumeToQ15(uint8_t volume)
+{
+    const uint8_t bounded =
+        volume > AUDIO_STREAM_VOLUME_MAX
+            ? AUDIO_STREAM_VOLUME_MAX
+            : volume;
+
+    return static_cast<uint16_t>(
+        (static_cast<uint32_t>(bounded) * Q15_ONE) /
+        AUDIO_STREAM_VOLUME_MAX);
+}
+
+uint16_t AudioStreamEngine::fadeGainQ15(
+    const FadeState& fade,
+    uint32_t nowMs,
+    AudioStreamFadeCurve curve)
+{
+    if (!fade.active || fade.durationMs == 0U)
+    {
+        return fade.targetGainQ15;
+    }
+
+    const uint32_t elapsed = nowMs - fade.startedAtMs;
+
+    if (elapsed >= fade.durationMs)
+    {
+        return fade.targetGainQ15;
+    }
+
+    const double progress =
+        static_cast<double>(elapsed) /
+        static_cast<double>(fade.durationMs);
+
+    if (curve == AudioStreamFadeCurve::Linear)
+    {
+        const double value =
+            static_cast<double>(fade.startGainQ15) +
+            (static_cast<double>(fade.targetGainQ15) -
+             static_cast<double>(fade.startGainQ15)) *
+                progress;
+
+        return static_cast<uint16_t>(
+            value < 0.0
+                ? 0.0
+                : (value > Q15_ONE ? Q15_ONE : value));
+    }
+
+    const double start =
+        static_cast<double>(fade.startGainQ15) / Q15_ONE;
+    const double target =
+        static_cast<double>(fade.targetGainQ15) / Q15_ONE;
+    const double power =
+        (1.0 - progress) * start * start +
+        progress * target * target;
+    const double value = sqrt(power) * Q15_ONE;
+
+    return static_cast<uint16_t>(
+        value < 0.0
+            ? 0.0
+            : (value > Q15_ONE ? Q15_ONE : value));
+}
+
+RuntimeResult AudioStreamEngine::setError(
+    AudioStreamError error,
+    RuntimeResult result)
+{
+    currentStatus_.error = error;
+
+    if (error != AudioStreamError::DecoderWouldBlock &&
+        error != AudioStreamError::Busy &&
+        error != AudioStreamError::None)
+    {
+        if (result == RuntimeResult::InternalError)
+        {
+            currentStatus_.state = AudioStreamEngineState::Failed;
+        }
+    }
+
+    notifyStateChanged();
+    return result;
+}
+
+void AudioStreamEngine::emitEvent(
+    AudioStreamEventType type,
+    const StreamSlot* stream,
+    AudioVoiceHandle voice,
+    AudioStreamError error,
+    uint32_t nowMs)
+{
+    if (eventObserver_ == nullptr)
+    {
+        return;
+    }
+
+    AudioStreamEvent event;
+    event.type = type;
+    event.bus = stream != nullptr
+        ? stream->bus
+        : AudioStreamBus::Music;
+    event.voice = voice;
+    event.error = error;
+    event.timestampMs = nowMs;
+
+    if (stream != nullptr)
+    {
+        memcpy(event.path, stream->path, sizeof(event.path));
+    }
+
+    eventObserver_(event);
+}
+
+void AudioStreamEngine::refreshStatus()
+{
+    currentStatus_.initialized =
+        currentStatus_.initialized && outputBuffer_.ready();
+    currentStatus_.outputReady = I2sAudioBackend::ready();
+    currentStatus_.outputFormat = config_.output.format;
+    currentStatus_.route = I2sAudioBackend::ready()
+        ? I2sAudioBackend::route()
+        : AudioRoute::Muted;
+    currentStatus_.muted = I2sAudioBackend::ready()
+        ? I2sAudioBackend::muted()
+        : true;
+    currentStatus_.masterVolume = config_.masterVolume;
+    currentStatus_.musicVolume = config_.musicVolume;
+    currentStatus_.effectVolume = config_.effectVolume;
+    currentStatus_.activeEffectVoices = activeEffectVoiceCount();
+    currentStatus_.configuredEffectVoices = config_.effectVoiceCount;
+    currentStatus_.music = activeMusicConst() != nullptr
+        ? channelStatus(*activeMusicConst())
+        : AudioStreamChannelStatus{};
+    currentStatus_.incomingMusic = incomingMusicConst() != nullptr
+        ? channelStatus(*incomingMusicConst())
+        : AudioStreamChannelStatus{};
+
+    for (uint8_t index = 0U;
+         index < AUDIO_STREAM_MAX_EFFECT_VOICES;
+         ++index)
+    {
+        currentStatus_.effects[index] =
+            channelStatus(effectVoices_[index].stream);
+    }
+
+    currentStatus_.outputBuffer = outputBuffer_.status();
+    currentStatus_.outputBackend = I2sAudioBackend::status();
+    currentStatus_.mixFramesPerUpdate = config_.mixFramesPerUpdate;
+    currentStatus_.musicActive =
+        currentStatus_.music.occupied ||
+        currentStatus_.incomingMusic.occupied;
+    currentStatus_.crossfading =
+        currentStatus_.music.occupied &&
+        currentStatus_.incomingMusic.occupied;
+    currentStatus_.effectDuckingActive =
+        musicDuckGainQ15_ < Q15_ONE;
+
+    bool anyPlaying = currentStatus_.musicActive ||
+        currentStatus_.activeEffectVoices > 0U ||
+        !outputBuffer_.empty();
+
+    currentStatus_.playing =
+        anyPlaying &&
+        currentStatus_.state != AudioStreamEngineState::Paused;
+    currentStatus_.paused =
+        currentStatus_.state == AudioStreamEngineState::Paused;
+
+    if (currentStatus_.initialized &&
+        currentStatus_.state != AudioStreamEngineState::Paused &&
+        currentStatus_.state != AudioStreamEngineState::Failed &&
+        currentStatus_.state != AudioStreamEngineState::Initializing)
+    {
+        currentStatus_.state = anyPlaying
+            ? AudioStreamEngineState::Playing
+            : AudioStreamEngineState::Ready;
+    }
+}
+
+void AudioStreamEngine::notifyStateChanged()
+{
+    if (observer_ != nullptr)
+    {
+        observer_(currentStatus_);
+    }
+}
+}
+
+
+
+
+
+
+
+
+
+
 
 
 

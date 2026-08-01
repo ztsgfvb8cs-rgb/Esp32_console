@@ -22395,6 +22395,4567 @@ static_assert(
     "MP3 seek-index limits are invalid");
 }
 
+#include "147_mp3_decoder.h"
+
+#include <limits.h>
+#include <new>
+#include <string.h>
+
+#if defined(ARDUINO_ARCH_ESP32)
+#include <Arduino.h>
+#endif
+
+#if __has_include("third_party/minimp3.h")
+#define MINIMP3_ONLY_MP3
+#define MINIMP3_NO_SIMD
+#define MAX_FRAME_SYNC_MATCHES 12
+#define MINIMP3_IMPLEMENTATION
+#include "third_party/minimp3.h"
+#define EGS_MP3_HAS_MINIMP3 1
+#elif __has_include("minimp3.h")
+#define MINIMP3_ONLY_MP3
+#define MINIMP3_NO_SIMD
+#define MAX_FRAME_SYNC_MATCHES 12
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
+#define EGS_MP3_HAS_MINIMP3 1
+#else
+#define EGS_MP3_HAS_MINIMP3 0
+#endif
+
+namespace egs
+{
+namespace
+{
+constexpr uint8_t ID3_SIGNATURE[3] = {'I', 'D', '3'};
+constexpr uint8_t TAG_SIGNATURE[3] = {'T', 'A', 'G'};
+constexpr uint8_t XING_SIGNATURE[4] = {'X', 'i', 'n', 'g'};
+constexpr uint8_t INFO_SIGNATURE[4] = {'I', 'n', 'f', 'o'};
+constexpr uint8_t VBRI_SIGNATURE[4] = {'V', 'B', 'R', 'I'};
+constexpr uint8_t LAME_SIGNATURE[4] = {'L', 'A', 'M', 'E'};
+constexpr uint8_t APE_SIGNATURE[8] = {'A', 'P', 'E', 'T', 'A', 'G', 'E', 'X'};
+
+constexpr uint32_t XING_FLAG_FRAMES = 0x00000001UL;
+constexpr uint32_t XING_FLAG_BYTES = 0x00000002UL;
+constexpr uint32_t XING_FLAG_TOC = 0x00000004UL;
+constexpr uint32_t XING_FLAG_QUALITY = 0x00000008UL;
+
+constexpr uint16_t MP3_VBRI_MAX_ENTRIES = 256U;
+constexpr size_t MP3_VBRI_PROBE_OFFSET = 36U;
+constexpr size_t MP3_VBRI_HEADER_BYTES = 26U;
+constexpr size_t MP3_APEV2_FOOTER_BYTES = 32U;
+constexpr size_t MP3_MINIMP3_RECOMMENDED_WINDOW_BYTES = 18UL * 1024UL;
+constexpr size_t MP3_INPUT_GUARD_BYTES = 64U;
+constexpr uint32_t MP3_MAX_CONSECUTIVE_DECODE_ERRORS = 12U;
+constexpr uint32_t MP3_MAX_CONSECUTIVE_RESYNC_BYTES = 8192U;
+
+uint32_t nextGeneration(uint32_t current)
+{
+    return current == UINT32_MAX
+        ? 1U
+        : current + 1U;
+}
+
+uint32_t saturatingIncrement32(uint32_t value)
+{
+    return value == UINT32_MAX
+        ? UINT32_MAX
+        : value + 1U;
+}
+
+uint64_t saturatingAdd64(
+    uint64_t first,
+    uint64_t second)
+{
+    return second > UINT64_MAX - first
+        ? UINT64_MAX
+        : first + second;
+}
+
+size_t minimumSize(
+    size_t first,
+    size_t second)
+{
+    return first < second
+        ? first
+        : second;
+}
+
+size_t boundedStringLength(
+    const char* text,
+    size_t capacity)
+{
+    if (text == nullptr)
+    {
+        return 0U;
+    }
+
+    size_t length = 0U;
+
+    while (length < capacity &&
+           text[length] != '\0')
+    {
+        ++length;
+    }
+
+    return length;
+}
+
+bool validMemoryPreference(
+    MemoryPreference preference)
+{
+    switch (preference)
+    {
+        case MemoryPreference::InternalOnly:
+        case MemoryPreference::PsramPreferred:
+        case MemoryPreference::PsramOnly:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+uint32_t readLe32Local(const uint8_t* bytes)
+{
+    if (bytes == nullptr)
+    {
+        return 0U;
+    }
+
+    return
+        static_cast<uint32_t>(bytes[0]) |
+        (static_cast<uint32_t>(bytes[1]) << 8U) |
+        (static_cast<uint32_t>(bytes[2]) << 16U) |
+        (static_cast<uint32_t>(bytes[3]) << 24U);
+}
+
+uint16_t readBe16Local(const uint8_t* bytes)
+{
+    if (bytes == nullptr)
+    {
+        return 0U;
+    }
+
+    return static_cast<uint16_t>(
+        (static_cast<uint16_t>(bytes[0]) << 8U) |
+        static_cast<uint16_t>(bytes[1]));
+}
+
+bool signatureEquals(
+    const uint8_t* bytes,
+    const uint8_t* signature,
+    size_t size)
+{
+    return
+        bytes != nullptr &&
+        signature != nullptr &&
+        memcmp(bytes, signature, size) == 0;
+}
+
+uint32_t framesToMilliseconds(
+    uint64_t frames,
+    uint32_t sampleRateHz)
+{
+    if (sampleRateHz == 0U)
+    {
+        return 0U;
+    }
+
+    const uint64_t milliseconds =
+        (frames * 1000ULL) /
+        sampleRateHz;
+
+    return milliseconds > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(milliseconds);
+}
+
+uint64_t millisecondsToFrames(
+    uint32_t milliseconds,
+    uint32_t sampleRateHz)
+{
+    return
+        (static_cast<uint64_t>(milliseconds) *
+         sampleRateHz) /
+        1000ULL;
+}
+
+bool isTemporaryResult(RuntimeResult result)
+{
+    return
+        result == RuntimeResult::NotReady ||
+        result == RuntimeResult::Busy;
+}
+
+uint32_t platformMillis()
+{
+#if defined(ARDUINO_ARCH_ESP32)
+    return millis();
+#else
+    return 0U;
+#endif
+}
+}
+
+struct Mp3Decoder::BackendContext
+{
+#if EGS_MP3_HAS_MINIMP3
+    mp3dec_t decoder = {};
+#endif
+
+    size_t pendingPcmFrameOffset = 0U;
+    size_t pendingPcmFrameCount = 0U;
+    uint8_t pendingChannelCount = 0U;
+
+    bool xingTocValid = false;
+    uint8_t xingToc[100] = {};
+
+    bool vbriTableValid = false;
+    uint16_t vbriEntryCount = 0U;
+    uint16_t vbriFramesPerEntry = 0U;
+    uint32_t vbriCumulativeBytes[MP3_VBRI_MAX_ENTRIES] = {};
+
+    uint64_t bitrateAccumulatorKbps = 0U;
+    uint32_t bitrateSampleCount = 0U;
+    uint16_t firstObservedBitrateKbps = 0U;
+    bool bitrateChanged = false;
+
+    size_t compressedWindowBytes = 0U;
+    uint32_t consecutiveDecodeErrors = 0U;
+    uint32_t consecutiveResyncBytes = 0U;
+    uint32_t trailingTagBytes = 0U;
+
+    uint64_t rawPcmFramesDecoded = 0U;
+    uint64_t playableRawStartFrame = 0U;
+    uint64_t playableRawEndFrame = UINT64_MAX;
+};
+
+Mp3Decoder::~Mp3Decoder()
+{
+    close();
+}
+
+RuntimeResult Mp3Decoder::open(
+    const char* pathValue,
+    const Mp3DecoderConfig& config)
+{
+    if (status_.open || stream_)
+    {
+        return setError(
+            Mp3DecoderError::AlreadyOpen,
+            RuntimeResult::Busy);
+    }
+
+    if (!validConfig(config))
+    {
+        return setError(
+            Mp3DecoderError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const size_t pathLength =
+        boundedStringLength(
+            pathValue,
+            MP3_DECODER_PATH_CAPACITY);
+
+    if (pathValue == nullptr ||
+        pathLength == 0U ||
+        pathLength >= MP3_DECODER_PATH_CAPACITY)
+    {
+        return setError(
+            Mp3DecoderError::InvalidPath,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (!SdStreamService::ready())
+    {
+        return setError(
+            Mp3DecoderError::StreamServiceNotReady,
+            RuntimeResult::NotReady);
+    }
+
+    config_ = config;
+
+    const RuntimeResult backendResult =
+        allocateBackend();
+
+    if (backendResult != RuntimeResult::Ok)
+    {
+        config_ = {};
+        return backendResult;
+    }
+
+    SdStreamOpenOptions options;
+
+    options.purpose = SdStreamPurpose::Audio;
+    options.bufferCapacityBytes =
+        config.sourceBufferCapacityBytes;
+    options.bufferPreference =
+        config.sourceBufferPreference;
+    options.readChunkBytes =
+        config.sourceReadChunkBytes;
+    options.refillThresholdBytes =
+        config.sourceRefillThresholdBytes;
+    options.initialPrefetchBytes =
+        config.sourceInitialPrefetchBytes;
+    options.startOffsetBytes = 0U;
+    options.retryLimit = config.sourceRetryLimit;
+    options.retryDelayMs = config.sourceRetryDelayMs;
+    options.allowPartialReads = true;
+    options.clearBufferOnClose =
+        config.clearSourceBufferOnClose;
+    options.automaticallyPrefetch = true;
+    options.pauseAtEndOfFile = false;
+
+    SdStreamHandle openedStream;
+
+    const RuntimeResult openResult =
+        SdStreamService::open(
+            pathValue,
+            openedStream,
+            options);
+
+    if (openResult != RuntimeResult::Ok)
+    {
+        releaseBackend();
+        config_ = {};
+
+        return setError(
+            Mp3DecoderError::OpenFailed,
+            openResult);
+    }
+
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    status_ = {};
+    stream_ = openedStream;
+    parsePhase_ = ParsePhase::Id3v2Header;
+    pendingId3v2Bytes_ = 0U;
+    firstFrameOffsetBytes_ = 0U;
+    nextSeekIndexAtMs_ = 0U;
+
+    memset(
+        id3HeaderScratch_,
+        0,
+        sizeof(id3HeaderScratch_));
+
+    memset(
+        frameHeaderScratch_,
+        0,
+        sizeof(frameHeaderScratch_));
+
+    status_.open = true;
+    status_.backendReady = backend_ != nullptr;
+    status_.state =
+        Mp3DecoderState::ParsingMetadata;
+    status_.error = Mp3DecoderError::None;
+    status_.fileSizeBytes =
+        SdStreamService::fileSize(stream_);
+    status_.generation = generation;
+    status_.seekIndexCapacity =
+        config_.buildSparseSeekIndex
+            ? config_.maximumSeekIndexEntries
+            : 0U;
+
+    memcpy(
+        status_.path,
+        pathValue,
+        pathLength);
+
+    status_.path[pathLength] = '\0';
+
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+void Mp3Decoder::close()
+{
+    const uint32_t generation =
+        nextGeneration(status_.generation);
+
+    if (stream_)
+    {
+        SdStreamService::close(stream_);
+    }
+
+    releaseBackend();
+
+    config_ = {};
+    status_ = {};
+    status_.generation = generation;
+    status_.state = Mp3DecoderState::Closed;
+
+    stream_ = {};
+    parsePhase_ = ParsePhase::Id3v2Header;
+    pendingId3v2Bytes_ = 0U;
+    firstFrameOffsetBytes_ = 0U;
+    nextSeekIndexAtMs_ = 0U;
+
+    memset(
+        id3HeaderScratch_,
+        0,
+        sizeof(id3HeaderScratch_));
+
+    memset(
+        frameHeaderScratch_,
+        0,
+        sizeof(frameHeaderScratch_));
+}
+
+bool Mp3Decoder::open() const
+{
+    return
+        status_.open &&
+        static_cast<bool>(stream_) &&
+        SdStreamService::valid(stream_);
+}
+
+bool Mp3Decoder::ready() const
+{
+    return
+        open() &&
+        status_.headerReady &&
+        status_.backendReady &&
+        status_.state != Mp3DecoderState::Failed;
+}
+
+bool Mp3Decoder::headerReady() const
+{
+    return status_.headerReady;
+}
+
+bool Mp3Decoder::eof() const
+{
+    return status_.eof;
+}
+
+RuntimeResult Mp3Decoder::parseHeader(
+    uint32_t nowMs,
+    size_t byteBudget)
+{
+    if (!open())
+    {
+        return setError(
+            Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    if (status_.state == Mp3DecoderState::Failed)
+    {
+        return RuntimeResult::CorruptData;
+    }
+
+    if (status_.headerReady)
+    {
+        status_.error = Mp3DecoderError::None;
+        return RuntimeResult::Ok;
+    }
+
+    const size_t effectiveBudget =
+        byteBudget > 0U
+            ? byteBudget
+            : config_.sourceReadChunkBytes;
+
+    if (effectiveBudget == 0U)
+    {
+        return setError(
+            Mp3DecoderError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint32_t startOffset =
+        SdStreamService::position(stream_);
+
+    while (!status_.headerReady)
+    {
+        const uint32_t currentOffset =
+            SdStreamService::position(stream_);
+
+        const size_t consumedThisCall =
+            currentOffset >= startOffset
+                ? static_cast<size_t>(
+                    currentOffset - startOffset)
+                : 0U;
+
+        if (consumedThisCall >= effectiveBudget)
+        {
+            return setError(
+                Mp3DecoderError::Busy,
+                RuntimeResult::Busy);
+        }
+
+        RuntimeResult result =
+            RuntimeResult::InternalError;
+
+        switch (parsePhase_)
+        {
+            case ParsePhase::Id3v2Header:
+                result = parseId3v2Header(nowMs);
+                break;
+
+            case ParsePhase::SkipId3v2:
+                result = skipId3v2(
+                    nowMs,
+                    effectiveBudget - consumedThisCall);
+                break;
+
+            case ParsePhase::SearchFirstFrame:
+                result = searchFirstFrame(
+                    nowMs,
+                    effectiveBudget - consumedThisCall);
+                break;
+
+            case ParsePhase::ParseFirstFrame:
+                result = parseFirstFrame(nowMs);
+                break;
+
+            case ParsePhase::Complete:
+                result = finalizeHeader();
+                break;
+
+            default:
+                status_.state = Mp3DecoderState::Failed;
+
+                return setError(
+                    Mp3DecoderError::InternalError,
+                    RuntimeResult::InternalError);
+        }
+
+        if (result != RuntimeResult::Ok)
+        {
+            return result;
+        }
+    }
+
+    status_.error = Mp3DecoderError::None;
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::decode(
+    PcmRingBuffer& destination,
+    uint32_t nowMs,
+    size_t maximumPcmFrames,
+    size_t& decodedPcmFrames)
+{
+    decodedPcmFrames = 0U;
+
+    if (!open())
+    {
+        return setError(
+            Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    if (status_.state == Mp3DecoderState::Failed)
+    {
+        return RuntimeResult::CorruptData;
+    }
+
+    if (!status_.headerReady)
+    {
+        const RuntimeResult parseResult =
+            parseHeader(
+                nowMs,
+                config_.sourceReadChunkBytes);
+
+        if (parseResult != RuntimeResult::Ok)
+        {
+            return parseResult;
+        }
+    }
+
+    if (status_.eof)
+    {
+        return setError(
+            Mp3DecoderError::EndOfStream,
+            RuntimeResult::NotReady);
+    }
+
+    const RuntimeResult destinationResult =
+        validateDestination(destination);
+
+    if (destinationResult != RuntimeResult::Ok)
+    {
+        return destinationResult;
+    }
+
+    size_t frameBudget = maximumPcmFrames;
+
+    if (frameBudget == 0U)
+    {
+        frameBudget =
+            config_.defaultPcmFramesPerDecodeCall;
+    }
+
+    frameBudget = minimumSize(
+        frameBudget,
+        MP3_DECODER_MAX_FRAMES_PER_CALL);
+
+    if (frameBudget == 0U)
+    {
+        return setError(
+            Mp3DecoderError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    status_.state = Mp3DecoderState::Decoding;
+    status_.sourceWouldBlock = false;
+    status_.destinationBackpressure = false;
+    status_.decodeCount =
+        saturatingIncrement32(status_.decodeCount);
+
+    RuntimeResult terminalResult = RuntimeResult::Ok;
+
+    while (decodedPcmFrames < frameBudget)
+    {
+        size_t producedFrames = 0U;
+
+        const RuntimeResult frameResult =
+            decodeOneMpegFrame(
+                destination,
+                nowMs,
+                frameBudget - decodedPcmFrames,
+                producedFrames);
+
+        decodedPcmFrames += producedFrames;
+
+        if (frameResult != RuntimeResult::Ok)
+        {
+            terminalResult = frameResult;
+            break;
+        }
+
+        if (producedFrames == 0U)
+        {
+            terminalResult = RuntimeResult::Busy;
+            break;
+        }
+    }
+
+    refreshDerivedStatus();
+
+    if (status_.eof)
+    {
+        status_.state = Mp3DecoderState::EndOfStream;
+    }
+    else if (terminalResult == RuntimeResult::Ok ||
+             decodedPcmFrames > 0U)
+    {
+        status_.state = Mp3DecoderState::Ready;
+        status_.error = Mp3DecoderError::None;
+    }
+
+    notifyStateChanged();
+
+    if (decodedPcmFrames > 0U &&
+        isTemporaryResult(terminalResult))
+    {
+        return RuntimeResult::Ok;
+    }
+
+    return terminalResult;
+}
+
+RuntimeResult Mp3Decoder::decode(
+    PcmRingBuffer& destination,
+    uint32_t nowMs,
+    size_t& decodedPcmFrames)
+{
+    return decode(
+        destination,
+        nowMs,
+        config_.defaultPcmFramesPerDecodeCall,
+        decodedPcmFrames);
+}
+
+RuntimeResult Mp3Decoder::seekMilliseconds(
+    uint32_t milliseconds,
+    bool accurate)
+{
+    if (!ready())
+    {
+        return setError(
+            status_.open
+                ? Mp3DecoderError::InvalidSeek
+                : Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    if (status_.durationMilliseconds > 0U &&
+        milliseconds > status_.durationMilliseconds)
+    {
+        return setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    Mp3SeekPoint point;
+    Mp3SeekSource source = Mp3SeekSource::None;
+
+    const RuntimeResult chooseResult =
+        chooseSeekPoint(
+            milliseconds,
+            point,
+            source);
+
+    if (chooseResult != RuntimeResult::Ok)
+    {
+        return chooseResult;
+    }
+
+    if (accurate &&
+        source != Mp3SeekSource::SparseIndex &&
+        point.sourceOffsetBytes >
+            status_.streamInfo.audioDataOffsetBytes)
+    {
+        const uint16_t bitrate =
+            status_.streamInfo.averageBitrateKbps > 0U
+                ? status_.streamInfo.averageBitrateKbps
+                : status_.streamInfo.firstFrame.bitrateKbps;
+
+        const uint32_t maximumBacktrack =
+            static_cast<uint32_t>(minimumSize(
+                backend_->compressedWindowBytes,
+                static_cast<size_t>(
+                    point.sourceOffsetBytes -
+                    status_.streamInfo.audioDataOffsetBytes)));
+
+        const uint32_t oneSecondBytes =
+            bitrate > 0U
+                ? static_cast<uint32_t>(bitrate) * 125U
+                : maximumBacktrack;
+
+        const uint32_t backtrackBytes =
+            oneSecondBytes < maximumBacktrack
+                ? oneSecondBytes
+                : maximumBacktrack;
+
+        point.sourceOffsetBytes -= backtrackBytes;
+
+        const uint32_t backtrackMs =
+            bitrate > 0U
+                ? static_cast<uint32_t>(
+                    (static_cast<uint64_t>(backtrackBytes) *
+                     8ULL) /
+                    bitrate)
+                : 0U;
+
+        const uint64_t backtrackFrames =
+            millisecondsToFrames(
+                backtrackMs,
+                status_.streamInfo.outputFormat.sampleRateHz);
+
+        point.pcmFrame =
+            backtrackFrames >= point.pcmFrame
+                ? 0U
+                : point.pcmFrame - backtrackFrames;
+    }
+
+    const RuntimeResult seekResult =
+        seekToSourceOffset(
+            point.sourceOffsetBytes,
+            point.pcmFrame,
+            source);
+
+    if (seekResult != RuntimeResult::Ok)
+    {
+        return seekResult;
+    }
+
+    if (accurate)
+    {
+        const uint64_t targetFrame =
+            millisecondsToFrames(
+                milliseconds,
+                status_.streamInfo.
+                    outputFormat.sampleRateHz);
+
+        const RuntimeResult accurateResult =
+            accurateSeekForward(
+                targetFrame,
+                config_.accurateSeekDecodeLimitMs);
+
+        if (accurateResult != RuntimeResult::Ok)
+        {
+            return accurateResult;
+        }
+    }
+
+    status_.seekCount =
+        saturatingIncrement32(status_.seekCount);
+
+    refreshDerivedStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::seekPcmFrame(
+    uint64_t pcmFrame,
+    bool accurate)
+{
+    if (!ready() ||
+        status_.streamInfo.outputFormat.sampleRateHz == 0U)
+    {
+        return setError(
+            status_.open
+                ? Mp3DecoderError::InvalidSeek
+                : Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    if (status_.estimatedTotalPcmFrames > 0U &&
+        pcmFrame > status_.estimatedTotalPcmFrames)
+    {
+        return setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint64_t milliseconds64 =
+        (pcmFrame * 1000ULL) /
+        status_.streamInfo.outputFormat.sampleRateHz;
+
+    if (milliseconds64 > UINT32_MAX)
+    {
+        return setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    return seekMilliseconds(
+        static_cast<uint32_t>(milliseconds64),
+        accurate);
+}
+
+RuntimeResult Mp3Decoder::rewind()
+{
+    return seekMilliseconds(0U, false);
+}
+
+Mp3StreamInfo Mp3Decoder::streamInfo() const
+{
+    return status_.streamInfo;
+}
+
+Mp3FrameInfo Mp3Decoder::currentFrameInfo() const
+{
+    return status_.currentFrameInfo;
+}
+
+I2sAudioFormat Mp3Decoder::outputFormat() const
+{
+    return status_.streamInfo.outputFormat;
+}
+
+uint64_t Mp3Decoder::currentPcmFrame() const
+{
+    return status_.currentPcmFrame;
+}
+
+uint64_t Mp3Decoder::estimatedTotalPcmFrames() const
+{
+    return status_.estimatedTotalPcmFrames;
+}
+
+uint32_t Mp3Decoder::durationMilliseconds() const
+{
+    return status_.durationMilliseconds;
+}
+
+uint32_t Mp3Decoder::currentMilliseconds() const
+{
+    return status_.currentMilliseconds;
+}
+
+uint32_t Mp3Decoder::audioDataOffsetBytes() const
+{
+    return status_.streamInfo.audioDataOffsetBytes;
+}
+
+uint32_t Mp3Decoder::compressedBytesConsumed() const
+{
+    return status_.compressedBytesConsumed;
+}
+
+const char* Mp3Decoder::path() const
+{
+    return status_.path;
+}
+
+Mp3DecoderStatus Mp3Decoder::status() const
+{
+    return status_;
+}
+
+uint16_t Mp3Decoder::seekIndexEntryCount() const
+{
+    return status_.seekIndexEntryCount;
+}
+
+RuntimeResult Mp3Decoder::seekIndexEntry(
+    uint16_t index,
+    Mp3SeekPoint& point) const
+{
+    point = {};
+
+    if (!ready())
+    {
+        return RuntimeResult::NotReady;
+    }
+
+    if (seekIndex_ == nullptr ||
+        index >= status_.seekIndexEntryCount)
+    {
+        return RuntimeResult::InvalidArgument;
+    }
+
+    point = seekIndex_[index];
+    return RuntimeResult::Ok;
+}
+
+void Mp3Decoder::setObserver(
+    Mp3DecoderObserver observer)
+{
+    observer_ = observer;
+}
+
+Mp3DecoderError Mp3Decoder::lastError() const
+{
+    return status_.error;
+}
+
+void Mp3Decoder::clearError()
+{
+    status_.error = Mp3DecoderError::None;
+}
+
+bool Mp3Decoder::validConfig(
+    const Mp3DecoderConfig& config)
+{
+    return
+        validMemoryPreference(
+            config.sourceBufferPreference) &&
+
+        validMemoryPreference(
+            config.decoderWorkingMemoryPreference) &&
+
+        config.sourceBufferCapacityBytes >=
+            SD_STREAM_MINIMUM_BUFFER_BYTES &&
+
+        config.sourceBufferCapacityBytes <=
+            SD_STREAM_MAXIMUM_BUFFER_BYTES &&
+
+        config.sourceReadChunkBytes > 0U &&
+
+        config.sourceReadChunkBytes <=
+            config.sourceBufferCapacityBytes &&
+
+        config.sourceInitialPrefetchBytes <=
+            config.sourceBufferCapacityBytes &&
+
+        config.sourceRefillThresholdBytes <=
+            config.sourceBufferCapacityBytes &&
+
+        config.maximumSyncSearchBytes >=
+            MP3_DECODER_FRAME_HEADER_BYTES &&
+
+        config.defaultPcmFramesPerDecodeCall > 0U &&
+
+        config.defaultPcmFramesPerDecodeCall <=
+            MP3_DECODER_MAX_FRAMES_PER_CALL &&
+
+        config.maximumSeekIndexEntries <=
+            MP3_DECODER_MAX_SEEK_INDEX_ENTRIES &&
+
+        (!config.buildSparseSeekIndex ||
+         (config.maximumSeekIndexEntries > 0U &&
+          config.seekIndexIntervalMs > 0U));
+}
+bool Mp3Decoder::supportedFrame(
+    const Mp3FrameInfo& frame,
+    const Mp3DecoderConfig& config,
+    Mp3DecoderError* rejectionReason)
+{
+    if (rejectionReason != nullptr)
+    {
+        *rejectionReason = Mp3DecoderError::None;
+    }
+
+    bool versionAllowed = false;
+
+    switch (frame.version)
+    {
+        case Mp3MpegVersion::Mpeg1:
+            versionAllowed = config.allowMpeg1;
+            break;
+
+        case Mp3MpegVersion::Mpeg2:
+            versionAllowed = config.allowMpeg2;
+            break;
+
+        case Mp3MpegVersion::Mpeg25:
+            versionAllowed = config.allowMpeg25;
+            break;
+
+        default:
+            if (rejectionReason != nullptr)
+            {
+                *rejectionReason =
+                    Mp3DecoderError::UnsupportedMpegVersion;
+            }
+
+            return false;
+    }
+
+    if (!versionAllowed)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedMpegVersion;
+        }
+
+        return false;
+    }
+
+    if (frame.layer != 3U)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedLayer;
+        }
+
+        return false;
+    }
+
+    if (frame.channelCount <
+            MP3_DECODER_MIN_CHANNEL_COUNT ||
+        frame.channelCount >
+            MP3_DECODER_MAX_CHANNEL_COUNT)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedChannelCount;
+        }
+
+        return false;
+    }
+
+    if (frame.sampleRateHz <
+            MP3_DECODER_MIN_SAMPLE_RATE_HZ ||
+        frame.sampleRateHz >
+            MP3_DECODER_MAX_SAMPLE_RATE_HZ)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedSampleRate;
+        }
+
+        return false;
+    }
+
+    const bool freeFormat =
+        frame.bitrateKbps == 0U &&
+        frame.frameSizeBytes == 0U;
+
+    if (freeFormat && !config.allowFreeFormat)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedFreeFormat;
+        }
+
+        return false;
+    }
+
+    if (!freeFormat &&
+        (frame.bitrateKbps <
+             MP3_DECODER_MIN_BITRATE_KBPS ||
+         frame.bitrateKbps >
+             MP3_DECODER_MAX_BITRATE_KBPS))
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::UnsupportedBitrate;
+        }
+
+        return false;
+    }
+
+    if (frame.crcProtected &&
+        !config.allowCrcProtectedFrames)
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::ProtectedFrameUnsupported;
+        }
+
+        return false;
+    }
+
+    const size_t maximumFrameBytes =
+        config.allowFreeFormat
+            ? 2304U
+            : MP3_DECODER_MAX_COMPRESSED_FRAME_BYTES;
+
+    if (!freeFormat &&
+        (frame.frameSizeBytes <
+             MP3_DECODER_FRAME_HEADER_BYTES ||
+         frame.frameSizeBytes >
+             maximumFrameBytes))
+    {
+        if (rejectionReason != nullptr)
+        {
+            *rejectionReason =
+                Mp3DecoderError::FrameTooLarge;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+const char* Mp3Decoder::stateText(
+    Mp3DecoderState value)
+{
+    switch (value)
+    {
+        case Mp3DecoderState::Closed:
+            return "CLOSED";
+        case Mp3DecoderState::Opening:
+            return "OPENING";
+        case Mp3DecoderState::ParsingMetadata:
+            return "PARSING_METADATA";
+        case Mp3DecoderState::SearchingSync:
+            return "SEARCHING_SYNC";
+        case Mp3DecoderState::Ready:
+            return "READY";
+        case Mp3DecoderState::Decoding:
+            return "DECODING";
+        case Mp3DecoderState::Seeking:
+            return "SEEKING";
+        case Mp3DecoderState::EndOfStream:
+            return "END_OF_STREAM";
+        case Mp3DecoderState::Failed:
+            return "FAILED";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* Mp3Decoder::versionText(
+    Mp3MpegVersion value)
+{
+    switch (value)
+    {
+        case Mp3MpegVersion::Unknown:
+            return "UNKNOWN";
+        case Mp3MpegVersion::Mpeg1:
+            return "MPEG_1";
+        case Mp3MpegVersion::Mpeg2:
+            return "MPEG_2";
+        case Mp3MpegVersion::Mpeg25:
+            return "MPEG_2_5";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* Mp3Decoder::channelModeText(
+    Mp3ChannelMode value)
+{
+    switch (value)
+    {
+        case Mp3ChannelMode::Stereo:
+            return "STEREO";
+        case Mp3ChannelMode::JointStereo:
+            return "JOINT_STEREO";
+        case Mp3ChannelMode::DualChannel:
+            return "DUAL_CHANNEL";
+        case Mp3ChannelMode::Mono:
+            return "MONO";
+        case Mp3ChannelMode::Unknown:
+            return "UNKNOWN";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* Mp3Decoder::bitrateModeText(
+    Mp3BitrateMode value)
+{
+    switch (value)
+    {
+        case Mp3BitrateMode::Unknown:
+            return "UNKNOWN";
+        case Mp3BitrateMode::Constant:
+            return "CONSTANT";
+        case Mp3BitrateMode::Variable:
+            return "VARIABLE";
+        case Mp3BitrateMode::Average:
+            return "AVERAGE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* Mp3Decoder::seekSourceText(
+    Mp3SeekSource value)
+{
+    switch (value)
+    {
+        case Mp3SeekSource::None:
+            return "NONE";
+        case Mp3SeekSource::XingToc:
+            return "XING_TOC";
+        case Mp3SeekSource::VbriTable:
+            return "VBRI_TABLE";
+        case Mp3SeekSource::SparseIndex:
+            return "SPARSE_INDEX";
+        case Mp3SeekSource::BitrateEstimate:
+            return "BITRATE_ESTIMATE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* Mp3Decoder::errorText(
+    Mp3DecoderError value)
+{
+    switch (value)
+    {
+        case Mp3DecoderError::None:
+            return "NONE";
+        case Mp3DecoderError::AlreadyOpen:
+            return "ALREADY_OPEN";
+        case Mp3DecoderError::NotOpen:
+            return "NOT_OPEN";
+        case Mp3DecoderError::StreamServiceNotReady:
+            return "STREAM_SERVICE_NOT_READY";
+        case Mp3DecoderError::InvalidConfiguration:
+            return "INVALID_CONFIGURATION";
+        case Mp3DecoderError::InvalidPath:
+            return "INVALID_PATH";
+        case Mp3DecoderError::OpenFailed:
+            return "OPEN_FAILED";
+        case Mp3DecoderError::BackendAllocationFailed:
+            return "BACKEND_ALLOCATION_FAILED";
+        case Mp3DecoderError::BackendInitializationFailed:
+            return "BACKEND_INITIALIZATION_FAILED";
+        case Mp3DecoderError::SourceWouldBlock:
+            return "SOURCE_WOULD_BLOCK";
+        case Mp3DecoderError::SourceReadFailed:
+            return "SOURCE_READ_FAILED";
+        case Mp3DecoderError::SourceSeekFailed:
+            return "SOURCE_SEEK_FAILED";
+        case Mp3DecoderError::InvalidId3Tag:
+            return "INVALID_ID3_TAG";
+        case Mp3DecoderError::Id3TagTooLarge:
+            return "ID3_TAG_TOO_LARGE";
+        case Mp3DecoderError::SyncNotFound:
+            return "SYNC_NOT_FOUND";
+        case Mp3DecoderError::SyncSearchLimitReached:
+            return "SYNC_SEARCH_LIMIT_REACHED";
+        case Mp3DecoderError::InvalidFrameHeader:
+            return "INVALID_FRAME_HEADER";
+        case Mp3DecoderError::UnsupportedMpegVersion:
+            return "UNSUPPORTED_MPEG_VERSION";
+        case Mp3DecoderError::UnsupportedLayer:
+            return "UNSUPPORTED_LAYER";
+        case Mp3DecoderError::UnsupportedSampleRate:
+            return "UNSUPPORTED_SAMPLE_RATE";
+        case Mp3DecoderError::UnsupportedBitrate:
+            return "UNSUPPORTED_BITRATE";
+        case Mp3DecoderError::UnsupportedChannelCount:
+            return "UNSUPPORTED_CHANNEL_COUNT";
+        case Mp3DecoderError::UnsupportedFreeFormat:
+            return "UNSUPPORTED_FREE_FORMAT";
+        case Mp3DecoderError::ProtectedFrameUnsupported:
+            return "PROTECTED_FRAME_UNSUPPORTED";
+        case Mp3DecoderError::FrameTooLarge:
+            return "FRAME_TOO_LARGE";
+        case Mp3DecoderError::TruncatedFrame:
+            return "TRUNCATED_FRAME";
+        case Mp3DecoderError::DecodeFailed:
+            return "DECODE_FAILED";
+        case Mp3DecoderError::FormatChanged:
+            return "FORMAT_CHANGED";
+        case Mp3DecoderError::DestinationNotReady:
+            return "DESTINATION_NOT_READY";
+        case Mp3DecoderError::DestinationFormatMismatch:
+            return "DESTINATION_FORMAT_MISMATCH";
+        case Mp3DecoderError::DestinationFull:
+            return "DESTINATION_FULL";
+        case Mp3DecoderError::DestinationWriteFailed:
+            return "DESTINATION_WRITE_FAILED";
+        case Mp3DecoderError::SeekIndexUnavailable:
+            return "SEEK_INDEX_UNAVAILABLE";
+        case Mp3DecoderError::InvalidSeek:
+            return "INVALID_SEEK";
+        case Mp3DecoderError::AccurateSeekLimitReached:
+            return "ACCURATE_SEEK_LIMIT_REACHED";
+        case Mp3DecoderError::EndOfStream:
+            return "END_OF_STREAM";
+        case Mp3DecoderError::Busy:
+            return "BUSY";
+        case Mp3DecoderError::InternalError:
+            return "INTERNAL_ERROR";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool Mp3Decoder::multiplyWouldOverflow(
+    uint64_t first,
+    uint64_t second)
+{
+    return
+        first != 0U &&
+        second > UINT64_MAX / first;
+}
+
+bool Mp3Decoder::addWouldOverflow(
+    uint64_t first,
+    uint64_t second)
+{
+    return second > UINT64_MAX - first;
+}
+
+uint32_t Mp3Decoder::readBe32(
+    const uint8_t* bytes)
+{
+    if (bytes == nullptr)
+    {
+        return 0U;
+    }
+
+    return
+        (static_cast<uint32_t>(bytes[0]) << 24U) |
+        (static_cast<uint32_t>(bytes[1]) << 16U) |
+        (static_cast<uint32_t>(bytes[2]) << 8U) |
+        static_cast<uint32_t>(bytes[3]);
+}
+
+uint32_t Mp3Decoder::readSyncSafe32(
+    const uint8_t* bytes,
+    bool& valid)
+{
+    valid = false;
+
+    if (bytes == nullptr ||
+        (bytes[0] & 0x80U) != 0U ||
+        (bytes[1] & 0x80U) != 0U ||
+        (bytes[2] & 0x80U) != 0U ||
+        (bytes[3] & 0x80U) != 0U)
+    {
+        return 0U;
+    }
+
+    valid = true;
+
+    return
+        (static_cast<uint32_t>(bytes[0]) << 21U) |
+        (static_cast<uint32_t>(bytes[1]) << 14U) |
+        (static_cast<uint32_t>(bytes[2]) << 7U) |
+        static_cast<uint32_t>(bytes[3]);
+}
+
+bool Mp3Decoder::frameSyncCandidate(
+    const uint8_t* bytes)
+{
+    return
+        bytes != nullptr &&
+        bytes[0] == 0xFFU &&
+        (bytes[1] & 0xE0U) == 0xE0U;
+}
+
+RuntimeResult Mp3Decoder::parseFrameHeader(
+    const uint8_t* bytes,
+    Mp3FrameInfo& frame,
+    Mp3DecoderError& error)
+{
+    frame = {};
+    error = Mp3DecoderError::None;
+
+    if (bytes == nullptr ||
+        !frameSyncCandidate(bytes))
+    {
+        error = Mp3DecoderError::InvalidFrameHeader;
+
+        return RuntimeResult::CorruptData;
+    }
+
+    const uint8_t versionBits =
+        static_cast<uint8_t>((bytes[1] >> 3U) & 0x03U);
+
+    switch (versionBits)
+    {
+        case 0U:
+            frame.version = Mp3MpegVersion::Mpeg25;
+            break;
+
+        case 2U:
+            frame.version = Mp3MpegVersion::Mpeg2;
+            break;
+
+        case 3U:
+            frame.version = Mp3MpegVersion::Mpeg1;
+            break;
+
+        default:
+            error = Mp3DecoderError::UnsupportedMpegVersion;
+            return RuntimeResult::Unsupported;
+    }
+
+    const uint8_t layerBits =
+        static_cast<uint8_t>((bytes[1] >> 1U) & 0x03U);
+
+    if (layerBits != 1U)
+    {
+        error = Mp3DecoderError::UnsupportedLayer;
+        return RuntimeResult::Unsupported;
+    }
+
+    frame.layer = 3U;
+    frame.crcProtected = (bytes[1] & 0x01U) == 0U;
+
+    const uint8_t bitrateIndex =
+        static_cast<uint8_t>((bytes[2] >> 4U) & 0x0FU);
+
+    if (bitrateIndex == 15U)
+    {
+        error = Mp3DecoderError::UnsupportedBitrate;
+        return RuntimeResult::CorruptData;
+    }
+
+    static constexpr uint16_t MPEG1_LAYER3_BITRATES[16] = {
+        0U, 32U, 40U, 48U,
+        56U, 64U, 80U, 96U,
+        112U, 128U, 160U, 192U,
+        224U, 256U, 320U, 0U
+    };
+
+    static constexpr uint16_t MPEG2_LAYER3_BITRATES[16] = {
+        0U, 8U, 16U, 24U,
+        32U, 40U, 48U, 56U,
+        64U, 80U, 96U, 112U,
+        128U, 144U, 160U, 0U
+    };
+
+    frame.bitrateKbps =
+        bitrateIndex == 0U
+            ? 0U
+            : (frame.version == Mp3MpegVersion::Mpeg1
+                ? MPEG1_LAYER3_BITRATES[bitrateIndex]
+                : MPEG2_LAYER3_BITRATES[bitrateIndex]);
+
+    const uint8_t sampleRateIndex =
+        static_cast<uint8_t>((bytes[2] >> 2U) & 0x03U);
+
+    if (sampleRateIndex == 3U)
+    {
+        error = Mp3DecoderError::UnsupportedSampleRate;
+        return RuntimeResult::CorruptData;
+    }
+
+    static constexpr uint32_t BASE_SAMPLE_RATES[3] = {
+        44100UL,
+        48000UL,
+        32000UL
+    };
+
+    frame.sampleRateHz = BASE_SAMPLE_RATES[sampleRateIndex];
+
+    if (frame.version == Mp3MpegVersion::Mpeg2)
+    {
+        frame.sampleRateHz /= 2U;
+    }
+    else if (frame.version == Mp3MpegVersion::Mpeg25)
+    {
+        frame.sampleRateHz /= 4U;
+    }
+
+    frame.paddingBytes =
+        static_cast<uint8_t>((bytes[2] >> 1U) & 0x01U);
+
+    frame.samplesPerFrame =
+        frame.version == Mp3MpegVersion::Mpeg1
+            ? 1152U
+            : 576U;
+
+    if (bitrateIndex != 0U)
+    {
+        const uint32_t frameSize =
+            ((frame.version == Mp3MpegVersion::Mpeg1
+                  ? 144000UL
+                  : 72000UL) *
+             frame.bitrateKbps) /
+            frame.sampleRateHz +
+            frame.paddingBytes;
+
+        if (frameSize < MP3_DECODER_FRAME_HEADER_BYTES ||
+            frameSize > UINT16_MAX)
+        {
+            error = Mp3DecoderError::FrameTooLarge;
+            return RuntimeResult::CorruptData;
+        }
+
+        frame.frameSizeBytes =
+            static_cast<uint16_t>(frameSize);
+    }
+    else
+    {
+        // Free-format frame size and bitrate are resolved by minimp3
+        // using several consecutive frames from the guarded input window.
+        frame.frameSizeBytes = 0U;
+    }
+
+    const uint8_t channelMode =
+        static_cast<uint8_t>((bytes[3] >> 6U) & 0x03U);
+
+    switch (channelMode)
+    {
+        case 0U:
+            frame.channelMode = Mp3ChannelMode::Stereo;
+            frame.channelCount = 2U;
+            break;
+
+        case 1U:
+            frame.channelMode = Mp3ChannelMode::JointStereo;
+            frame.channelCount = 2U;
+            break;
+
+        case 2U:
+            frame.channelMode = Mp3ChannelMode::DualChannel;
+            frame.channelCount = 2U;
+            break;
+
+        case 3U:
+            frame.channelMode = Mp3ChannelMode::Mono;
+            frame.channelCount = 1U;
+            break;
+
+        default:
+            error = Mp3DecoderError::UnsupportedChannelCount;
+            return RuntimeResult::Unsupported;
+    }
+
+    frame.copyrighted = (bytes[3] & 0x08U) != 0U;
+    frame.original = (bytes[3] & 0x04U) != 0U;
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::allocateBackend()
+{
+#if !EGS_MP3_HAS_MINIMP3
+    return setError(
+        Mp3DecoderError::BackendInitializationFailed,
+        RuntimeResult::Unsupported);
+#else
+    if (!MemoryManager::begin())
+    {
+        return setError(
+            Mp3DecoderError::BackendAllocationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    size_t compressedWindowBytes = minimumSize(
+        config_.sourceBufferCapacityBytes,
+        MP3_MINIMP3_RECOMMENDED_WINDOW_BYTES);
+
+    if (compressedWindowBytes <
+        MP3_DECODER_MAX_COMPRESSED_FRAME_BYTES)
+    {
+        compressedWindowBytes =
+            MP3_DECODER_MAX_COMPRESSED_FRAME_BYTES;
+    }
+
+    if (compressedWindowBytes >
+        config_.sourceBufferCapacityBytes)
+    {
+        compressedWindowBytes =
+            config_.sourceBufferCapacityBytes;
+    }
+
+    if (compressedWindowBytes >
+        SIZE_MAX - MP3_INPUT_GUARD_BYTES)
+    {
+        return setError(
+            Mp3DecoderError::BackendAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    const size_t compressedAllocationBytes =
+        compressedWindowBytes +
+        MP3_INPUT_GUARD_BYTES;
+
+    backendStorage_ = MemoryManager::allocate(
+        sizeof(BackendContext),
+        config_.decoderWorkingMemoryPreference,
+        true);
+
+    compressedScratch_ = MemoryManager::allocate(
+        compressedAllocationBytes,
+        config_.decoderWorkingMemoryPreference,
+        true);
+
+    pcmScratch_ = MemoryManager::allocate(
+        MP3_DECODER_MAX_PCM_SAMPLES_PER_MPEG_FRAME *
+            sizeof(int16_t),
+        config_.decoderWorkingMemoryPreference,
+        true);
+
+    if (config_.buildSparseSeekIndex)
+    {
+        const size_t indexBytes =
+            static_cast<size_t>(
+                config_.maximumSeekIndexEntries) *
+            sizeof(Mp3SeekPoint);
+
+        seekIndexStorage_ = MemoryManager::allocate(
+            indexBytes,
+            config_.decoderWorkingMemoryPreference,
+            true);
+    }
+
+    if (!backendStorage_ ||
+        backendStorage_.size < sizeof(BackendContext) ||
+        !compressedScratch_ ||
+        compressedScratch_.size <
+            compressedAllocationBytes ||
+        !pcmScratch_ ||
+        pcmScratch_.size <
+            MP3_DECODER_MAX_PCM_SAMPLES_PER_MPEG_FRAME *
+                sizeof(int16_t) ||
+        (config_.buildSparseSeekIndex &&
+         (!seekIndexStorage_ ||
+          seekIndexStorage_.size <
+              static_cast<size_t>(
+                  config_.maximumSeekIndexEntries) *
+                  sizeof(Mp3SeekPoint))))
+    {
+        releaseBackend();
+
+        return setError(
+            Mp3DecoderError::BackendAllocationFailed,
+            RuntimeResult::OutOfMemory);
+    }
+
+    backend_ = new (backendStorage_.data)
+        BackendContext();
+
+    backend_->compressedWindowBytes =
+        compressedWindowBytes;
+
+    mp3dec_init(&backend_->decoder);
+
+    seekIndex_ = config_.buildSparseSeekIndex
+        ? static_cast<Mp3SeekPoint*>(
+            seekIndexStorage_.data)
+        : nullptr;
+
+    return RuntimeResult::Ok;
+#endif
+}
+
+void Mp3Decoder::releaseBackend()
+{
+    seekIndex_ = nullptr;
+
+    if (backend_ != nullptr)
+    {
+        backend_->~BackendContext();
+        backend_ = nullptr;
+    }
+
+    if (seekIndexStorage_)
+    {
+        MemoryManager::release(seekIndexStorage_);
+    }
+
+    if (pcmScratch_)
+    {
+        MemoryManager::release(pcmScratch_);
+    }
+
+    if (compressedScratch_)
+    {
+        MemoryManager::release(compressedScratch_);
+    }
+
+    if (backendStorage_)
+    {
+        MemoryManager::release(backendStorage_);
+    }
+}
+
+RuntimeResult Mp3Decoder::ensureSourceBytes(
+    uint32_t nowMs,
+    size_t requiredBytes)
+{
+    if (!open())
+    {
+        return setError(
+            Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    if (requiredBytes == 0U)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    if (requiredBytes >
+        config_.sourceBufferCapacityBytes)
+    {
+        return setError(
+            Mp3DecoderError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (SdStreamService::available(stream_) >=
+        requiredBytes)
+    {
+        status_.sourceWouldBlock = false;
+        return RuntimeResult::Ok;
+    }
+
+    const size_t missingBytes =
+        requiredBytes -
+        SdStreamService::available(stream_);
+
+    const size_t prefetchBudget =
+        missingBytes > config_.sourceReadChunkBytes
+            ? missingBytes
+            : config_.sourceReadChunkBytes;
+
+    size_t loadedBytes = 0U;
+
+    const RuntimeResult prefetchResult =
+        SdStreamService::prefetch(
+            stream_,
+            nowMs,
+            prefetchBudget,
+            loadedBytes);
+
+    if (SdStreamService::available(stream_) >=
+        requiredBytes)
+    {
+        status_.sourceWouldBlock = false;
+        status_.error = Mp3DecoderError::None;
+        return RuntimeResult::Ok;
+    }
+
+    if (prefetchResult == RuntimeResult::IoError ||
+        !SdStreamService::valid(stream_))
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SourceReadFailed,
+            RuntimeResult::IoError);
+    }
+
+    if (SdStreamService::eof(stream_))
+    {
+        return setError(
+            status_.headerReady
+                ? Mp3DecoderError::TruncatedFrame
+                : Mp3DecoderError::SyncNotFound,
+            RuntimeResult::CorruptData);
+    }
+
+    SdStreamService::requestPrefetch(stream_);
+
+    status_.sourceWouldBlock = true;
+    status_.sourceWaitCount =
+        saturatingIncrement32(status_.sourceWaitCount);
+
+    return setError(
+        Mp3DecoderError::SourceWouldBlock,
+        prefetchResult == RuntimeResult::Busy
+            ? RuntimeResult::Busy
+            : RuntimeResult::NotReady);
+}
+
+RuntimeResult Mp3Decoder::copySourceBytes(
+    uint32_t nowMs,
+    void* destination,
+    size_t requestedBytes,
+    size_t& copiedBytes,
+    size_t sourceOffsetBytes)
+{
+    copiedBytes = 0U;
+
+    if (destination == nullptr &&
+        requestedBytes > 0U)
+    {
+        return setError(
+            Mp3DecoderError::InternalError,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (requestedBytes == 0U)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    if (sourceOffsetBytes > SIZE_MAX - requestedBytes)
+    {
+        return setError(
+            Mp3DecoderError::InvalidConfiguration,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const RuntimeResult ensureResult =
+        ensureSourceBytes(
+            nowMs,
+            sourceOffsetBytes + requestedBytes);
+
+    if (ensureResult != RuntimeResult::Ok)
+    {
+        return ensureResult;
+    }
+
+    const RuntimeResult peekResult =
+        SdStreamService::peek(
+            stream_,
+            destination,
+            requestedBytes,
+            sourceOffsetBytes,
+            copiedBytes);
+
+    if (peekResult != RuntimeResult::Ok ||
+        copiedBytes != requestedBytes)
+    {
+        if (isTemporaryResult(peekResult))
+        {
+            status_.sourceWouldBlock = true;
+            status_.sourceWaitCount =
+                saturatingIncrement32(
+                    status_.sourceWaitCount);
+
+            return setError(
+                Mp3DecoderError::SourceWouldBlock,
+                peekResult);
+        }
+
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SourceReadFailed,
+            RuntimeResult::IoError);
+    }
+
+    status_.sourceWouldBlock = false;
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::consumeSourceBytes(
+    size_t sizeBytes)
+{
+    if (sizeBytes == 0U)
+    {
+        return RuntimeResult::Ok;
+    }
+
+    size_t skippedBytes = 0U;
+
+    const RuntimeResult skipResult =
+        SdStreamService::skip(
+            stream_,
+            sizeBytes,
+            skippedBytes);
+
+    if (skipResult != RuntimeResult::Ok ||
+        skippedBytes != sizeBytes)
+    {
+        if (isTemporaryResult(skipResult))
+        {
+            return setError(
+                Mp3DecoderError::SourceWouldBlock,
+                skipResult);
+        }
+
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SourceReadFailed,
+            RuntimeResult::IoError);
+    }
+
+    status_.sourceOffsetBytes =
+        SdStreamService::position(stream_);
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::parseId3v2Header(
+    uint32_t nowMs)
+{
+    status_.state = Mp3DecoderState::ParsingMetadata;
+
+    size_t copiedBytes = 0U;
+
+    const RuntimeResult copyResult =
+        copySourceBytes(
+            nowMs,
+            id3HeaderScratch_,
+            MP3_DECODER_ID3V2_HEADER_BYTES,
+            copiedBytes);
+
+    if (copyResult != RuntimeResult::Ok)
+    {
+        return copyResult;
+    }
+
+    if (!signatureEquals(
+            id3HeaderScratch_,
+            ID3_SIGNATURE,
+            sizeof(ID3_SIGNATURE)))
+    {
+        parsePhase_ = ParsePhase::SearchFirstFrame;
+        return RuntimeResult::Ok;
+    }
+
+    if (!config_.skipId3v2)
+    {
+        return setError(
+            Mp3DecoderError::InvalidId3Tag,
+            RuntimeResult::Unsupported);
+    }
+
+    const uint8_t majorVersion =
+        id3HeaderScratch_[3];
+
+    if (majorVersion < 2U ||
+        majorVersion > 4U ||
+        id3HeaderScratch_[4] == 0xFFU)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::InvalidId3Tag,
+            RuntimeResult::CorruptData);
+    }
+
+    const uint8_t flags =
+        id3HeaderScratch_[5];
+
+    const bool reservedFlagsSet =
+        (majorVersion == 2U &&
+         (flags & 0x3FU) != 0U) ||
+        (majorVersion == 3U &&
+         (flags & 0x1FU) != 0U) ||
+        (majorVersion == 4U &&
+         (flags & 0x0FU) != 0U);
+
+    if (reservedFlagsSet)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::InvalidId3Tag,
+            RuntimeResult::CorruptData);
+    }
+
+    bool sizeValid = false;
+
+    const uint32_t payloadBytes =
+        readSyncSafe32(
+            id3HeaderScratch_ + 6U,
+            sizeValid);
+
+    if (!sizeValid)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::InvalidId3Tag,
+            RuntimeResult::CorruptData);
+    }
+
+    const bool footerPresent =
+        majorVersion == 4U &&
+        (flags & 0x10U) != 0U;
+
+    const uint64_t totalTagBytes =
+        MP3_DECODER_ID3V2_HEADER_BYTES +
+        static_cast<uint64_t>(payloadBytes) +
+        (footerPresent
+             ? MP3_DECODER_ID3V2_HEADER_BYTES
+             : 0U);
+
+    if (totalTagBytes > UINT32_MAX ||
+        totalTagBytes > config_.maximumSyncSearchBytes ||
+        (status_.fileSizeBytes > 0U &&
+         totalTagBytes >= status_.fileSizeBytes))
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::Id3TagTooLarge,
+            RuntimeResult::CorruptData);
+    }
+
+    pendingId3v2Bytes_ =
+        static_cast<uint32_t>(totalTagBytes);
+
+    status_.streamInfo.id3v2SizeBytes =
+        pendingId3v2Bytes_;
+
+    parsePhase_ = ParsePhase::SkipId3v2;
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::skipId3v2(
+    uint32_t nowMs,
+    size_t byteBudget)
+{
+    if (pendingId3v2Bytes_ == 0U)
+    {
+        parsePhase_ = ParsePhase::SearchFirstFrame;
+        return RuntimeResult::Ok;
+    }
+
+    if (byteBudget == 0U)
+    {
+        return setError(
+            Mp3DecoderError::Busy,
+            RuntimeResult::Busy);
+    }
+
+    const size_t step = minimumSize(
+        pendingId3v2Bytes_,
+        minimumSize(
+            byteBudget,
+            config_.sourceBufferCapacityBytes));
+
+    const RuntimeResult ensureResult =
+        ensureSourceBytes(nowMs, step);
+
+    if (ensureResult != RuntimeResult::Ok)
+    {
+        return ensureResult;
+    }
+
+    const RuntimeResult consumeResult =
+        consumeSourceBytes(step);
+
+    if (consumeResult != RuntimeResult::Ok)
+    {
+        return consumeResult;
+    }
+
+    pendingId3v2Bytes_ -=
+        static_cast<uint32_t>(step);
+
+    if (pendingId3v2Bytes_ == 0U)
+    {
+        parsePhase_ = ParsePhase::SearchFirstFrame;
+    }
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::searchFirstFrame(
+    uint32_t nowMs,
+    size_t byteBudget)
+{
+    status_.state = Mp3DecoderState::SearchingSync;
+
+    if (byteBudget == 0U)
+    {
+        return setError(
+            Mp3DecoderError::Busy,
+            RuntimeResult::Busy);
+    }
+
+#if !EGS_MP3_HAS_MINIMP3
+    (void)nowMs;
+
+    return setError(
+        Mp3DecoderError::BackendInitializationFailed,
+        RuntimeResult::Unsupported);
+#else
+    size_t scannedThisCall = 0U;
+
+    while (scannedThisCall < byteBudget)
+    {
+        if (status_.syncBytesSkipped >=
+            config_.maximumSyncSearchBytes)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::SyncSearchLimitReached,
+                RuntimeResult::CorruptData);
+        }
+
+        const uint32_t sourcePosition =
+            SdStreamService::position(stream_);
+
+        if (sourcePosition >= status_.fileSizeBytes)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::SyncNotFound,
+                RuntimeResult::CorruptData);
+        }
+
+        const size_t fileRemaining =
+            static_cast<size_t>(
+                status_.fileSizeBytes - sourcePosition);
+
+        const size_t windowBytes = minimumSize(
+            backend_->compressedWindowBytes,
+            fileRemaining);
+
+        if (windowBytes < MP3_DECODER_FRAME_HEADER_BYTES)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::SyncNotFound,
+                RuntimeResult::CorruptData);
+        }
+
+        size_t copiedBytes = 0U;
+
+        const RuntimeResult copyResult =
+            copySourceBytes(
+                nowMs,
+                compressedScratch_.data,
+                windowBytes,
+                copiedBytes);
+
+        if (copyResult != RuntimeResult::Ok)
+        {
+            return copyResult;
+        }
+
+        uint8_t* const compressed =
+            static_cast<uint8_t*>(
+                compressedScratch_.data);
+
+        memset(
+            compressed + windowBytes,
+            0,
+            MP3_INPUT_GUARD_BYTES);
+
+        mp3dec_t probeDecoder = {};
+        mp3dec_init(&probeDecoder);
+
+        mp3dec_frame_info_t decodedInfo = {};
+
+        const int samplesPerChannel =
+            mp3dec_decode_frame(
+                &probeDecoder,
+                compressed,
+                static_cast<int>(windowBytes),
+                static_cast<int16_t*>(
+                    pcmScratch_.data),
+                &decodedInfo);
+
+        if (decodedInfo.frame_bytes <= 0)
+        {
+            if (SdStreamService::eof(stream_))
+            {
+                status_.state = Mp3DecoderState::Failed;
+
+                return setError(
+                    Mp3DecoderError::SyncNotFound,
+                    RuntimeResult::CorruptData);
+            }
+
+            SdStreamService::requestPrefetch(stream_);
+            status_.sourceWouldBlock = true;
+            status_.sourceWaitCount =
+                saturatingIncrement32(
+                    status_.sourceWaitCount);
+
+            return setError(
+                Mp3DecoderError::SourceWouldBlock,
+                RuntimeResult::NotReady);
+        }
+
+        const size_t consumedBytes =
+            static_cast<size_t>(
+                decodedInfo.frame_bytes);
+
+        const size_t frameOffset =
+            decodedInfo.frame_offset > 0
+                ? static_cast<size_t>(
+                    decodedInfo.frame_offset)
+                : 0U;
+
+        if (consumedBytes > windowBytes ||
+            frameOffset > consumedBytes ||
+            frameOffset +
+                    MP3_DECODER_FRAME_HEADER_BYTES >
+                windowBytes)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::DecodeFailed,
+                RuntimeResult::CorruptData);
+        }
+
+        if (samplesPerChannel <= 0)
+        {
+            const size_t skipBytes = minimumSize(
+                consumedBytes,
+                byteBudget - scannedThisCall);
+
+            if (skipBytes == 0U)
+            {
+                return setError(
+                    Mp3DecoderError::Busy,
+                    RuntimeResult::Busy);
+            }
+
+            const RuntimeResult consumeResult =
+                consumeSourceBytes(skipBytes);
+
+            if (consumeResult != RuntimeResult::Ok)
+            {
+                return consumeResult;
+            }
+
+            status_.syncBytesSkipped +=
+                static_cast<uint32_t>(skipBytes);
+            scannedThisCall += skipBytes;
+            continue;
+        }
+
+        Mp3FrameInfo candidate;
+        Mp3DecoderError headerError =
+            Mp3DecoderError::None;
+
+        const RuntimeResult headerResult =
+            parseFrameHeader(
+                compressed + frameOffset,
+                candidate,
+                headerError);
+
+        if (headerResult != RuntimeResult::Ok)
+        {
+            const size_t skipBytes =
+                minimumSize(
+                    frameOffset + 1U,
+                    byteBudget - scannedThisCall);
+
+            const RuntimeResult consumeResult =
+                consumeSourceBytes(skipBytes);
+
+            if (consumeResult != RuntimeResult::Ok)
+            {
+                return consumeResult;
+            }
+
+            status_.syncBytesSkipped +=
+                static_cast<uint32_t>(skipBytes);
+            scannedThisCall += skipBytes;
+            continue;
+        }
+
+        const size_t decodedFrameBytes =
+            consumedBytes - frameOffset;
+
+        if (candidate.bitrateKbps == 0U &&
+            candidate.frameSizeBytes == 0U)
+        {
+            candidate.bitrateKbps =
+                decodedInfo.bitrate_kbps > 0
+                    ? static_cast<uint16_t>(
+                        decodedInfo.bitrate_kbps)
+                    : 0U;
+
+            candidate.frameSizeBytes =
+                decodedFrameBytes <= UINT16_MAX
+                    ? static_cast<uint16_t>(
+                        decodedFrameBytes)
+                    : 0U;
+        }
+
+        Mp3DecoderError rejectionReason =
+            Mp3DecoderError::None;
+
+        if (!supportedFrame(
+                candidate,
+                config_,
+                &rejectionReason) ||
+            decodedInfo.layer != 3 ||
+            decodedInfo.channels !=
+                candidate.channelCount ||
+            static_cast<uint32_t>(
+                decodedInfo.hz) !=
+                candidate.sampleRateHz ||
+            static_cast<size_t>(
+                samplesPerChannel) >
+                MP3_DECODER_MAX_PCM_FRAMES_PER_MPEG_FRAME)
+        {
+            const size_t skipBytes =
+                minimumSize(
+                    frameOffset + 1U,
+                    byteBudget - scannedThisCall);
+
+            const RuntimeResult consumeResult =
+                consumeSourceBytes(skipBytes);
+
+            if (consumeResult != RuntimeResult::Ok)
+            {
+                return consumeResult;
+            }
+
+            status_.syncBytesSkipped +=
+                static_cast<uint32_t>(skipBytes);
+            scannedThisCall += skipBytes;
+            continue;
+        }
+
+        if (frameOffset > 0U)
+        {
+            const RuntimeResult consumeResult =
+                consumeSourceBytes(frameOffset);
+
+            if (consumeResult != RuntimeResult::Ok)
+            {
+                return consumeResult;
+            }
+
+            status_.syncBytesSkipped +=
+                static_cast<uint32_t>(frameOffset);
+            scannedThisCall += frameOffset;
+        }
+
+        firstFrameOffsetBytes_ =
+            SdStreamService::position(stream_);
+
+        status_.currentFrameInfo = candidate;
+        parsePhase_ = ParsePhase::ParseFirstFrame;
+        status_.sourceWouldBlock = false;
+
+        return RuntimeResult::Ok;
+    }
+
+    return setError(
+        Mp3DecoderError::Busy,
+        RuntimeResult::Busy);
+#endif
+}
+
+RuntimeResult Mp3Decoder::parseFirstFrame(
+    uint32_t nowMs)
+{
+    const Mp3FrameInfo firstFrame =
+        status_.currentFrameInfo;
+
+    Mp3DecoderError rejectionReason =
+        Mp3DecoderError::None;
+
+    if (!supportedFrame(
+            firstFrame,
+            config_,
+            &rejectionReason))
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            rejectionReason,
+            RuntimeResult::Unsupported);
+    }
+
+    size_t copiedBytes = 0U;
+
+    const RuntimeResult copyResult =
+        copySourceBytes(
+            nowMs,
+            compressedScratch_.data,
+            firstFrame.frameSizeBytes,
+            copiedBytes);
+
+    if (copyResult != RuntimeResult::Ok)
+    {
+        return copyResult;
+    }
+
+    const RuntimeResult vbrResult =
+        parseVbrHeaders(
+            static_cast<const uint8_t*>(
+                compressedScratch_.data),
+            firstFrame.frameSizeBytes,
+            firstFrame);
+
+    if (vbrResult != RuntimeResult::Ok)
+    {
+        return vbrResult;
+    }
+
+    status_.streamInfo.firstFrame = firstFrame;
+    status_.streamInfo.outputFormat.sampleRateHz =
+        firstFrame.sampleRateHz;
+    status_.streamInfo.outputFormat.bitsPerSample =
+        I2S_AUDIO_SUPPORTED_BITS_PER_SAMPLE;
+    status_.streamInfo.outputFormat.channelCount =
+        firstFrame.channelCount;
+
+    parsePhase_ = ParsePhase::Complete;
+
+    return finalizeHeader();
+}
+
+RuntimeResult Mp3Decoder::finalizeHeader()
+{
+    if (backend_ == nullptr ||
+        firstFrameOffsetBytes_ >=
+            status_.fileSizeBytes)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SyncNotFound,
+            RuntimeResult::CorruptData);
+    }
+
+    status_.streamInfo.audioDataOffsetBytes =
+        firstFrameOffsetBytes_;
+
+    uint32_t audioEndBytes =
+        status_.fileSizeBytes;
+
+    backend_->trailingTagBytes = 0U;
+
+    // Remove ID3v1 before checking for an APEv2 footer. APEv2 is commonly
+    // placed immediately before ID3v1, and minimp3 explicitly expects both
+    // kinds of trailing non-audio data to be excluded from the decode range.
+    if (config_.detectId3v1 &&
+        audioEndBytes >=
+            MP3_DECODER_ID3V1_TAG_BYTES)
+    {
+        const uint32_t tagOffset =
+            audioEndBytes -
+            MP3_DECODER_ID3V1_TAG_BYTES;
+
+        if (SdStreamService::seek(
+                stream_,
+                tagOffset,
+                SdStreamSeekOrigin::Begin) ==
+            RuntimeResult::Ok)
+        {
+            size_t loadedBytes = 0U;
+
+            SdStreamService::prefetch(
+                stream_,
+                platformMillis(),
+                sizeof(TAG_SIGNATURE),
+                loadedBytes);
+
+            uint8_t signature[3] = {};
+            size_t copiedBytes = 0U;
+
+            const RuntimeResult peekResult =
+                SdStreamService::peek(
+                    stream_,
+                    signature,
+                    sizeof(signature),
+                    0U,
+                    copiedBytes);
+
+            if (peekResult == RuntimeResult::Ok &&
+                copiedBytes == sizeof(signature) &&
+                signatureEquals(
+                    signature,
+                    TAG_SIGNATURE,
+                    sizeof(TAG_SIGNATURE)))
+            {
+                status_.streamInfo.id3v1Present = true;
+                audioEndBytes = tagOffset;
+                backend_->trailingTagBytes +=
+                    MP3_DECODER_ID3V1_TAG_BYTES;
+            }
+        }
+    }
+
+    if (audioEndBytes >=
+            MP3_APEV2_FOOTER_BYTES &&
+        audioEndBytes > firstFrameOffsetBytes_)
+    {
+        const uint32_t footerOffset =
+            audioEndBytes -
+            MP3_APEV2_FOOTER_BYTES;
+
+        if (SdStreamService::seek(
+                stream_,
+                footerOffset,
+                SdStreamSeekOrigin::Begin) ==
+            RuntimeResult::Ok)
+        {
+            size_t loadedBytes = 0U;
+
+            SdStreamService::prefetch(
+                stream_,
+                platformMillis(),
+                MP3_APEV2_FOOTER_BYTES,
+                loadedBytes);
+
+            uint8_t footer[MP3_APEV2_FOOTER_BYTES] = {};
+            size_t copiedBytes = 0U;
+
+            const RuntimeResult peekResult =
+                SdStreamService::peek(
+                    stream_,
+                    footer,
+                    sizeof(footer),
+                    0U,
+                    copiedBytes);
+
+            if (peekResult == RuntimeResult::Ok &&
+                copiedBytes == sizeof(footer) &&
+                signatureEquals(
+                    footer,
+                    APE_SIGNATURE,
+                    sizeof(APE_SIGNATURE)))
+            {
+                const uint32_t version =
+                    readLe32Local(footer + 8U);
+
+                const uint32_t tagBytes =
+                    readLe32Local(footer + 12U);
+
+                const uint32_t availableBeforeFooter =
+                    audioEndBytes -
+                    firstFrameOffsetBytes_;
+
+                if ((version == 1000U ||
+                     version == 2000U) &&
+                    tagBytes >=
+                        MP3_APEV2_FOOTER_BYTES &&
+                    tagBytes <=
+                        availableBeforeFooter)
+                {
+                    audioEndBytes -= tagBytes;
+                    backend_->trailingTagBytes +=
+                        tagBytes;
+                }
+            }
+        }
+    }
+
+    const RuntimeResult restoreResult =
+        SdStreamService::seek(
+            stream_,
+            firstFrameOffsetBytes_,
+            SdStreamSeekOrigin::Begin);
+
+    if (restoreResult != RuntimeResult::Ok)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SourceSeekFailed,
+            restoreResult);
+    }
+
+    if (audioEndBytes <= firstFrameOffsetBytes_)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::TruncatedFrame,
+            RuntimeResult::CorruptData);
+    }
+
+    status_.streamInfo.audioDataSizeBytes =
+        audioEndBytes - firstFrameOffsetBytes_;
+
+    if (status_.streamInfo.declaredAudioBytes > 0U)
+    {
+        status_.streamInfo.audioDataSizeBytes =
+            minimumSize(
+                status_.streamInfo.audioDataSizeBytes,
+                status_.streamInfo.declaredAudioBytes);
+    }
+
+    backend_->playableRawStartFrame = 0U;
+    backend_->playableRawEndFrame = UINT64_MAX;
+    backend_->rawPcmFramesDecoded = 0U;
+
+    if (status_.streamInfo.declaredMpegFrameCount > 0U)
+    {
+        const uint64_t rawTotalFrames =
+            static_cast<uint64_t>(
+                status_.streamInfo.
+                    declaredMpegFrameCount) *
+            status_.streamInfo.firstFrame.
+                samplesPerFrame;
+
+        uint64_t playableStart = 0U;
+        uint64_t playableEnd = rawTotalFrames;
+
+        if (status_.streamInfo.gaplessInfoPresent)
+        {
+            const uint64_t encoderDelay =
+                status_.streamInfo.
+                    encoderDelaySamples;
+
+            playableStart =
+                encoderDelay < rawTotalFrames
+                    ? encoderDelay
+                    : rawTotalFrames;
+
+            const uint64_t padding =
+                status_.streamInfo.
+                    encoderPaddingSamples;
+
+            playableEnd =
+                padding >= rawTotalFrames
+                    ? 0U
+                    : rawTotalFrames - padding;
+
+            if (playableEnd < playableStart)
+            {
+                playableEnd = playableStart;
+            }
+        }
+
+        backend_->playableRawStartFrame =
+            playableStart;
+
+        backend_->playableRawEndFrame =
+            playableEnd;
+
+        status_.estimatedTotalPcmFrames =
+            playableEnd - playableStart;
+    }
+    else if (status_.streamInfo.firstFrame.
+                 bitrateKbps > 0U)
+    {
+        const uint64_t durationMs =
+            (static_cast<uint64_t>(
+                 status_.streamInfo.
+                    audioDataSizeBytes) *
+             8ULL) /
+            status_.streamInfo.firstFrame.
+                bitrateKbps;
+
+        status_.estimatedTotalPcmFrames =
+            millisecondsToFrames(
+                durationMs > UINT32_MAX
+                    ? UINT32_MAX
+                    : static_cast<uint32_t>(
+                        durationMs),
+                status_.streamInfo.outputFormat.
+                    sampleRateHz);
+    }
+
+    status_.streamInfo.averageBitrateKbps =
+        status_.streamInfo.firstFrame.
+            bitrateKbps;
+
+    if (status_.streamInfo.bitrateMode ==
+        Mp3BitrateMode::Unknown)
+    {
+        status_.streamInfo.bitrateMode =
+            status_.streamInfo.firstFrame.
+                    bitrateKbps > 0U
+                ? Mp3BitrateMode::Constant
+                : Mp3BitrateMode::Unknown;
+    }
+
+    status_.headerReady = true;
+    status_.eof = false;
+    status_.sourceWouldBlock = false;
+    status_.destinationBackpressure = false;
+    status_.sourceOffsetBytes = firstFrameOffsetBytes_;
+    status_.compressedBytesConsumed = 0U;
+    status_.currentPcmFrame = 0U;
+    status_.state = Mp3DecoderState::Ready;
+    status_.error = Mp3DecoderError::None;
+
+#if EGS_MP3_HAS_MINIMP3
+    mp3dec_init(&backend_->decoder);
+#endif
+
+    backend_->pendingPcmFrameOffset = 0U;
+    backend_->pendingPcmFrameCount = 0U;
+    backend_->pendingChannelCount = 0U;
+    backend_->bitrateAccumulatorKbps = 0U;
+    backend_->bitrateSampleCount = 0U;
+    backend_->firstObservedBitrateKbps =
+        status_.streamInfo.firstFrame.
+            bitrateKbps;
+    backend_->bitrateChanged = false;
+    backend_->consecutiveDecodeErrors = 0U;
+    backend_->consecutiveResyncBytes = 0U;
+
+    if (config_.buildSparseSeekIndex)
+    {
+        addSeekPoint(
+            0U,
+            firstFrameOffsetBytes_,
+            0U);
+
+        nextSeekIndexAtMs_ =
+            config_.seekIndexIntervalMs;
+    }
+
+    refreshDerivedStatus();
+    notifyStateChanged();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::parseVbrHeaders(
+    const uint8_t* frameData,
+    size_t frameBytes,
+    const Mp3FrameInfo& frame)
+{
+    if (frameData == nullptr ||
+        frameBytes < MP3_DECODER_FRAME_HEADER_BYTES)
+    {
+        return setError(
+            Mp3DecoderError::InvalidFrameHeader,
+            RuntimeResult::CorruptData);
+    }
+
+    const size_t crcBytes =
+        frame.crcProtected ? 2U : 0U;
+
+    const size_t sideInfoBytes =
+        frame.version == Mp3MpegVersion::Mpeg1
+            ? (frame.channelCount == 1U ? 17U : 32U)
+            : (frame.channelCount == 1U ? 9U : 17U);
+
+    const size_t xingOffset =
+        MP3_DECODER_FRAME_HEADER_BYTES +
+        crcBytes +
+        sideInfoBytes;
+
+    if (config_.parseXingInfo &&
+        xingOffset + 8U <= frameBytes &&
+        (signatureEquals(
+             frameData + xingOffset,
+             XING_SIGNATURE,
+             sizeof(XING_SIGNATURE)) ||
+         signatureEquals(
+             frameData + xingOffset,
+             INFO_SIGNATURE,
+             sizeof(INFO_SIGNATURE))))
+    {
+        const bool infoHeader =
+            signatureEquals(
+                frameData + xingOffset,
+                INFO_SIGNATURE,
+                sizeof(INFO_SIGNATURE));
+
+        status_.streamInfo.xingHeaderPresent = true;
+        status_.streamInfo.bitrateMode =
+            infoHeader
+                ? Mp3BitrateMode::Constant
+                : Mp3BitrateMode::Variable;
+
+        const uint32_t flags =
+            readBe32(frameData + xingOffset + 4U);
+
+        size_t cursor = xingOffset + 8U;
+
+        if ((flags & XING_FLAG_FRAMES) != 0U)
+        {
+            if (cursor + 4U > frameBytes)
+            {
+                return setError(
+                    Mp3DecoderError::InvalidFrameHeader,
+                    RuntimeResult::CorruptData);
+            }
+
+            status_.streamInfo.declaredMpegFrameCount =
+                readBe32(frameData + cursor);
+
+            cursor += 4U;
+        }
+
+        if ((flags & XING_FLAG_BYTES) != 0U)
+        {
+            if (cursor + 4U > frameBytes)
+            {
+                return setError(
+                    Mp3DecoderError::InvalidFrameHeader,
+                    RuntimeResult::CorruptData);
+            }
+
+            status_.streamInfo.declaredAudioBytes =
+                readBe32(frameData + cursor);
+
+            cursor += 4U;
+        }
+
+        if ((flags & XING_FLAG_TOC) != 0U)
+        {
+            if (cursor + 100U > frameBytes)
+            {
+                return setError(
+                    Mp3DecoderError::InvalidFrameHeader,
+                    RuntimeResult::CorruptData);
+            }
+
+            memcpy(
+                backend_->xingToc,
+                frameData + cursor,
+                sizeof(backend_->xingToc));
+
+            backend_->xingTocValid = true;
+            status_.streamInfo.xingTocPresent = true;
+
+            cursor += 100U;
+        }
+
+        if ((flags & XING_FLAG_QUALITY) != 0U)
+        {
+            if (cursor + 4U > frameBytes)
+            {
+                return setError(
+                    Mp3DecoderError::InvalidFrameHeader,
+                    RuntimeResult::CorruptData);
+            }
+
+            cursor += 4U;
+        }
+    }
+
+    if (config_.parseVbri &&
+        MP3_VBRI_PROBE_OFFSET +
+                MP3_VBRI_HEADER_BYTES <=
+            frameBytes &&
+        signatureEquals(
+            frameData + MP3_VBRI_PROBE_OFFSET,
+            VBRI_SIGNATURE,
+            sizeof(VBRI_SIGNATURE)))
+    {
+        const uint8_t* const vbri =
+            frameData + MP3_VBRI_PROBE_OFFSET;
+
+        status_.streamInfo.vbriHeaderPresent = true;
+        status_.streamInfo.bitrateMode =
+            Mp3BitrateMode::Variable;
+
+        status_.streamInfo.declaredAudioBytes =
+            readBe32(vbri + 10U);
+
+        status_.streamInfo.declaredMpegFrameCount =
+            readBe32(vbri + 14U);
+
+        const uint16_t entryCount =
+            readBe16Local(vbri + 18U);
+
+        const uint16_t scale =
+            readBe16Local(vbri + 20U);
+
+        const uint16_t bytesPerEntry =
+            readBe16Local(vbri + 22U);
+
+        const uint16_t framesPerEntry =
+            readBe16Local(vbri + 24U);
+
+        if (entryCount > 0U &&
+            entryCount <= MP3_VBRI_MAX_ENTRIES &&
+            scale > 0U &&
+            bytesPerEntry >= 1U &&
+            bytesPerEntry <= 4U &&
+            framesPerEntry > 0U)
+        {
+            const size_t tableBytes =
+                static_cast<size_t>(entryCount) *
+                bytesPerEntry;
+
+            const size_t tableOffset =
+                MP3_VBRI_PROBE_OFFSET +
+                MP3_VBRI_HEADER_BYTES;
+
+            if (tableOffset + tableBytes <=
+                frameBytes)
+            {
+                uint32_t cumulative = 0U;
+
+                for (uint16_t index = 0U;
+                     index < entryCount;
+                     ++index)
+                {
+                    uint32_t value = 0U;
+
+                    for (uint16_t byteIndex = 0U;
+                         byteIndex < bytesPerEntry;
+                         ++byteIndex)
+                    {
+                        value =
+                            (value << 8U) |
+                            frameData[
+                                tableOffset +
+                                static_cast<size_t>(index) *
+                                    bytesPerEntry +
+                                byteIndex];
+                    }
+
+                    const uint64_t scaledValue =
+                        static_cast<uint64_t>(value) *
+                        scale;
+
+                    if (scaledValue >
+                        UINT32_MAX - cumulative)
+                    {
+                        backend_->vbriTableValid = false;
+                        break;
+                    }
+
+                    cumulative +=
+                        static_cast<uint32_t>(scaledValue);
+
+                    backend_->vbriCumulativeBytes[index] =
+                        cumulative;
+                }
+
+                if (cumulative > 0U)
+                {
+                    backend_->vbriTableValid = true;
+                    backend_->vbriEntryCount = entryCount;
+                    backend_->vbriFramesPerEntry =
+                        framesPerEntry;
+                }
+            }
+        }
+    }
+
+    for (size_t index = 0U;
+         index + 24U < frameBytes;
+         ++index)
+    {
+        if (!signatureEquals(
+                frameData + index,
+                LAME_SIGNATURE,
+                sizeof(LAME_SIGNATURE)))
+        {
+            continue;
+        }
+
+        const uint8_t first = frameData[index + 21U];
+        const uint8_t second = frameData[index + 22U];
+        const uint8_t third = frameData[index + 23U];
+
+        status_.streamInfo.encoderDelaySamples =
+            static_cast<uint16_t>(
+                (static_cast<uint16_t>(first) << 4U) |
+                (second >> 4U));
+
+        status_.streamInfo.encoderPaddingSamples =
+            static_cast<uint16_t>(
+                (static_cast<uint16_t>(second & 0x0FU) << 8U) |
+                third);
+
+        status_.streamInfo.gaplessInfoPresent = true;
+        break;
+    }
+
+    return RuntimeResult::Ok;
+}
+RuntimeResult Mp3Decoder::validateDestination(
+    const PcmRingBuffer& destination) const
+{
+    if (!destination.ready())
+    {
+        return const_cast<Mp3Decoder*>(this)->setError(
+            Mp3DecoderError::DestinationNotReady,
+            RuntimeResult::NotReady);
+    }
+
+    const I2sAudioFormat format =
+        destination.format();
+
+    if (format.sampleRateHz !=
+            status_.streamInfo.outputFormat.sampleRateHz ||
+        format.bitsPerSample !=
+            status_.streamInfo.outputFormat.bitsPerSample ||
+        format.channelCount !=
+            status_.streamInfo.outputFormat.channelCount)
+    {
+        return const_cast<Mp3Decoder*>(this)->setError(
+            Mp3DecoderError::DestinationFormatMismatch,
+            RuntimeResult::InvalidArgument);
+    }
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::decodeOneMpegFrame(
+    PcmRingBuffer& destination,
+    uint32_t nowMs,
+    size_t maximumOutputFrames,
+    size_t& decodedPcmFrames)
+{
+    decodedPcmFrames = 0U;
+
+    if (backend_ == nullptr ||
+        maximumOutputFrames == 0U)
+    {
+        return setError(
+            Mp3DecoderError::BackendInitializationFailed,
+            RuntimeResult::NotReady);
+    }
+
+    int16_t* const pcm =
+        static_cast<int16_t*>(pcmScratch_.data);
+
+    if (backend_->pendingPcmFrameCount > 0U)
+    {
+        const size_t framesToWrite = minimumSize(
+            maximumOutputFrames,
+            backend_->pendingPcmFrameCount);
+
+        size_t writtenFrames = 0U;
+
+        const RuntimeResult writeResult =
+            destination.write(
+                pcm +
+                    backend_->pendingPcmFrameOffset *
+                        backend_->pendingChannelCount,
+                framesToWrite,
+                writtenFrames);
+
+        if (writeResult != RuntimeResult::Ok)
+        {
+            status_.destinationBackpressure = true;
+            status_.destinationWaitCount =
+                saturatingIncrement32(
+                    status_.destinationWaitCount);
+
+            return setError(
+                writeResult == RuntimeResult::OutOfMemory ||
+                        writeResult == RuntimeResult::Busy
+                    ? Mp3DecoderError::DestinationFull
+                    : Mp3DecoderError::DestinationWriteFailed,
+                writeResult == RuntimeResult::OutOfMemory
+                    ? RuntimeResult::Busy
+                    : writeResult);
+        }
+
+        backend_->pendingPcmFrameOffset +=
+            writtenFrames;
+        backend_->pendingPcmFrameCount -=
+            writtenFrames;
+
+        status_.currentPcmFrame =
+            saturatingAdd64(
+                status_.currentPcmFrame,
+                writtenFrames);
+
+        status_.totalDecodedPcmFrames =
+            saturatingAdd64(
+                status_.totalDecodedPcmFrames,
+                writtenFrames);
+
+        decodedPcmFrames = writtenFrames;
+        status_.destinationBackpressure = false;
+
+        if (backend_->pendingPcmFrameCount == 0U)
+        {
+            backend_->pendingPcmFrameOffset = 0U;
+            backend_->pendingChannelCount = 0U;
+        }
+
+        refreshDerivedStatus();
+
+        if (config_.buildSparseSeekIndex &&
+            backend_->pendingPcmFrameCount == 0U &&
+            status_.currentMilliseconds >=
+                nextSeekIndexAtMs_)
+        {
+            addSeekPoint(
+                status_.currentMilliseconds,
+                status_.sourceOffsetBytes,
+                status_.currentPcmFrame);
+
+            nextSeekIndexAtMs_ =
+                status_.currentMilliseconds >
+                        UINT32_MAX -
+                            config_.seekIndexIntervalMs
+                    ? UINT32_MAX
+                    : status_.currentMilliseconds +
+                        config_.seekIndexIntervalMs;
+        }
+
+        return RuntimeResult::Ok;
+    }
+
+    if (status_.compressedBytesConsumed >=
+        status_.streamInfo.audioDataSizeBytes)
+    {
+        status_.eof = true;
+        status_.state = Mp3DecoderState::EndOfStream;
+
+        return setError(
+            Mp3DecoderError::EndOfStream,
+            RuntimeResult::NotReady);
+    }
+
+#if !EGS_MP3_HAS_MINIMP3
+    (void)nowMs;
+
+    return setError(
+        Mp3DecoderError::BackendInitializationFailed,
+        RuntimeResult::Unsupported);
+#else
+    const uint32_t remainingCompressedBytes =
+        status_.streamInfo.audioDataSizeBytes -
+        status_.compressedBytesConsumed;
+
+    const size_t windowBytes = minimumSize(
+        backend_->compressedWindowBytes,
+        static_cast<size_t>(remainingCompressedBytes));
+
+    if (windowBytes < MP3_DECODER_FRAME_HEADER_BYTES)
+    {
+        if (!config_.rejectTruncatedFinalFrame)
+        {
+            status_.eof = true;
+            status_.state = Mp3DecoderState::EndOfStream;
+
+            return setError(
+                Mp3DecoderError::EndOfStream,
+                RuntimeResult::NotReady);
+        }
+
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::TruncatedFrame,
+            RuntimeResult::CorruptData);
+    }
+
+    size_t copiedBytes = 0U;
+
+    const RuntimeResult frameCopyResult =
+        copySourceBytes(
+            nowMs,
+            compressedScratch_.data,
+            windowBytes,
+            copiedBytes);
+
+    if (frameCopyResult != RuntimeResult::Ok)
+    {
+        return frameCopyResult;
+    }
+
+    uint8_t* const compressed =
+        static_cast<uint8_t*>(
+            compressedScratch_.data);
+
+    memset(
+        compressed + windowBytes,
+        0,
+        MP3_INPUT_GUARD_BYTES);
+
+    mp3dec_frame_info_t decodedInfo = {};
+
+    const int samplesPerChannel =
+        mp3dec_decode_frame(
+            &backend_->decoder,
+            compressed,
+            static_cast<int>(windowBytes),
+            pcm,
+            &decodedInfo);
+
+    if (decodedInfo.frame_bytes < 0 ||
+        decodedInfo.frame_offset < 0)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::DecodeFailed,
+            RuntimeResult::CorruptData);
+    }
+
+    if (decodedInfo.frame_bytes == 0)
+    {
+        if (windowBytes ==
+                static_cast<size_t>(
+                    remainingCompressedBytes) ||
+            SdStreamService::eof(stream_))
+        {
+            if (!config_.rejectTruncatedFinalFrame)
+            {
+                status_.eof = true;
+                status_.state =
+                    Mp3DecoderState::EndOfStream;
+
+                return setError(
+                    Mp3DecoderError::EndOfStream,
+                    RuntimeResult::NotReady);
+            }
+
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::TruncatedFrame,
+                RuntimeResult::CorruptData);
+        }
+
+        SdStreamService::requestPrefetch(stream_);
+        status_.sourceWouldBlock = true;
+        status_.sourceWaitCount =
+            saturatingIncrement32(
+                status_.sourceWaitCount);
+
+        return setError(
+            Mp3DecoderError::SourceWouldBlock,
+            RuntimeResult::NotReady);
+    }
+
+    const size_t consumedBytes =
+        static_cast<size_t>(
+            decodedInfo.frame_bytes);
+
+    const size_t frameOffset =
+        static_cast<size_t>(
+            decodedInfo.frame_offset);
+
+    if (consumedBytes > windowBytes ||
+        consumedBytes > remainingCompressedBytes ||
+        frameOffset > consumedBytes)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::DecodeFailed,
+            RuntimeResult::CorruptData);
+    }
+
+    if (samplesPerChannel <= 0)
+    {
+        const RuntimeResult consumeResult =
+            consumeSourceBytes(consumedBytes);
+
+        if (consumeResult != RuntimeResult::Ok)
+        {
+            return consumeResult;
+        }
+
+        status_.compressedBytesConsumed +=
+            static_cast<uint32_t>(consumedBytes);
+
+        status_.decodeErrorCount =
+            saturatingIncrement32(
+                status_.decodeErrorCount);
+
+        backend_->consecutiveDecodeErrors =
+            saturatingIncrement32(
+                backend_->consecutiveDecodeErrors);
+
+        backend_->consecutiveResyncBytes =
+            backend_->consecutiveResyncBytes >
+                    UINT32_MAX - consumedBytes
+                ? UINT32_MAX
+                : backend_->consecutiveResyncBytes +
+                    static_cast<uint32_t>(
+                        consumedBytes);
+
+        if (backend_->consecutiveDecodeErrors >
+                MP3_MAX_CONSECUTIVE_DECODE_ERRORS ||
+            backend_->consecutiveResyncBytes >
+                MP3_MAX_CONSECUTIVE_RESYNC_BYTES)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::DecodeFailed,
+                RuntimeResult::CorruptData);
+        }
+
+        status_.resyncCount =
+            saturatingIncrement32(
+                status_.resyncCount);
+
+        return setError(
+            Mp3DecoderError::DecodeFailed,
+            RuntimeResult::Busy);
+    }
+
+    if (frameOffset +
+            MP3_DECODER_FRAME_HEADER_BYTES >
+            consumedBytes ||
+        decodedInfo.channels <
+            MP3_DECODER_MIN_CHANNEL_COUNT ||
+        decodedInfo.channels >
+            MP3_DECODER_MAX_CHANNEL_COUNT ||
+        decodedInfo.hz <= 0 ||
+        decodedInfo.layer != 3 ||
+        static_cast<size_t>(samplesPerChannel) >
+            MP3_DECODER_MAX_PCM_FRAMES_PER_MPEG_FRAME)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::DecodeFailed,
+            RuntimeResult::CorruptData);
+    }
+
+    Mp3FrameInfo frame;
+    Mp3DecoderError frameError =
+        Mp3DecoderError::None;
+
+    const RuntimeResult headerResult =
+        parseFrameHeader(
+            compressed + frameOffset,
+            frame,
+            frameError);
+
+    if (headerResult != RuntimeResult::Ok)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            frameError,
+            headerResult);
+    }
+
+    const size_t actualFrameBytes =
+        consumedBytes - frameOffset;
+
+    if (frame.bitrateKbps == 0U &&
+        frame.frameSizeBytes == 0U)
+    {
+        frame.bitrateKbps =
+            decodedInfo.bitrate_kbps > 0
+                ? static_cast<uint16_t>(
+                    decodedInfo.bitrate_kbps)
+                : 0U;
+
+        frame.frameSizeBytes =
+            actualFrameBytes <= UINT16_MAX
+                ? static_cast<uint16_t>(
+                    actualFrameBytes)
+                : 0U;
+    }
+
+    Mp3DecoderError rejectionReason =
+        Mp3DecoderError::None;
+
+    if (!supportedFrame(
+            frame,
+            config_,
+            &rejectionReason) ||
+        decodedInfo.channels !=
+            frame.channelCount ||
+        static_cast<uint32_t>(decodedInfo.hz) !=
+            frame.sampleRateHz ||
+        actualFrameBytes !=
+            frame.frameSizeBytes)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            rejectionReason != Mp3DecoderError::None
+                ? rejectionReason
+                : Mp3DecoderError::DecodeFailed,
+            rejectionReason != Mp3DecoderError::None
+                ? RuntimeResult::Unsupported
+                : RuntimeResult::CorruptData);
+    }
+
+    const I2sAudioFormat expectedFormat =
+        status_.streamInfo.outputFormat;
+
+    const bool formatChanged =
+        frame.sampleRateHz !=
+            expectedFormat.sampleRateHz ||
+        frame.channelCount !=
+            expectedFormat.channelCount;
+
+    if (formatChanged)
+    {
+        status_.formatChangeCount =
+            saturatingIncrement32(
+                status_.formatChangeCount);
+
+        if (!config_.allowMidstreamFormatChange)
+        {
+            status_.state = Mp3DecoderState::Failed;
+
+            return setError(
+                Mp3DecoderError::FormatChanged,
+                RuntimeResult::Unsupported);
+        }
+    }
+
+    const RuntimeResult consumeResult =
+        consumeSourceBytes(consumedBytes);
+
+    if (consumeResult != RuntimeResult::Ok)
+    {
+        return consumeResult;
+    }
+
+    status_.compressedBytesConsumed +=
+        static_cast<uint32_t>(consumedBytes);
+
+    if (frameOffset > 0U)
+    {
+        status_.resyncCount =
+            saturatingIncrement32(
+                status_.resyncCount);
+    }
+
+    backend_->consecutiveDecodeErrors = 0U;
+    backend_->consecutiveResyncBytes = 0U;
+
+    status_.currentFrameInfo = frame;
+    status_.decodedMpegFrameCount =
+        saturatingIncrement32(
+            status_.decodedMpegFrameCount);
+
+    const uint64_t rawStart =
+        backend_->rawPcmFramesDecoded;
+
+    const uint64_t rawEnd =
+        saturatingAdd64(
+            rawStart,
+            static_cast<uint64_t>(
+                samplesPerChannel));
+
+    const uint64_t keepStart =
+        rawStart < backend_->playableRawStartFrame
+            ? backend_->playableRawStartFrame
+            : rawStart;
+
+    const uint64_t keepEnd =
+        rawEnd > backend_->playableRawEndFrame
+            ? backend_->playableRawEndFrame
+            : rawEnd;
+
+    backend_->rawPcmFramesDecoded = rawEnd;
+
+    if (keepEnd > keepStart)
+    {
+        backend_->pendingPcmFrameOffset =
+            static_cast<size_t>(
+                keepStart - rawStart);
+
+        backend_->pendingPcmFrameCount =
+            static_cast<size_t>(
+                keepEnd - keepStart);
+
+        backend_->pendingChannelCount =
+            frame.channelCount;
+    }
+    else
+    {
+        backend_->pendingPcmFrameOffset = 0U;
+        backend_->pendingPcmFrameCount = 0U;
+        backend_->pendingChannelCount = 0U;
+    }
+
+    backend_->bitrateAccumulatorKbps =
+        saturatingAdd64(
+            backend_->bitrateAccumulatorKbps,
+            frame.bitrateKbps);
+
+    backend_->bitrateSampleCount =
+        saturatingIncrement32(
+            backend_->bitrateSampleCount);
+
+    if (backend_->firstObservedBitrateKbps == 0U)
+    {
+        backend_->firstObservedBitrateKbps =
+            frame.bitrateKbps;
+    }
+    else if (frame.bitrateKbps > 0U &&
+             backend_->firstObservedBitrateKbps !=
+                 frame.bitrateKbps)
+    {
+        backend_->bitrateChanged = true;
+    }
+
+    if (backend_->bitrateSampleCount > 0U)
+    {
+        const uint64_t average =
+            backend_->bitrateAccumulatorKbps /
+            backend_->bitrateSampleCount;
+
+        status_.streamInfo.averageBitrateKbps =
+            average > UINT16_MAX
+                ? UINT16_MAX
+                : static_cast<uint16_t>(average);
+    }
+
+    if (!status_.streamInfo.xingHeaderPresent &&
+        !status_.streamInfo.vbriHeaderPresent)
+    {
+        status_.streamInfo.bitrateMode =
+            backend_->bitrateChanged
+                ? Mp3BitrateMode::Variable
+                : Mp3BitrateMode::Constant;
+    }
+
+    if (formatChanged)
+    {
+        status_.streamInfo.outputFormat.sampleRateHz =
+            frame.sampleRateHz;
+
+        status_.streamInfo.outputFormat.channelCount =
+            frame.channelCount;
+
+        return setError(
+            Mp3DecoderError::FormatChanged,
+            RuntimeResult::Busy);
+    }
+
+    if (backend_->pendingPcmFrameCount == 0U)
+    {
+        if (status_.compressedBytesConsumed >=
+                status_.streamInfo.audioDataSizeBytes ||
+            backend_->rawPcmFramesDecoded >=
+                backend_->playableRawEndFrame)
+        {
+            status_.eof = true;
+            status_.state = Mp3DecoderState::EndOfStream;
+
+            return setError(
+                Mp3DecoderError::EndOfStream,
+                RuntimeResult::NotReady);
+        }
+
+        return decodeOneMpegFrame(
+            destination,
+            nowMs,
+            maximumOutputFrames,
+            decodedPcmFrames);
+    }
+
+    return decodeOneMpegFrame(
+        destination,
+        nowMs,
+        maximumOutputFrames,
+        decodedPcmFrames);
+#endif
+}
+
+RuntimeResult Mp3Decoder::resynchronize(
+    uint32_t nowMs,
+    size_t byteBudget,
+    bool countResync)
+{
+    if (byteBudget == 0U)
+    {
+        return setError(
+            Mp3DecoderError::Busy,
+            RuntimeResult::Busy);
+    }
+
+#if !EGS_MP3_HAS_MINIMP3
+    (void)nowMs;
+    (void)countResync;
+
+    return setError(
+        Mp3DecoderError::BackendInitializationFailed,
+        RuntimeResult::Unsupported);
+#else
+    size_t scanned = 0U;
+
+    while (scanned < byteBudget)
+    {
+        if (status_.compressedBytesConsumed >=
+            status_.streamInfo.audioDataSizeBytes)
+        {
+            status_.eof = true;
+            status_.state = Mp3DecoderState::EndOfStream;
+
+            return setError(
+                Mp3DecoderError::EndOfStream,
+                RuntimeResult::NotReady);
+        }
+
+        const uint32_t remainingCompressedBytes =
+            status_.streamInfo.audioDataSizeBytes -
+            status_.compressedBytesConsumed;
+
+        const size_t windowBytes = minimumSize(
+            backend_->compressedWindowBytes,
+            static_cast<size_t>(
+                remainingCompressedBytes));
+
+        if (windowBytes < MP3_DECODER_FRAME_HEADER_BYTES)
+        {
+            return setError(
+                Mp3DecoderError::SyncNotFound,
+                RuntimeResult::CorruptData);
+        }
+
+        size_t copiedBytes = 0U;
+
+        const RuntimeResult copyResult =
+            copySourceBytes(
+                nowMs,
+                compressedScratch_.data,
+                windowBytes,
+                copiedBytes);
+
+        if (copyResult != RuntimeResult::Ok)
+        {
+            return copyResult;
+        }
+
+        uint8_t* const compressed =
+            static_cast<uint8_t*>(
+                compressedScratch_.data);
+
+        memset(
+            compressed + windowBytes,
+            0,
+            MP3_INPUT_GUARD_BYTES);
+
+        mp3dec_t probeDecoder = {};
+        mp3dec_init(&probeDecoder);
+
+        mp3dec_frame_info_t decodedInfo = {};
+
+        const int samplesPerChannel =
+            mp3dec_decode_frame(
+                &probeDecoder,
+                compressed,
+                static_cast<int>(windowBytes),
+                nullptr,
+                &decodedInfo);
+
+        if (decodedInfo.frame_bytes <= 0)
+        {
+            if (windowBytes ==
+                static_cast<size_t>(
+                    remainingCompressedBytes))
+            {
+                return setError(
+                    Mp3DecoderError::SyncNotFound,
+                    RuntimeResult::CorruptData);
+            }
+
+            SdStreamService::requestPrefetch(stream_);
+            status_.sourceWouldBlock = true;
+
+            return setError(
+                Mp3DecoderError::SourceWouldBlock,
+                RuntimeResult::NotReady);
+        }
+
+        const size_t consumedBytes =
+            static_cast<size_t>(
+                decodedInfo.frame_bytes);
+
+        const size_t frameOffset =
+            decodedInfo.frame_offset > 0
+                ? static_cast<size_t>(
+                    decodedInfo.frame_offset)
+                : 0U;
+
+        if (consumedBytes > windowBytes ||
+            frameOffset > consumedBytes)
+        {
+            return setError(
+                Mp3DecoderError::DecodeFailed,
+                RuntimeResult::CorruptData);
+        }
+
+        if (samplesPerChannel > 0 &&
+            frameOffset +
+                    MP3_DECODER_FRAME_HEADER_BYTES <=
+                consumedBytes)
+        {
+            Mp3FrameInfo frame;
+            Mp3DecoderError frameError =
+                Mp3DecoderError::None;
+
+            const RuntimeResult headerResult =
+                parseFrameHeader(
+                    compressed + frameOffset,
+                    frame,
+                    frameError);
+
+            if (headerResult == RuntimeResult::Ok)
+            {
+                if (frame.bitrateKbps == 0U &&
+                    frame.frameSizeBytes == 0U)
+                {
+                    const size_t actualFrameBytes =
+                        consumedBytes - frameOffset;
+
+                    frame.bitrateKbps =
+                        decodedInfo.bitrate_kbps > 0
+                            ? static_cast<uint16_t>(
+                                decodedInfo.bitrate_kbps)
+                            : 0U;
+
+                    frame.frameSizeBytes =
+                        actualFrameBytes <= UINT16_MAX
+                            ? static_cast<uint16_t>(
+                                actualFrameBytes)
+                            : 0U;
+                }
+
+                Mp3DecoderError rejectionReason =
+                    Mp3DecoderError::None;
+
+                if (supportedFrame(
+                        frame,
+                        config_,
+                        &rejectionReason))
+                {
+                    if (frameOffset > 0U)
+                    {
+                        const RuntimeResult consumeResult =
+                            consumeSourceBytes(frameOffset);
+
+                        if (consumeResult != RuntimeResult::Ok)
+                        {
+                            return consumeResult;
+                        }
+
+                        status_.compressedBytesConsumed +=
+                            static_cast<uint32_t>(
+                                frameOffset);
+                        scanned += frameOffset;
+                    }
+
+                    if (countResync)
+                    {
+                        status_.resyncCount =
+                            saturatingIncrement32(
+                                status_.resyncCount);
+                    }
+
+                    mp3dec_init(&backend_->decoder);
+
+                    backend_->pendingPcmFrameOffset = 0U;
+                    backend_->pendingPcmFrameCount = 0U;
+                    backend_->pendingChannelCount = 0U;
+                    backend_->consecutiveDecodeErrors = 0U;
+                    backend_->consecutiveResyncBytes = 0U;
+
+                    return RuntimeResult::Ok;
+                }
+            }
+        }
+
+        const size_t skipBytes = minimumSize(
+            consumedBytes,
+            byteBudget - scanned);
+
+        if (skipBytes == 0U)
+        {
+            return setError(
+                Mp3DecoderError::Busy,
+                RuntimeResult::Busy);
+        }
+
+        const RuntimeResult consumeResult =
+            consumeSourceBytes(skipBytes);
+
+        if (consumeResult != RuntimeResult::Ok)
+        {
+            return consumeResult;
+        }
+
+        status_.compressedBytesConsumed +=
+            static_cast<uint32_t>(skipBytes);
+        scanned += skipBytes;
+    }
+
+    return setError(
+        Mp3DecoderError::SyncNotFound,
+        RuntimeResult::Busy);
+#endif
+}
+RuntimeResult Mp3Decoder::seekToSourceOffset(
+    uint32_t sourceOffsetBytes,
+    uint64_t estimatedPcmFrame,
+    Mp3SeekSource source)
+{
+    if (!status_.headerReady ||
+        sourceOffsetBytes <
+            status_.streamInfo.audioDataOffsetBytes ||
+        sourceOffsetBytes >
+            status_.streamInfo.audioDataOffsetBytes +
+                status_.streamInfo.audioDataSizeBytes)
+    {
+        return setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    status_.state = Mp3DecoderState::Seeking;
+    notifyStateChanged();
+
+    const RuntimeResult seekResult =
+        SdStreamService::seek(
+            stream_,
+            sourceOffsetBytes,
+            SdStreamSeekOrigin::Begin);
+
+    if (seekResult != RuntimeResult::Ok)
+    {
+        status_.state = Mp3DecoderState::Failed;
+
+        return setError(
+            Mp3DecoderError::SourceSeekFailed,
+            seekResult);
+    }
+
+#if EGS_MP3_HAS_MINIMP3
+    mp3dec_init(&backend_->decoder);
+#endif
+
+    backend_->pendingPcmFrameOffset = 0U;
+    backend_->pendingPcmFrameCount = 0U;
+    backend_->pendingChannelCount = 0U;
+    backend_->consecutiveDecodeErrors = 0U;
+    backend_->consecutiveResyncBytes = 0U;
+
+    backend_->rawPcmFramesDecoded =
+        saturatingAdd64(
+            estimatedPcmFrame,
+            backend_->playableRawStartFrame);
+
+    status_.sourceOffsetBytes = sourceOffsetBytes;
+    status_.compressedBytesConsumed =
+        sourceOffsetBytes -
+        status_.streamInfo.audioDataOffsetBytes;
+    status_.currentPcmFrame = estimatedPcmFrame;
+    status_.eof =
+        status_.compressedBytesConsumed >=
+        status_.streamInfo.audioDataSizeBytes;
+    status_.sourceWouldBlock = false;
+    status_.destinationBackpressure = false;
+    status_.lastSeekSource = source;
+    status_.state =
+        status_.eof
+            ? Mp3DecoderState::EndOfStream
+            : Mp3DecoderState::Seeking;
+    status_.error = Mp3DecoderError::None;
+
+    refreshDerivedStatus();
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::accurateSeekForward(
+    uint64_t targetPcmFrame,
+    uint32_t maximumDecodeMilliseconds)
+{
+    if (targetPcmFrame <= status_.currentPcmFrame)
+    {
+        status_.state = Mp3DecoderState::Ready;
+        return RuntimeResult::Ok;
+    }
+
+#if !EGS_MP3_HAS_MINIMP3
+    (void)maximumDecodeMilliseconds;
+
+    return setError(
+        Mp3DecoderError::BackendInitializationFailed,
+        RuntimeResult::Unsupported);
+#else
+    const uint32_t sampleRate =
+        status_.streamInfo.outputFormat.sampleRateHz;
+
+    if (sampleRate == 0U)
+    {
+        return setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    const uint64_t maximumFrames =
+        millisecondsToFrames(
+            maximumDecodeMilliseconds,
+            sampleRate);
+
+    const uint64_t startingFrame =
+        status_.currentPcmFrame;
+
+    int16_t* const pcm =
+        static_cast<int16_t*>(pcmScratch_.data);
+
+    while (status_.currentPcmFrame < targetPcmFrame)
+    {
+        if (status_.currentPcmFrame < startingFrame ||
+            status_.currentPcmFrame - startingFrame >
+                maximumFrames)
+        {
+            return setError(
+                Mp3DecoderError::AccurateSeekLimitReached,
+                RuntimeResult::Busy);
+        }
+
+        if (status_.compressedBytesConsumed >=
+            status_.streamInfo.audioDataSizeBytes)
+        {
+            status_.eof = true;
+
+            return setError(
+                Mp3DecoderError::EndOfStream,
+                RuntimeResult::NotReady);
+        }
+
+        const uint32_t remainingCompressedBytes =
+            status_.streamInfo.audioDataSizeBytes -
+            status_.compressedBytesConsumed;
+
+        const size_t windowBytes = minimumSize(
+            backend_->compressedWindowBytes,
+            static_cast<size_t>(
+                remainingCompressedBytes));
+
+        if (windowBytes < MP3_DECODER_FRAME_HEADER_BYTES)
+        {
+            return setError(
+                Mp3DecoderError::TruncatedFrame,
+                RuntimeResult::CorruptData);
+        }
+
+        size_t copiedBytes = 0U;
+
+        const RuntimeResult copyResult =
+            copySourceBytes(
+                platformMillis(),
+                compressedScratch_.data,
+                windowBytes,
+                copiedBytes);
+
+        if (copyResult != RuntimeResult::Ok)
+        {
+            return copyResult;
+        }
+
+        uint8_t* const compressed =
+            static_cast<uint8_t*>(
+                compressedScratch_.data);
+
+        memset(
+            compressed + windowBytes,
+            0,
+            MP3_INPUT_GUARD_BYTES);
+
+        mp3dec_frame_info_t decodedInfo = {};
+
+        const int samplesPerChannel =
+            mp3dec_decode_frame(
+                &backend_->decoder,
+                compressed,
+                static_cast<int>(windowBytes),
+                pcm,
+                &decodedInfo);
+
+        if (decodedInfo.frame_bytes <= 0)
+        {
+            return setError(
+                Mp3DecoderError::SourceWouldBlock,
+                RuntimeResult::NotReady);
+        }
+
+        const size_t consumedBytes =
+            static_cast<size_t>(
+                decodedInfo.frame_bytes);
+
+        const size_t frameOffset =
+            decodedInfo.frame_offset > 0
+                ? static_cast<size_t>(
+                    decodedInfo.frame_offset)
+                : 0U;
+
+        if (consumedBytes > windowBytes ||
+            consumedBytes > remainingCompressedBytes ||
+            frameOffset > consumedBytes)
+        {
+            return setError(
+                Mp3DecoderError::DecodeFailed,
+                RuntimeResult::CorruptData);
+        }
+
+        if (samplesPerChannel <= 0)
+        {
+            const RuntimeResult consumeResult =
+                consumeSourceBytes(consumedBytes);
+
+            if (consumeResult != RuntimeResult::Ok)
+            {
+                return consumeResult;
+            }
+
+            status_.compressedBytesConsumed +=
+                static_cast<uint32_t>(
+                    consumedBytes);
+
+            status_.decodeErrorCount =
+                saturatingIncrement32(
+                    status_.decodeErrorCount);
+
+            continue;
+        }
+
+        if (frameOffset +
+                MP3_DECODER_FRAME_HEADER_BYTES >
+                consumedBytes ||
+            decodedInfo.channels <
+                MP3_DECODER_MIN_CHANNEL_COUNT ||
+            decodedInfo.channels >
+                MP3_DECODER_MAX_CHANNEL_COUNT ||
+            decodedInfo.hz <= 0 ||
+            decodedInfo.layer != 3 ||
+            static_cast<size_t>(samplesPerChannel) >
+                MP3_DECODER_MAX_PCM_FRAMES_PER_MPEG_FRAME)
+        {
+            return setError(
+                Mp3DecoderError::DecodeFailed,
+                RuntimeResult::CorruptData);
+        }
+
+        Mp3FrameInfo frame;
+        Mp3DecoderError frameError =
+            Mp3DecoderError::None;
+
+        const RuntimeResult headerResult =
+            parseFrameHeader(
+                compressed + frameOffset,
+                frame,
+                frameError);
+
+        if (headerResult != RuntimeResult::Ok)
+        {
+            return setError(
+                frameError,
+                headerResult);
+        }
+
+        const size_t actualFrameBytes =
+            consumedBytes - frameOffset;
+
+        if (frame.bitrateKbps == 0U &&
+            frame.frameSizeBytes == 0U)
+        {
+            frame.bitrateKbps =
+                decodedInfo.bitrate_kbps > 0
+                    ? static_cast<uint16_t>(
+                        decodedInfo.bitrate_kbps)
+                    : 0U;
+
+            frame.frameSizeBytes =
+                actualFrameBytes <= UINT16_MAX
+                    ? static_cast<uint16_t>(
+                        actualFrameBytes)
+                    : 0U;
+        }
+
+        Mp3DecoderError rejectionReason =
+            Mp3DecoderError::None;
+
+        if (!supportedFrame(
+                frame,
+                config_,
+                &rejectionReason) ||
+            decodedInfo.channels !=
+                frame.channelCount ||
+            static_cast<uint32_t>(decodedInfo.hz) !=
+                frame.sampleRateHz ||
+            frame.sampleRateHz !=
+                status_.streamInfo.outputFormat.
+                    sampleRateHz ||
+            frame.channelCount !=
+                status_.streamInfo.outputFormat.
+                    channelCount)
+        {
+            return setError(
+                rejectionReason != Mp3DecoderError::None
+                    ? rejectionReason
+                    : Mp3DecoderError::FormatChanged,
+                rejectionReason != Mp3DecoderError::None
+                    ? RuntimeResult::Unsupported
+                    : RuntimeResult::CorruptData);
+        }
+
+        const RuntimeResult consumeResult =
+            consumeSourceBytes(consumedBytes);
+
+        if (consumeResult != RuntimeResult::Ok)
+        {
+            return consumeResult;
+        }
+
+        status_.compressedBytesConsumed +=
+            static_cast<uint32_t>(
+                consumedBytes);
+
+        if (frameOffset > 0U)
+        {
+            status_.resyncCount =
+                saturatingIncrement32(
+                    status_.resyncCount);
+        }
+
+        const uint64_t rawStart =
+            backend_->rawPcmFramesDecoded;
+
+        const uint64_t rawEnd =
+            saturatingAdd64(
+                rawStart,
+                static_cast<uint64_t>(
+                    samplesPerChannel));
+
+        const uint64_t keepStart =
+            rawStart < backend_->playableRawStartFrame
+                ? backend_->playableRawStartFrame
+                : rawStart;
+
+        const uint64_t keepEnd =
+            rawEnd > backend_->playableRawEndFrame
+                ? backend_->playableRawEndFrame
+                : rawEnd;
+
+        backend_->rawPcmFramesDecoded = rawEnd;
+
+        if (keepEnd <= keepStart)
+        {
+            continue;
+        }
+
+        const size_t playableOffset =
+            static_cast<size_t>(
+                keepStart - rawStart);
+
+        const size_t playableFrames =
+            static_cast<size_t>(
+                keepEnd - keepStart);
+
+        const uint64_t framesToTarget =
+            targetPcmFrame -
+            status_.currentPcmFrame;
+
+        const size_t skippedPlayableFrames =
+            framesToTarget < playableFrames
+                ? static_cast<size_t>(
+                    framesToTarget)
+                : playableFrames;
+
+        status_.currentPcmFrame +=
+            skippedPlayableFrames;
+
+        if (skippedPlayableFrames < playableFrames)
+        {
+            backend_->pendingPcmFrameOffset =
+                playableOffset +
+                skippedPlayableFrames;
+
+            backend_->pendingPcmFrameCount =
+                playableFrames -
+                skippedPlayableFrames;
+
+            backend_->pendingChannelCount =
+                frame.channelCount;
+        }
+        else
+        {
+            backend_->pendingPcmFrameOffset = 0U;
+            backend_->pendingPcmFrameCount = 0U;
+            backend_->pendingChannelCount = 0U;
+        }
+    }
+
+    status_.state = Mp3DecoderState::Ready;
+    status_.error = Mp3DecoderError::None;
+
+    refreshDerivedStatus();
+
+    return RuntimeResult::Ok;
+#endif
+}
+
+RuntimeResult Mp3Decoder::addSeekPoint(
+    uint32_t milliseconds,
+    uint32_t sourceOffsetBytes,
+    uint64_t pcmFrame)
+{
+    if (!config_.buildSparseSeekIndex ||
+        seekIndex_ == nullptr ||
+        status_.seekIndexCapacity == 0U)
+    {
+        return RuntimeResult::Unsupported;
+    }
+
+    if (status_.seekIndexEntryCount > 0U)
+    {
+        const Mp3SeekPoint& last =
+            seekIndex_[
+                status_.seekIndexEntryCount - 1U];
+
+        if (milliseconds <= last.milliseconds ||
+            sourceOffsetBytes < last.sourceOffsetBytes ||
+            pcmFrame < last.pcmFrame)
+        {
+            return RuntimeResult::InvalidArgument;
+        }
+    }
+
+    if (status_.seekIndexEntryCount >=
+        status_.seekIndexCapacity)
+    {
+        // Compact the sparse index instead of stopping index growth.
+        // Keeping every second point preserves the full timeline while
+        // doubling the effective spacing between retained entries.
+        uint16_t writeIndex = 1U;
+
+        for (uint16_t readIndex = 2U;
+             readIndex < status_.seekIndexEntryCount;
+             readIndex = static_cast<uint16_t>(
+                 readIndex + 2U))
+        {
+            seekIndex_[writeIndex] =
+                seekIndex_[readIndex];
+
+            ++writeIndex;
+        }
+
+        status_.seekIndexEntryCount =
+            writeIndex;
+
+        nextSeekIndexAtMs_ =
+            status_.currentMilliseconds >
+                    UINT32_MAX -
+                        config_.seekIndexIntervalMs
+                ? UINT32_MAX
+                : status_.currentMilliseconds +
+                    config_.seekIndexIntervalMs;
+    }
+
+    if (status_.seekIndexEntryCount >=
+        status_.seekIndexCapacity)
+    {
+        return RuntimeResult::OutOfMemory;
+    }
+
+    Mp3SeekPoint& point =
+        seekIndex_[status_.seekIndexEntryCount];
+
+    point.milliseconds = milliseconds;
+    point.sourceOffsetBytes = sourceOffsetBytes;
+    point.pcmFrame = pcmFrame;
+
+    ++status_.seekIndexEntryCount;
+
+    return RuntimeResult::Ok;
+}
+
+RuntimeResult Mp3Decoder::chooseSeekPoint(
+    uint32_t milliseconds,
+    Mp3SeekPoint& point,
+    Mp3SeekSource& source) const
+{
+    point = {};
+    source = Mp3SeekSource::None;
+
+    if (!ready())
+    {
+        return const_cast<Mp3Decoder*>(this)->setError(
+            Mp3DecoderError::NotOpen,
+            RuntimeResult::NotReady);
+    }
+
+    const uint32_t duration =
+        status_.durationMilliseconds;
+
+    if (duration > 0U &&
+        milliseconds > duration)
+    {
+        return const_cast<Mp3Decoder*>(this)->setError(
+            Mp3DecoderError::InvalidSeek,
+            RuntimeResult::InvalidArgument);
+    }
+
+    if (backend_->xingTocValid &&
+        duration > 0U &&
+        status_.streamInfo.audioDataSizeBytes > 0U)
+    {
+        const uint32_t scaledPercent =
+            static_cast<uint32_t>(
+                (static_cast<uint64_t>(milliseconds) *
+                 10000ULL) /
+                duration);
+
+        const uint32_t boundedPercent =
+            scaledPercent > 9999U
+                ? 9999U
+                : scaledPercent;
+
+        const uint32_t index =
+            boundedPercent / 100U;
+
+        const uint32_t fraction =
+            boundedPercent % 100U;
+
+        const uint32_t firstToc =
+            backend_->xingToc[index];
+
+        const uint32_t secondToc =
+            index < 99U
+                ? backend_->xingToc[index + 1U]
+                : 256U;
+
+        const uint32_t interpolatedToc =
+            firstToc +
+            ((secondToc >= firstToc
+                  ? secondToc - firstToc
+                  : 0U) *
+             fraction) /
+                100U;
+
+        const uint64_t relativeOffset =
+            (static_cast<uint64_t>(
+                 status_.streamInfo.audioDataSizeBytes) *
+             interpolatedToc) /
+            256ULL;
+
+        point.milliseconds =
+            milliseconds;
+        point.sourceOffsetBytes =
+            status_.streamInfo.audioDataOffsetBytes +
+            static_cast<uint32_t>(relativeOffset);
+        point.pcmFrame =
+            millisecondsToFrames(
+                point.milliseconds,
+                status_.streamInfo.outputFormat.sampleRateHz);
+        source = Mp3SeekSource::XingToc;
+
+        return RuntimeResult::Ok;
+    }
+
+    if (backend_->vbriTableValid &&
+        backend_->vbriEntryCount > 0U &&
+        backend_->vbriFramesPerEntry > 0U)
+    {
+        const uint64_t targetFrame =
+            millisecondsToFrames(
+                milliseconds,
+                status_.streamInfo.outputFormat.sampleRateHz);
+
+        const uint64_t mpegFrameIndex =
+            status_.streamInfo.firstFrame.samplesPerFrame > 0U
+                ? targetFrame /
+                    status_.streamInfo.firstFrame.samplesPerFrame
+                : 0U;
+
+        uint64_t entryIndex =
+            mpegFrameIndex /
+            backend_->vbriFramesPerEntry;
+
+        if (entryIndex >= backend_->vbriEntryCount)
+        {
+            entryIndex =
+                backend_->vbriEntryCount - 1U;
+        }
+
+        const uint32_t relativeOffset =
+            entryIndex == 0U
+                ? 0U
+                : backend_->vbriCumulativeBytes[
+                    static_cast<size_t>(entryIndex - 1U)];
+
+        point.milliseconds =
+            framesToMilliseconds(
+                entryIndex *
+                    backend_->vbriFramesPerEntry *
+                    status_.streamInfo.firstFrame.samplesPerFrame,
+                status_.streamInfo.outputFormat.sampleRateHz);
+
+        point.sourceOffsetBytes =
+            status_.streamInfo.audioDataOffsetBytes +
+            minimumSize(
+                relativeOffset,
+                status_.streamInfo.audioDataSizeBytes);
+
+        point.pcmFrame =
+            entryIndex *
+            backend_->vbriFramesPerEntry *
+            status_.streamInfo.firstFrame.samplesPerFrame;
+
+        source = Mp3SeekSource::VbriTable;
+
+        return RuntimeResult::Ok;
+    }
+
+    if (seekIndex_ != nullptr &&
+        status_.seekIndexEntryCount > 0U)
+    {
+        point = seekIndex_[0];
+
+        for (uint16_t index = 1U;
+             index < status_.seekIndexEntryCount;
+             ++index)
+        {
+            if (seekIndex_[index].milliseconds >
+                milliseconds)
+            {
+                break;
+            }
+
+            point = seekIndex_[index];
+        }
+
+        source = Mp3SeekSource::SparseIndex;
+
+        return RuntimeResult::Ok;
+    }
+
+    const uint16_t bitrate =
+        status_.streamInfo.averageBitrateKbps > 0U
+            ? status_.streamInfo.averageBitrateKbps
+            : status_.streamInfo.firstFrame.bitrateKbps;
+
+    if (bitrate > 0U)
+    {
+        const uint32_t estimatedMilliseconds =
+            milliseconds > 1000U
+                ? milliseconds - 1000U
+                : 0U;
+
+        const uint64_t relativeOffset =
+            (static_cast<uint64_t>(
+                 estimatedMilliseconds) *
+             bitrate) /
+            8ULL;
+
+        point.milliseconds =
+            estimatedMilliseconds;
+
+        point.sourceOffsetBytes =
+            status_.streamInfo.audioDataOffsetBytes +
+            static_cast<uint32_t>(
+                minimumSize(
+                    relativeOffset,
+                    status_.streamInfo.audioDataSizeBytes));
+
+        point.pcmFrame =
+            millisecondsToFrames(
+                point.milliseconds,
+                status_.streamInfo.outputFormat.sampleRateHz);
+
+        source = Mp3SeekSource::BitrateEstimate;
+
+        return RuntimeResult::Ok;
+    }
+
+    return const_cast<Mp3Decoder*>(this)->setError(
+        Mp3DecoderError::SeekIndexUnavailable,
+        RuntimeResult::NotReady);
+}
+
+void Mp3Decoder::refreshDerivedStatus()
+{
+    const uint32_t sampleRate =
+        status_.streamInfo.outputFormat.sampleRateHz;
+
+    status_.currentMilliseconds =
+        framesToMilliseconds(
+            status_.currentPcmFrame,
+            sampleRate);
+
+    if (status_.estimatedTotalPcmFrames > 0U)
+    {
+        status_.durationMilliseconds =
+            framesToMilliseconds(
+                status_.estimatedTotalPcmFrames,
+                sampleRate);
+    }
+    else
+    {
+        const uint16_t bitrate =
+            status_.streamInfo.averageBitrateKbps > 0U
+                ? status_.streamInfo.averageBitrateKbps
+                : status_.streamInfo.firstFrame.bitrateKbps;
+
+        if (bitrate > 0U)
+        {
+            const uint64_t duration =
+                (static_cast<uint64_t>(
+                     status_.streamInfo.audioDataSizeBytes) *
+                 8ULL) /
+                bitrate;
+
+            status_.durationMilliseconds =
+                duration > UINT32_MAX
+                    ? UINT32_MAX
+                    : static_cast<uint32_t>(
+                        duration);
+
+            status_.estimatedTotalPcmFrames =
+                millisecondsToFrames(
+                    status_.durationMilliseconds,
+                    sampleRate);
+        }
+    }
+
+    status_.sourceOffsetBytes =
+        stream_
+            ? SdStreamService::position(stream_)
+            : 0U;
+
+    if (status_.compressedBytesConsumed >=
+            status_.streamInfo.audioDataSizeBytes &&
+        (backend_ == nullptr ||
+         backend_->pendingPcmFrameCount == 0U))
+    {
+        status_.eof = true;
+    }
+}
+
+RuntimeResult Mp3Decoder::setError(
+    Mp3DecoderError error,
+    RuntimeResult result)
+{
+    status_.error = error;
+    notifyStateChanged();
+
+    return result;
+}
+
+void Mp3Decoder::notifyStateChanged() const
+{
+    if (observer_ != nullptr)
+    {
+        observer_(status_);
+    }
+}
+}
+
+
+
+
+
+
+
+
+
+
+
 
 
 
